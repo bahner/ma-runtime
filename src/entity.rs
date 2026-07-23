@@ -153,9 +153,9 @@ impl IpldLink {
 // ── Local (intra-runtime) message ─────────────────────────────────────────────
 
 /// An intra-runtime message.  Follows the same schema as `ma_core::Message`
-/// but `from` and `to` may be bare fragments (`#fragment`) or full DIDs, and
-/// no signature is required — the runtime is the trusted authority for local
-/// dispatch.
+/// but no signature is required — the runtime is the trusted authority for
+/// local dispatch. Plugin-facing `from` and `to` values should still be full
+/// DID-URLs; the runtime may use fragments internally only for registry lookup.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalMessage {
     pub id: String,

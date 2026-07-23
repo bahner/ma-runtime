@@ -43,19 +43,24 @@ fn protocol_for(msg_type: &str) -> &'static str {
     }
 }
 
-fn local_target_fragment<'a>(target: &'a str, our_did: &str) -> Option<&'a str> {
+fn local_target_fragment(target: &str, our_did: &str) -> Option<String> {
     let target = target.trim();
-    if target.is_empty() {
+    if !target.starts_with("did:ma:") {
         return None;
     }
-    if target.starts_with("did:ma:") {
-        let fragment = target.strip_prefix(our_did)?.strip_prefix('#')?;
-        return (!fragment.is_empty()).then_some(fragment);
+    let target_did = Did::try_from(target).ok()?;
+    let our_base =
+        Did::try_from(our_did).map_or_else(|_| our_did.trim().to_string(), |did| did.base_id());
+    if target_did.base_id() != our_base {
+        return None;
     }
-    if let Some(fragment) = target.strip_prefix('#') {
-        return (!fragment.is_empty()).then_some(fragment);
-    }
-    (!target.contains('#') && !target.contains('/')).then_some(target)
+    target_did.fragment.filter(|fragment| !fragment.is_empty())
+}
+
+fn local_actor_url(our_did: &str, fragment: &str) -> String {
+    let base =
+        Did::try_from(our_did).map_or_else(|_| our_did.trim().to_string(), |did| did.base_id());
+    format!("{base}#{fragment}")
 }
 
 async fn dispatch_local_plugin_envelope(
@@ -66,6 +71,7 @@ async fn dispatch_local_plugin_envelope(
     entity_registry: &EntityRegistry,
     manifest_writer: &ManifestWriter,
     kubo_url: &str,
+    our_did: &str,
 ) {
     let mut entity = None;
     for attempt in 0..40 {
@@ -84,8 +90,8 @@ async fn dispatch_local_plugin_envelope(
 
     let local_msg = LocalMessage {
         id: Uuid::new_v4().to_string(),
-        from: format!("#{sender_fragment}"),
-        to: env.to.clone(),
+        from: local_actor_url(our_did, sender_fragment),
+        to: local_actor_url(our_did, target_fragment),
         created_at: status::now_unix_secs(),
         exp: 0,
         reply_to: env.reply_to.clone(),
@@ -369,7 +375,7 @@ pub async fn run(
                             .clone()
                             .unwrap_or_else(|| MESSAGE_TYPE_RPC.to_string())
                     };
-                    if let Some(target_fragment) = local_target_fragment(&env.to, &our_did).map(str::to_string) {
+                    if let Some(target_fragment) = local_target_fragment(&env.to, &our_did) {
                         if env.reply_to.is_some() {
                             debug!(
                                 fragment = %fragment,
@@ -382,6 +388,7 @@ pub async fn run(
                         let entity_registry = entity_registry.clone();
                         let manifest_writer = manifest_writer.clone();
                         let kubo_url = kubo_url.clone();
+                        let our_did = our_did.clone();
                         tokio::spawn(async move {
                             if tokio::time::timeout(
                                 Duration::from_secs(30),
@@ -393,6 +400,7 @@ pub async fn run(
                                     &entity_registry,
                                     &manifest_writer,
                                     &kubo_url,
+                                    &our_did,
                                 ),
                             )
                             .await
@@ -530,21 +538,34 @@ pub async fn run(
 
 #[cfg(test)]
 mod tests {
-    use super::local_target_fragment;
+    use super::{local_actor_url, local_target_fragment};
 
     #[test]
     fn local_target_fragment_accepts_local_forms_only() {
         let our_did = "did:ma:local";
 
-        assert_eq!(local_target_fragment("#room", our_did), Some("room"));
-        assert_eq!(local_target_fragment("room", our_did), Some("room"));
+        assert_eq!(local_target_fragment("#room", our_did), None);
+        assert_eq!(local_target_fragment("room", our_did), None);
         assert_eq!(
             local_target_fragment("did:ma:local#room", our_did),
-            Some("room")
+            Some("room".to_string())
+        );
+        assert_eq!(
+            local_target_fragment("did:ma:local#room", "did:ma:local#root"),
+            Some("room".to_string())
         );
 
         assert_eq!(local_target_fragment("did:ma:local", our_did), None);
         assert_eq!(local_target_fragment("did:ma:remote#room", our_did), None);
         assert_eq!(local_target_fragment("/entities/room", our_did), None);
+    }
+
+    #[test]
+    fn local_actor_url_always_uses_own_base_did() {
+        assert_eq!(local_actor_url("did:ma:local", "rms"), "did:ma:local#rms");
+        assert_eq!(
+            local_actor_url("did:ma:local#root", "rms"),
+            "did:ma:local#rms"
+        );
     }
 }
