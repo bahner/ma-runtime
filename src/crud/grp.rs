@@ -66,7 +66,7 @@ pub(super) async fn handle_root_grp(
                 return send_crud_i18n_error(message, reply_type, ctx, "cidv1-required").await;
             };
             let name = name.clone();
-            let new_root = with_manifest_crud(ctx, |m| {
+            with_manifest_crud(ctx, |m| {
                 m.grp.insert(name.clone(), IpldLink::new(&cid));
                 Ok(())
             })
@@ -85,7 +85,7 @@ pub(super) async fn handle_root_grp(
                 crate::status::grant_owners_in_acl(&ctx.root_acl, &members).await;
                 ctx.stats.write().await.owners = members;
             }
-            send_crud_ok_cid(message, reply_type, ctx, &new_root).await
+            send_crud_ok_cid(message, reply_type, ctx, &cid).await
         }
         // Delete a group — refused for "owners" (the entry must always
         // exist; it may only ever be emptied via SET, never removed).

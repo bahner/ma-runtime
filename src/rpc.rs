@@ -839,6 +839,7 @@ mod tests {
         assert_eq!(rpc_message_kind("text/plain"), RpcMessageKind::Unsupported);
     }
 
+    #[allow(clippy::too_many_lines)]
     #[tokio::test(flavor = "multi_thread")]
     async fn scheduler_help_native_output_is_exposed_to_reply_layer() {
         let kubo = MockKubo::start().await;
@@ -857,11 +858,6 @@ mod tests {
             None,
         );
 
-        let mut transport_acl = AclMap::new();
-        transport_acl.insert(
-            "*".to_string(),
-            CapabilityEntry::from_caps([crate::acl::CAP_RPC]),
-        );
         let mut scheduler_acl = AclMap::new();
         scheduler_acl.insert("*".to_string(), CapabilityEntry::from_caps([":help"]));
 
@@ -974,8 +970,8 @@ mod tests {
         ciborium::ser::into_writer(&ciborium::Value::Text(":help".to_string()), &mut payload)
             .unwrap();
         let incoming = ma_core::Message::new(
-            &sender_did.base_id(),
-            &format!("{}#scheduler", runtime_did.base_id()),
+            sender_did.base_id(),
+            format!("{}#scheduler", runtime_did.base_id()),
             MESSAGE_TYPE_RPC,
             ma_core::CONTENT_TYPE_TERM,
             &payload,

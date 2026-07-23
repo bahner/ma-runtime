@@ -102,9 +102,9 @@ impl StateCtx {
         }
     }
 
-    fn mark_saved(&mut self, bytes: Vec<u8>) {
-        self.persisted = Some(bytes.clone());
-        if self.pending.as_deref() == Some(bytes.as_slice()) {
+    fn mark_saved(&mut self, bytes: &[u8]) {
+        self.persisted = Some(bytes.to_owned());
+        if self.pending.as_deref() == Some(bytes) {
             self.pending = None;
             self.dirty = false;
         } else {
@@ -206,10 +206,10 @@ host_fn!(ma_create_entity_fn(user_data: CreateEntityCtx; input: Vec<u8>) -> Vec<
     let req: CreateEntityInput = from_cbor_bytes(&input)?;
     let arc = user_data.get()?;
     let mut ctx = arc.lock().unwrap();
-    let fragment = match req.fragment_hint {
-        Some(ref hint) => fragment_from_hint(&ctx.avatar_key, hint),
-        None => generate_fragment(),
-    };
+    let fragment = req
+        .fragment_hint
+        .as_ref()
+        .map_or_else(generate_fragment, |hint| fragment_from_hint(&ctx.avatar_key, hint));
     let parent = ctx.caller_fragment.clone();
     ctx.pending.push(CreateEntityRequest {
         fragment: fragment.clone(),
@@ -1027,7 +1027,7 @@ pub(super) fn run_wasm_thread(
             EntityMsg::MarkSaved(bytes) => {
                 if let Ok(arc) = ts.state.get() {
                     if let Ok(mut c) = arc.lock() {
-                        c.mark_saved(bytes);
+                        c.mark_saved(&bytes);
                     }
                 }
             }
@@ -1120,13 +1120,13 @@ mod tests {
         state.dirty = true;
 
         state.pending = Some(b"new".to_vec());
-        state.mark_saved(b"old".to_vec());
+        state.mark_saved(b"old");
 
         assert_eq!(state.persisted.as_deref(), Some(b"old".as_slice()));
         assert_eq!(state.pending.as_deref(), Some(b"new".as_slice()));
         assert!(state.dirty);
 
-        state.mark_saved(b"new".to_vec());
+        state.mark_saved(b"new");
 
         assert_eq!(state.persisted.as_deref(), Some(b"new".as_slice()));
         assert!(state.pending.is_none());

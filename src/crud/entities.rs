@@ -469,7 +469,8 @@ mod tests {
     ) {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
         loop {
-            if let Some(plugin) = entity_registry.read().await.get(fragment).cloned() {
+            let plugin = entity_registry.read().await.get(fragment).cloned();
+            if let Some(plugin) = plugin {
                 if plugin.acl == expected_acl {
                     return;
                 }
@@ -482,6 +483,7 @@ mod tests {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     #[tokio::test(flavor = "multi_thread")]
     async fn entity_acl_crud_set_reloads_running_plugin_acl() {
         let kubo = MockKubo::start().await;
@@ -591,8 +593,8 @@ mod tests {
         };
 
         let incoming = ma_core::Message::new(
-            &sender_did.base_id(),
-            &runtime_did.base_id(),
+            sender_did.base_id(),
+            runtime_did.base_id(),
             ma_core::MESSAGE_TYPE_CRUD,
             ma_core::CONTENT_TYPE_TERM,
             b"set acl",
@@ -629,6 +631,7 @@ mod tests {
         );
     }
 
+    #[allow(clippy::too_many_lines)]
     #[tokio::test(flavor = "multi_thread")]
     async fn entity_acl_crud_clear_reloads_running_plugin_acl() {
         let kubo = MockKubo::start().await;
@@ -732,8 +735,8 @@ mod tests {
         };
 
         let incoming = ma_core::Message::new(
-            &sender_did.base_id(),
-            &runtime_did.base_id(),
+            sender_did.base_id(),
+            runtime_did.base_id(),
             ma_core::MESSAGE_TYPE_CRUD,
             ma_core::CONTENT_TYPE_TERM,
             b"clear acl",

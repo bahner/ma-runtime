@@ -431,6 +431,11 @@ pub(super) async fn handle_config_ns(
                 )
                 .await;
             }
+            let link_cid = if let serde_yaml::Value::String(ref s) = yaml_val {
+                resolve_ipfs_ref(&ctx.kubo_rpc_url, s).await?
+            } else {
+                None
+            };
             let new_root = with_manifest_crud(ctx, |m| {
                 m.config.insert(key.clone(), yaml_val.clone());
                 Ok(())
@@ -442,11 +447,13 @@ pub(super) async fn handle_config_ns(
                     crate::i18n::switch_lang(lang, &ctx.kubo_rpc_url).await;
                 }
             }
-            // Every manifest mutation produces a new root CID — return it
-            // so clients can follow the link, regardless of whether the
-            // stored value itself was a CID reference. Mirrors the pattern
-            // used by `acl.rs`, `entities.rs`, `kinds.rs`, and `grp.rs`.
-            send_crud_ok_cid(message, reply_type, ctx, &new_root).await
+            send_crud_ok_cid(
+                message,
+                reply_type,
+                ctx,
+                link_cid.as_deref().unwrap_or(&new_root),
+            )
+            .await
         }
         _ => Err(anyhow!("unknown config.{key} operation")),
     }

@@ -64,14 +64,14 @@ pub(super) async fn handle_root_acls(
                 .await
                 .with_context(|| format!("loading named ACL '{acl_name}' from /ipfs/{cid}"))?;
             let acl_name = acl_name.clone();
-            let new_root = with_manifest_crud(ctx, |m| {
+            with_manifest_crud(ctx, |m| {
                 m.acls.insert(acl_name.clone(), IpldLink::new(&cid));
                 Ok(())
             })
             .await?;
             let cache_key = format!("acls.{acl_name}");
             ctx.acl_cache.write().await.insert(cache_key, acl_map);
-            send_crud_ok_cid(message, reply_type, ctx, &new_root).await
+            send_crud_ok_cid(message, reply_type, ctx, &cid).await
         }
         // Delete a named ACL.
         ([acl_name], Some(""), []) => {
@@ -119,14 +119,14 @@ pub(super) async fn handle_root_acl(
             let acl_map = crate::acl::load_acl_from_cid(&ctx.kubo_rpc_url, &cid)
                 .await
                 .with_context(|| format!("loading root ACL from {cid}"))?;
-            let new_root = with_manifest_crud(ctx, |m| {
+            with_manifest_crud(ctx, |m| {
                 m.acl = Some(IpldLink::new(&cid));
                 Ok(())
             })
             .await?;
             *ctx.root_acl.write().await = acl_map;
             info!(from = %message.from, cid = %cid, "{}", crate::i18n::t("crud-acl-updated"));
-            send_crud_ok_cid(message, reply_type, ctx, &new_root).await
+            send_crud_ok_cid(message, reply_type, ctx, &cid).await
         }
         // DELETE is refused — the root transport ACL must never be cleared.
         (Some(""), []) => {

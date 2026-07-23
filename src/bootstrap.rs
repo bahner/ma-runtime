@@ -835,31 +835,21 @@ mod tests {
         .unwrap();
         let yaml: BootstrapYaml =
             serde_yaml::from_str(&raw).expect("bootstrap.example.yaml must parse");
-        let kind = yaml
-            .runtime
-            .kinds
-            .get("/ma/scheme/actor/0.0.1")
-            .expect("/ma/scheme/actor/0.0.1 kind must be present");
-        assert!(kind.behaviour.is_some());
-        assert!(kind.cid.is_some());
-
-        let genesis_kind = yaml
-            .runtime
-            .kinds
-            .get("/ma/genesis/0.0.1")
-            .expect("/ma/genesis/0.0.1 kind must be present");
-        assert_eq!(
-            genesis_kind.extends.as_deref(),
-            Some("/ma/scheme/actor/0.0.1")
-        );
-        assert_eq!(
-            genesis_kind.attributes.get("genesis"),
-            Some(&serde_json::Value::Bool(true))
+        assert!(
+            yaml.runtime.kinds.is_empty(),
+            "runtime bootstrap example must not carry world-owned kind CIDs"
         );
         assert!(
-            genesis_kind.cid.is_none() && genesis_kind.behaviour.is_none(),
-            "cid/behaviour should be inherited via extends, not repeated"
+            yaml.runtime.entities.is_empty(),
+            "runtime bootstrap example must not carry world-owned entities"
         );
+        assert!(
+            yaml.runtime.grp.contains_key("owners"),
+            "owners group must be present"
+        );
+        assert!(yaml.runtime.acls.contains_key("open"));
+        assert!(yaml.runtime.acls.contains_key("owners"));
+        assert!(yaml.runtime.acls.contains_key("scheduler"));
 
         let root_acl = yaml.runtime.acl.expect("root ACL must be present");
         assert!(check_cap(&root_acl, "did:ma:alice", CAP_IPFS).is_ok());

@@ -74,7 +74,7 @@ pub(super) async fn handle_kinds_ns(
             } else {
                 raw_kind
             };
-            let new_root = with_manifest_crud(ctx, |m| {
+            with_manifest_crud(ctx, |m| {
                 m.kinds.insert_protocol(&protocol_id, IpldLink::new(&cid));
                 Ok(())
             })
@@ -98,7 +98,7 @@ pub(super) async fn handle_kinds_ns(
                     tracing::warn!(protocol = %protocol_id, error = %e, "failed to build runtime config for kind dependent reloads");
                 }
             }
-            send_crud_ok_cid(message, reply_type, ctx, &new_root).await
+            send_crud_ok_cid(message, reply_type, ctx, &cid).await
         }
         // DELETE /kinds/<protocol> → remove kind
         (Some(""), []) => {
