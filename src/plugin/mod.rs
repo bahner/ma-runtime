@@ -57,9 +57,10 @@ enum EntityMsg {
     /// Record that `bytes` were successfully persisted to IPFS: update the
     /// `persisted` snapshot and clear the dirty flag.
     MarkSaved(Vec<u8>),
-    /// Stop the worker thread.
-    #[allow(dead_code)]
-    Shutdown,
+    /// Deliver `:shutdown` and return any pending state bytes.
+    Shutdown {
+        reply: oneshot::Sender<Result<Option<Vec<u8>>>>,
+    },
 }
 
 // ── Native dispatch type ─────────────────────────────────────────────────────
@@ -157,6 +158,10 @@ pub type EntityRegistry = Arc<RwLock<HashMap<String, Arc<EntityPlugin>>>>;
 
 pub fn new_entity_registry() -> EntityRegistry {
     Arc::new(RwLock::new(HashMap::new()))
+}
+
+pub(crate) fn graceful_shutdown_timeout() -> std::time::Duration {
+    backend::wasm_call_timeout() * 2
 }
 
 // ── EntityPlugin (handle) ─────────────────────────────────────────────────────
@@ -582,6 +587,48 @@ impl EntityPlugin {
             Ok(None)
         }
     }
+
+    async fn shutdown_signal_save(
+        &self,
+        kubo_url: &str,
+        backstop: std::time::Duration,
+    ) -> Result<Option<String>> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(EntityMsg::Shutdown { reply: reply_tx })
+            .map_err(|_| anyhow!("entity '{}' worker thread is gone", self.fragment))?;
+        let pending = match tokio::time::timeout(backstop, reply_rx).await {
+            Ok(reply) => reply
+                .map_err(|_| anyhow!("entity '{}' dropped Shutdown reply", self.fragment))??,
+            Err(_) => {
+                return Err(anyhow!(
+                    "entity '{}' Shutdown timed out after {}s (worker wedged?)",
+                    self.fragment,
+                    backstop.as_secs()
+                ))
+            }
+        };
+
+        if let Some(bytes) = pending {
+            let cid = ipfs_add(kubo_url, bytes.clone())
+                .await
+                .map_err(|e| anyhow!("ipfs_add for '{}' shutdown state: {e}", self.fragment))?;
+            self.mark_saved(bytes);
+            Ok(Some(cid))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Deliver the entity's shutdown signal and persist any state it queues,
+    /// but keep the worker alive until the replacement entity is ready.
+    pub async fn prepare_reload_save(
+        &self,
+        kubo_url: &str,
+        backstop: std::time::Duration,
+    ) -> Result<Option<String>> {
+        self.shutdown_signal_save(kubo_url, backstop).await
+    }
 }
 
 fn memory_growth_log_threshold_kib() -> u64 {
@@ -632,11 +679,12 @@ mod hostile {
     use std::time::{Duration, Instant};
 
     use crate::entity::{
-        CastInput, EntityNode, Evaluator, IpldLink, KindNode, Lifecycle, PluginMsg, SendEnvelope,
+        CastInput, EntityNode, Evaluator, IpldLink, KindNode, Lifecycle, PluginKind, PluginMsg,
+        SendEnvelope,
     };
     use crate::testkubo::MockKubo;
 
-    use super::{new_entity_registry, EntityPlugin};
+    use super::{new_entity_registry, DispatchResult, EntityPlugin, NativeActor, NativeSignal};
 
     /// A module whose every export spins forever — used to prove that an
     /// infinite loop in `on_signal` (fired unconditionally at load time for
@@ -677,6 +725,21 @@ mod hostile {
             protocol: "/ma/test/0.0.1".to_string(),
             cid: Some(IpldLink::new(wasm_cid)),
             kind_type: Evaluator::Extism,
+            behaviour: None,
+            behaviour_chain: Vec::new(),
+            host_functions: vec![],
+            attributes,
+            extends: None,
+        }
+    }
+
+    fn native_kind_node() -> KindNode {
+        let mut attributes = BTreeMap::new();
+        attributes.insert("stateful".to_string(), serde_json::Value::Bool(true));
+        KindNode {
+            protocol: "/ma/test/native/0.0.1".to_string(),
+            cid: None,
+            kind_type: Evaluator::Native,
             behaviour: None,
             behaviour_chain: Vec::new(),
             host_functions: vec![],
@@ -881,5 +944,49 @@ mod hostile {
             .expect("reloaded (fixed) entity must dispatch fine");
 
         std::env::remove_var("MA_WASM_CALL_TIMEOUT_SECS");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn prepare_reload_save_respects_short_timeout() {
+        let actor = NativeActor::new(|_| {
+            Ok(DispatchResult {
+                output: Vec::new(),
+                pending_state: None,
+                create_requests: Vec::new(),
+                delete_requests: Vec::new(),
+                behaviour_requests: Vec::new(),
+            })
+        })
+        .with_signal(|signal| {
+            if matches!(signal, NativeSignal::Shutdown) {
+                std::thread::sleep(Duration::from_secs(2));
+            }
+            Ok(())
+        })
+        .with_state_hooks(|| None, |_| {});
+
+        let (plugin, lifecycle) = EntityPlugin::new_native(
+            "slow-shutdown",
+            &entity_node(),
+            &native_kind_node(),
+            actor,
+            Vec::new(),
+            None,
+        )
+        .expect("native plugin should load");
+        assert_eq!(lifecycle, Lifecycle::Running);
+        assert_eq!(plugin.kind, PluginKind::Stateful);
+
+        let started = Instant::now();
+        let err = plugin
+            .prepare_reload_save("http://127.0.0.1:9", Duration::from_millis(20))
+            .await
+            .expect_err("slow shutdown signal must hit the short reload timeout");
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "prepare_reload_save ignored short timeout: {:?}",
+            started.elapsed()
+        );
+        assert!(err.to_string().contains("Shutdown timed out"));
     }
 }

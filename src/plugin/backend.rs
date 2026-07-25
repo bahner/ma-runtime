@@ -906,14 +906,19 @@ pub(super) fn run_wasm_thread(
                     }
                 }
             }
-            EntityMsg::Shutdown => {
-                if let Err(e) = ts
+            EntityMsg::Shutdown { reply } => {
+                let signal_result = ts
                     .plugin
-                    .call::<&[u8], Vec<u8>>("on_signal", signal_atom(":shutdown").as_slice())
-                {
-                    warn!(fragment = %cfg.fragment, error = %e, "on_signal(:shutdown) failed (best-effort, ignored)");
-                }
-                break;
+                    .call::<&[u8], Vec<u8>>("on_signal", signal_atom(":shutdown").as_slice());
+                let pending = ts
+                    .state
+                    .get()
+                    .ok()
+                    .and_then(|arc| arc.lock().ok().and_then(|c| c.pending.clone()));
+                let _ = match signal_result {
+                    Ok(_) => reply.send(Ok(pending)),
+                    Err(e) => reply.send(Err(anyhow!("on_signal(:shutdown) failed: {e}"))),
+                };
             }
         }
     }
@@ -943,11 +948,13 @@ pub(super) fn run_native_thread(
                 let _ = reply.send((actor.take_pending)());
             }
             EntityMsg::MarkSaved(bytes) => (actor.mark_saved)(bytes),
-            EntityMsg::Shutdown => {
-                if let Err(e) = (actor.signal)(NativeSignal::Shutdown) {
-                    warn!(error = %e, "native on_signal(:shutdown) failed (best-effort, ignored)");
-                }
-                break;
+            EntityMsg::Shutdown { reply } => {
+                let signal_result = (actor.signal)(NativeSignal::Shutdown);
+                let pending = (actor.take_pending)();
+                let _ = match signal_result {
+                    Ok(()) => reply.send(Ok(pending)),
+                    Err(e) => reply.send(Err(anyhow!("native on_signal(:shutdown) failed: {e}"))),
+                };
             }
         }
     }

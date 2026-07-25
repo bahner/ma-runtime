@@ -757,7 +757,7 @@ pub async fn save_all_entity_states(
     // Stateless entities skip state saving but still get lifecycle: stopped.
     for (name, entity) in &snapshot {
         // Stateless native entities are manifest markers/compiled-in runtime
-        // hooks. Stateful native entities still pass through trigger_save(),
+        // hooks. Stateful native entities still pass through prepare_reload_save(),
         // whose native backend may currently be a no-op.
         if entity.is_native() && entity.kind == PluginKind::Stateless {
             continue;
@@ -776,7 +776,10 @@ pub async fn save_all_entity_states(
 
         if entity.kind != PluginKind::Stateless {
             tracing::info!(name = %name, "{}", crate::i18n::t("entity-state-saving"));
-            match entity.trigger_save(kubo_url).await {
+            match entity
+                .prepare_reload_save(kubo_url, crate::plugin::graceful_shutdown_timeout())
+                .await
+            {
                 Ok(Some(cid)) => {
                     tracing::info!(name = %name, cid = %cid, "{}", crate::i18n::t("entity-state-saved"));
                     entity_node.state = Some(IpldLink::new(cid));
@@ -785,7 +788,7 @@ pub async fn save_all_entity_states(
                     tracing::info!(name = %name, "{}", crate::i18n::t("entity-state-empty"));
                 }
                 Err(e) => {
-                    tracing::warn!(name = %name, error = %e, "Failed to save entity state");
+                    return Err(e).with_context(|| format!("saving state for entity '{name}'"));
                 }
             }
         }
@@ -798,7 +801,8 @@ pub async fn save_all_entity_states(
                     .insert(name.clone(), IpldLink::new(new_cid));
             }
             Err(e) => {
-                tracing::warn!(name = %name, error = %e, "Failed to publish updated entity node");
+                return Err(e)
+                    .with_context(|| format!("publishing updated entity node for '{name}'"));
             }
         }
     }

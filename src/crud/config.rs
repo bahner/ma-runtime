@@ -23,6 +23,7 @@ pub const DAEMON_CONFIG_KEYS_PUB: &[&str] = &[
     "did_resolver_negative_ttl_secs",
     "log_file",
     "ipv6_enable",
+    "wasm_reload_shutdown_timeout_ms",
 ];
 
 const DAEMON_CONFIG_KEYS: &[&str] = DAEMON_CONFIG_KEYS_PUB;
@@ -48,6 +49,16 @@ pub const DEFAULT_ZION_SOURCE: &str =
 
 pub const DEFAULT_RUNTIME_NAME: &str = "間trix";
 pub const DEFAULT_RUNTIME_DESCRIPTION: &str = "A 間 runtime with a lazy owner.";
+pub const DEFAULT_WASM_RELOAD_SHUTDOWN_TIMEOUT_MS: u64 = 250;
+
+pub fn wasm_reload_shutdown_timeout(cfg: &ma_core::Config) -> std::time::Duration {
+    std::time::Duration::from_millis(
+        cfg.extra
+            .get("wasm_reload_shutdown_timeout_ms")
+            .and_then(serde_yaml::Value::as_u64)
+            .unwrap_or(DEFAULT_WASM_RELOAD_SHUTDOWN_TIMEOUT_MS),
+    )
+}
 
 pub fn default_manifest_config_value(key: &str) -> Option<serde_yaml::Value> {
     match key {
@@ -104,6 +115,13 @@ pub fn daemon_config_key_value_pub(cfg: &ma_core::Config, key: &str) -> serde_ya
                 .get("ipv6_enable")
                 .and_then(serde_yaml::Value::as_bool)
                 .unwrap_or(true),
+        ),
+        "wasm_reload_shutdown_timeout_ms" => serde_yaml::Value::Number(
+            cfg.extra
+                .get("wasm_reload_shutdown_timeout_ms")
+                .and_then(serde_yaml::Value::as_u64)
+                .unwrap_or(DEFAULT_WASM_RELOAD_SHUTDOWN_TIMEOUT_MS)
+                .into(),
         ),
         _ => serde_yaml::Value::Null,
     }
@@ -190,6 +208,14 @@ pub fn set_daemon_config_key_pub(cfg: &mut ma_core::Config, key: &str, val: &ser
                 cfg.extra.insert(
                     serde_yaml::Value::String("ipv6_enable".to_string()),
                     serde_yaml::Value::Bool(b),
+                );
+            }
+        }
+        "wasm_reload_shutdown_timeout_ms" => {
+            if let Some(n) = val.as_u64() {
+                cfg.extra.insert(
+                    serde_yaml::Value::String("wasm_reload_shutdown_timeout_ms".to_string()),
+                    serde_yaml::Value::Number(n.into()),
                 );
             }
         }
@@ -463,7 +489,8 @@ pub(super) async fn handle_config_ns(
 mod tests {
     use super::{
         cbor_to_yaml, default_manifest_config_value, is_protected_config_key_pub,
-        public_plugin_config, DEFAULT_RUNTIME_DESCRIPTION, DEFAULT_RUNTIME_NAME,
+        public_plugin_config, set_daemon_config_key_pub, wasm_reload_shutdown_timeout,
+        DEFAULT_RUNTIME_DESCRIPTION, DEFAULT_RUNTIME_NAME, DEFAULT_WASM_RELOAD_SHUTDOWN_TIMEOUT_MS,
     };
     use ciborium::Value as CborValue;
     use ma_core::Config;
@@ -527,6 +554,30 @@ mod tests {
         assert_eq!(items.len(), 2, "duplicates should be dropped");
         assert_eq!(items[0].as_str(), Some("a"));
         assert_eq!(items[1].as_str(), Some("b"));
+    }
+
+    #[test]
+    fn daemon_config_controls_wasm_reload_shutdown_timeout() {
+        let mut cfg = test_config();
+        assert_eq!(
+            wasm_reload_shutdown_timeout(&cfg),
+            std::time::Duration::from_millis(DEFAULT_WASM_RELOAD_SHUTDOWN_TIMEOUT_MS)
+        );
+
+        set_daemon_config_key_pub(
+            &mut cfg,
+            "wasm_reload_shutdown_timeout_ms",
+            &serde_yaml::Value::Number(17_u64.into()),
+        );
+
+        assert_eq!(
+            wasm_reload_shutdown_timeout(&cfg),
+            std::time::Duration::from_millis(17)
+        );
+        assert_eq!(
+            super::daemon_config_key_value_pub(&cfg, "wasm_reload_shutdown_timeout_ms").as_u64(),
+            Some(17)
+        );
     }
 
     #[test]

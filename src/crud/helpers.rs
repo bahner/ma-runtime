@@ -258,6 +258,10 @@ pub(super) async fn spawn_kind_dependency_reloads(
     let affected = affected_kind_protocols(updated_protocol, &raw_kinds);
     hydrate_affected_kind_registry(ctx, &manifest, &raw_kinds, &affected).await;
     let mut reload_count = 0usize;
+    let reload_shutdown_timeout = {
+        let cfg = ctx.shared_config.read().await;
+        super::config::wasm_reload_shutdown_timeout(&cfg)
+    };
 
     for (name, link) in manifest.entities {
         let entity_node: EntityNode = match crate::kubo::dag_get(&ctx.kubo_rpc_url, &link.cid).await
@@ -282,6 +286,7 @@ pub(super) async fn spawn_kind_dependency_reloads(
             ctx.entity_registry.clone(),
             ctx.manifest_writer.clone(),
             runtime_config.clone(),
+            reload_shutdown_timeout,
         );
         reload_count += 1;
     }
@@ -313,6 +318,7 @@ pub(super) fn spawn_entity_reload(
     entity_registry: crate::plugin::EntityRegistry,
     manifest_writer: crate::manifest::ManifestWriter,
     runtime_config: std::collections::BTreeMap<String, String>,
+    reload_shutdown_timeout: std::time::Duration,
 ) {
     tokio::spawn(async move {
         // Prefer the hydrated in-memory kind registry, with a manifest/IPFS
@@ -376,6 +382,22 @@ pub(super) fn spawn_entity_reload(
             let s = stats.read().await;
             (s.endpoint_id.clone(), s.started_at)
         };
+
+        let mut entity_node = entity_node;
+        if let Some(current) = entity_registry.read().await.get(&name).cloned() {
+            match current
+                .prepare_reload_save(&kubo_rpc_url, reload_shutdown_timeout)
+                .await
+            {
+                Ok(Some(cid)) => {
+                    entity_node.state = Some(crate::entity::IpldLink::new(cid));
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    warn!(name = %name, timeout_ms = reload_shutdown_timeout.as_millis(), error = %e, "failed to persist current state before reload; proceeding with replacement");
+                }
+            }
+        }
 
         let init_payload = entity_node.init.as_ref().map(|s| s.as_bytes().to_vec());
         match crate::plugin::EntityPlugin::load(

@@ -111,6 +111,14 @@ pub fn runtime_manifest_config(
         )),
     );
     out.insert(
+        "wasm_reload_shutdown_timeout_ms".to_string(),
+        serde_yaml::Value::from(get_u64_setting(
+            config,
+            "wasm_reload_shutdown_timeout_ms",
+            crate::crud::config::DEFAULT_WASM_RELOAD_SHUTDOWN_TIMEOUT_MS,
+        )),
+    );
+    out.insert(
         "did_document_publishing_interval_secs".to_string(),
         serde_yaml::Value::from(get_u64_setting(
             config,

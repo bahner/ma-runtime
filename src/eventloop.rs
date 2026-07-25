@@ -554,7 +554,11 @@ pub async fn run(
                                 stats.write().await.root_cid = Some(new_cid.clone());
                                 info!(cid = %new_cid, "{}", i18n::t("entity-states-saved"));
                             }
-                            Err(e) => warn!(error = %e, "Failed to save entity states"),
+                            Err(e) => {
+                                error!(error = %e, "Failed to save entity states");
+                                error!("shutdown aborted; runtime remains active so state can be saved on a later shutdown attempt");
+                                continue;
+                            }
                         }
                     }
 

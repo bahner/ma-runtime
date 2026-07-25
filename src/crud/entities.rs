@@ -13,6 +13,11 @@ use super::helpers::{
 };
 use super::CrudHandlerCtx;
 
+async fn reload_shutdown_timeout(ctx: &CrudHandlerCtx) -> std::time::Duration {
+    let cfg = ctx.shared_config.read().await;
+    super::config::wasm_reload_shutdown_timeout(&cfg)
+}
+
 // ── Management capability helpers ─────────────────────────────────────────────
 
 async fn check_entity_management_cap(
@@ -193,6 +198,7 @@ async fn handle_single_entity(
             })
             .await?;
             let runtime_config = runtime_config_snapshot(ctx).await?;
+            let reload_shutdown_timeout = reload_shutdown_timeout(ctx).await;
             spawn_entity_reload(
                 name.to_string(),
                 entity_node,
@@ -204,6 +210,7 @@ async fn handle_single_entity(
                 ctx.entity_registry.clone(),
                 ctx.manifest_writer.clone(),
                 runtime_config,
+                reload_shutdown_timeout,
             );
             info!(name = %name, cid = %cid, "{}", crate::i18n::t("entity-created"));
             send_crud_ok_cid(message, reply_type, ctx, cid).await
@@ -321,6 +328,7 @@ async fn handle_entity_acl_field(
             entity.acl = acl_name.clone();
             let entity_cid = update_entity_node(ctx, name, &entity).await?;
             let runtime_config = runtime_config_snapshot(ctx).await?;
+            let reload_shutdown_timeout = reload_shutdown_timeout(ctx).await;
             spawn_entity_reload(
                 name.clone(),
                 entity.clone(),
@@ -332,6 +340,7 @@ async fn handle_entity_acl_field(
                 ctx.entity_registry.clone(),
                 ctx.manifest_writer.clone(),
                 runtime_config,
+                reload_shutdown_timeout,
             );
             info!(name = %name, acl_name = %acl_name, entity_cid = %entity_cid, "entity ACL name set");
             send_crud_ok_cid(message, reply_type, ctx, &entity_cid).await
@@ -341,6 +350,7 @@ async fn handle_entity_acl_field(
             entity.acl = String::new();
             let entity_cid = update_entity_node(ctx, name, &entity).await?;
             let runtime_config = runtime_config_snapshot(ctx).await?;
+            let reload_shutdown_timeout = reload_shutdown_timeout(ctx).await;
             spawn_entity_reload(
                 name.clone(),
                 entity.clone(),
@@ -352,6 +362,7 @@ async fn handle_entity_acl_field(
                 ctx.entity_registry.clone(),
                 ctx.manifest_writer.clone(),
                 runtime_config,
+                reload_shutdown_timeout,
             );
             info!(name = %name, entity_cid = %entity_cid, "entity ACL cleared");
             send_crud_ok_cid(message, reply_type, ctx, &entity_cid).await

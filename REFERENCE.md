@@ -693,6 +693,7 @@ the runtime manifest `config` node.
 ```yaml
 did_resolver_positive_ttl_secs: 60
 did_resolver_negative_ttl_secs: 10
+wasm_reload_shutdown_timeout_ms: 250
 
 did_document_publishing_interval_secs: 300
 did_document_publishing_timeout_secs: 120
@@ -755,6 +756,7 @@ in memory and are saved to `config.yaml`:
 | `log_file` | string or null | Path to log file |
 | `did_resolver_positive_ttl_secs` | u64 | Cache TTL for resolved DIDs |
 | `did_resolver_negative_ttl_secs` | u64 | Cache TTL for failed DID lookups |
+| `wasm_reload_shutdown_timeout_ms` | u64 | Short per-actor budget for reload-time `:shutdown` state flush before the replacement proceeds (default `250`) |
 
 ### Manifest config keys
 

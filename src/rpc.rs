@@ -120,9 +120,16 @@ async fn apply_behaviour_request(req: SetBehaviourRequest, ctx: &RpcHandlerCtx) 
         .as_deref()
         .map(normalize_behaviour_cid)
         .transpose()?;
+    let reload_shutdown_timeout = {
+        let cfg = ctx.shared_config.read().await;
+        crate::crud::config::wasm_reload_shutdown_timeout(&cfg)
+    };
     let current_entity = ctx.entity_registry.read().await.get(&req.fragment).cloned();
     if let Some(ref current) = current_entity {
-        match current.trigger_save(&ctx.kubo_rpc_url).await {
+        match current
+            .prepare_reload_save(&ctx.kubo_rpc_url, reload_shutdown_timeout)
+            .await
+        {
             Ok(Some(state_cid)) => {
                 ctx.manifest_writer
                     .set_entity_state(&req.fragment, &state_cid)
@@ -130,7 +137,7 @@ async fn apply_behaviour_request(req: SetBehaviourRequest, ctx: &RpcHandlerCtx) 
             }
             Ok(None) => {}
             Err(e) => {
-                warn!(fragment = %req.fragment, error = %e, "ma_set_behaviour: failed to persist current entity state before reload");
+                warn!(fragment = %req.fragment, timeout_ms = reload_shutdown_timeout.as_millis(), error = %e, "ma_set_behaviour: failed to persist current state before reload; proceeding with replacement");
             }
         }
     }
