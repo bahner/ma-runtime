@@ -174,7 +174,6 @@ pub async fn run(
     manifest_writer: ManifestWriter,
     our_did: String,
     signing_key: SigningKey,
-    avatar_key: [u8; 32],
     runtime_ipns_key: [u8; 32],
     runtime_slug: String,
     did_publish_timeout_secs: u64,
@@ -222,7 +221,6 @@ pub async fn run(
                         stats: stats.clone(),
                         acl_cache: acl_cache.clone(),
                         group_cache: group_cache.clone(),
-                        avatar_key,
                         manifest_writer: manifest_writer.clone(),
                         shared_config: Arc::clone(&shared_config),
                     };
@@ -318,7 +316,6 @@ pub async fn run(
                             group_cache: group_cache.clone(),
                             root_acl: acl.clone(),
                             envelope_tx: envelope_tx.clone(),
-                            avatar_key,
                             manifest_writer: manifest_writer.clone(),
                         };
                         tokio::spawn(async move {

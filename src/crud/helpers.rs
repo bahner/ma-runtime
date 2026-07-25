@@ -280,7 +280,6 @@ pub(super) async fn spawn_kind_dependency_reloads(
             Arc::clone(&ctx.our_did),
             ctx.envelope_tx.clone(),
             ctx.entity_registry.clone(),
-            ctx.avatar_key,
             ctx.manifest_writer.clone(),
             runtime_config.clone(),
         );
@@ -312,7 +311,6 @@ pub(super) fn spawn_entity_reload(
     our_did: Arc<str>,
     envelope_tx: tokio::sync::mpsc::UnboundedSender<(String, crate::entity::SendEnvelope)>,
     entity_registry: crate::plugin::EntityRegistry,
-    avatar_key: [u8; 32],
     manifest_writer: crate::manifest::ManifestWriter,
     runtime_config: std::collections::BTreeMap<String, String>,
 ) {
@@ -388,7 +386,6 @@ pub(super) fn spawn_entity_reload(
             &kubo_rpc_url,
             envelope_tx,
             entity_registry.clone(),
-            avatar_key,
             &iroh_node_id,
             started_at,
             runtime_config,

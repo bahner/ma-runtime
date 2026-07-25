@@ -295,12 +295,6 @@ async fn main() -> Result<()> {
         .encode()
         .context("failed to encode own DID document")?;
 
-    // Derive the avatar pseudonymisation key from the IPNS secret BEFORE it is
-    // moved into the publish closure and zeroized.  This key is stable across
-    // restarts (deterministic from the IPNS key) and never leaves the process.
-    let avatar_key: [u8; 32] =
-        blake3::derive_key("ma avatar-id v1", secrets.ipns_secret_key.as_ref());
-
     let ipns_key = secrets.ipns_secret_key.to_vec();
     let kubo_url_clone = config.kubo_rpc_url.clone();
     let runtime_slug = config.slug.clone();
@@ -422,7 +416,6 @@ async fn main() -> Result<()> {
             &kind_registry,
             &native_factories,
             envelope_tx.clone(),
-            avatar_key,
             &startup_iroh_node_id,
             startup_epoch,
         )
@@ -694,7 +687,6 @@ async fn main() -> Result<()> {
         manifest_writer,
         our_did,
         signing_key,
-        avatar_key,
         runtime_ipns_key,
         config.slug.clone(),
         did_publish_timeout_secs,

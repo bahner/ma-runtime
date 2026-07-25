@@ -33,7 +33,6 @@ pub struct RpcHandlerCtx {
     pub stats: SharedStats,
     pub acl_cache: AclCache,
     pub group_cache: GroupCache,
-    pub avatar_key: [u8; 32],
     pub manifest_writer: crate::manifest::ManifestWriter,
     pub shared_config: Arc<tokio::sync::RwLock<ma_core::Config>>,
 }
@@ -162,7 +161,6 @@ async fn apply_behaviour_request(req: SetBehaviourRequest, ctx: &RpcHandlerCtx) 
         &ctx.kubo_rpc_url,
         ctx.envelope_tx.clone(),
         ctx.entity_registry.clone(),
-        ctx.avatar_key,
         &iroh_node_id,
         started_at,
         runtime_config,
@@ -580,7 +578,6 @@ async fn handle_entity_plugin_message(
             &ctx.kubo_rpc_url,
             ctx.envelope_tx.clone(),
             ctx.entity_registry.clone(),
-            ctx.avatar_key,
             &iroh_node_id,
             started_at,
             runtime_config,
@@ -948,7 +945,6 @@ mod tests {
             stats,
             acl_cache,
             group_cache: new_group_cache(),
-            avatar_key: [5u8; 32],
             manifest_writer,
             shared_config: Arc::new(RwLock::new(ma_core::Config {
                 slug: "ma".to_string(),

@@ -202,7 +202,6 @@ async fn handle_single_entity(
                 Arc::clone(&ctx.our_did),
                 ctx.envelope_tx.clone(),
                 ctx.entity_registry.clone(),
-                ctx.avatar_key,
                 ctx.manifest_writer.clone(),
                 runtime_config,
             );
@@ -331,7 +330,6 @@ async fn handle_entity_acl_field(
                 Arc::clone(&ctx.our_did),
                 ctx.envelope_tx.clone(),
                 ctx.entity_registry.clone(),
-                ctx.avatar_key,
                 ctx.manifest_writer.clone(),
                 runtime_config,
             );
@@ -352,7 +350,6 @@ async fn handle_entity_acl_field(
                 Arc::clone(&ctx.our_did),
                 ctx.envelope_tx.clone(),
                 ctx.entity_registry.clone(),
-                ctx.avatar_key,
                 ctx.manifest_writer.clone(),
                 runtime_config,
             );
@@ -546,7 +543,6 @@ mod tests {
             kubo.url(),
             envelope_tx.clone(),
             entity_registry.clone(),
-            [7u8; 32],
             "",
             0,
             BTreeMap::new(),
@@ -588,7 +584,6 @@ mod tests {
             group_cache: new_group_cache(),
             root_acl: new_shared_acl(AclMap::new()),
             envelope_tx,
-            avatar_key: [9u8; 32],
             manifest_writer: manifest_writer.clone(),
         };
 
@@ -688,7 +683,6 @@ mod tests {
             kubo.url(),
             envelope_tx.clone(),
             entity_registry.clone(),
-            [7u8; 32],
             "",
             0,
             BTreeMap::new(),
@@ -730,7 +724,6 @@ mod tests {
             group_cache: new_group_cache(),
             root_acl: new_shared_acl(AclMap::new()),
             envelope_tx,
-            avatar_key: [9u8; 32],
             manifest_writer: manifest_writer.clone(),
         };
 

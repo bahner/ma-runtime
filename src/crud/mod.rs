@@ -53,8 +53,6 @@ pub struct CrudHandlerCtx {
     pub root_acl: SharedAcl,
     /// Forwarding channel for envelopes produced by entity plugins via `ma_send`.
     pub envelope_tx: tokio::sync::mpsc::UnboundedSender<(String, SendEnvelope)>,
-    /// Derived avatar pseudonymisation key (blake3 `derive_key` from IPNS secret).
-    pub avatar_key: [u8; 32],
     /// Serialised manifest writer — all manifest mutations go through it.
     pub manifest_writer: crate::manifest::ManifestWriter,
 }

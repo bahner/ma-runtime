@@ -137,21 +137,17 @@ struct CreateEntityCtx {
     pending: Vec<CreateEntityRequest>,
     /// Fragment of the calling (parent) entity.
     caller_fragment: String,
-    /// Derived from the runtime IPNS secret; used for deterministic fragment
-    /// generation when a `fragment_hint` is provided by the caller.
-    avatar_key: [u8; 32],
 }
 
 // `ma_create_entity` host function: plugin requests creation of a new entity.
 //
 // Input is CBOR-encoded `{ "kind": "/ma/…/0.0.1", "behaviour": "bafyCID",
-// "init": <payload>, "fragment_hint": "<string>" }`. For shared-binary
+// "init": <payload>, "fragment": "<string>" }`. For shared-binary
 // scriptable kinds, `behaviour` is appended after kind-level behaviour layers;
 // `init` is the opaque `:init` signal creation payload (§14.2.1). Both are
-// optional. When `fragment_hint` is present the runtime derives a deterministic
-// fragment via `blake3::keyed_hash(avatar_key, hint)`; otherwise a random
-// nanoid fragment is generated. Actual plugin loading and manifest persistence
-// happen after dispatch returns.
+// optional. When `fragment` is present the runtime validates and uses it
+// directly; otherwise a random nanoid fragment is generated. Actual plugin
+// loading and manifest persistence happen after dispatch returns.
 #[derive(serde::Deserialize)]
 struct CreateEntityInput {
     kind: String,
@@ -159,57 +155,34 @@ struct CreateEntityInput {
     behaviour: Option<String>,
     #[serde(default, with = "serde_bytes")]
     init: Option<Vec<u8>>,
-    /// Optional hint for deterministic fragment derivation.
+    /// Optional explicit fragment chosen by the actor.
     #[serde(default)]
-    fragment_hint: Option<String>,
+    fragment: Option<String>,
 }
 
-const ENTITY_FRAGMENT_CONTEXT: &str = "ma entity-fragment v1";
-
-/// Derive a deterministic, URL-safe lower-hex ID from a keyed blake3 hash of
-/// `context || NUL || hint`.
-fn context_derived_id(key: &[u8; 32], context: &str, hint: &str, bytes: usize) -> String {
-    let mut input = Vec::with_capacity(context.len() + 1 + hint.len());
-    input.extend_from_slice(context.as_bytes());
-    input.push(0);
-    input.extend_from_slice(hint.as_bytes());
-    let hash = blake3::keyed_hash(key, &input);
-    bytes_to_hex(&hash.as_bytes()[..bytes])
-}
-
-fn bytes_to_hex(bytes: &[u8]) -> String {
-    let mut hex = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        hex.push(b"0123456789abcdef"[(b >> 4) as usize] as char);
-        hex.push(b"0123456789abcdef"[(b & 0x0f) as usize] as char);
+fn validate_entity_fragment(fragment: &str) -> Result<()> {
+    if fragment.is_empty() || fragment.chars().any(char::is_control) {
+        return Err(anyhow!("entity fragment is invalid"));
     }
-    hex
-}
-
-/// Derive a deterministic, URL-safe 16-character fragment from a keyed blake3
-/// hash of `hint`.  The result is the lower-hex encoding of the first 8 bytes
-/// of the hash output — 64 bits of keyed pseudorandom output is ample for
-/// uniqueness across any realistic number of entities.
-fn fragment_from_hint(key: &[u8; 32], hint: &str) -> String {
-    let hash = blake3::keyed_hash(key, hint.as_bytes());
-    bytes_to_hex(&hash.as_bytes()[..8])
-}
-
-fn derived_id(key: &[u8; 32], context: &str, hint: &str, bytes: usize) -> String {
-    if context == ENTITY_FRAGMENT_CONTEXT && bytes == 8 {
-        return fragment_from_hint(key, hint);
+    if fragment.contains('#') {
+        return Err(anyhow!("entity fragment must not contain '#'"));
     }
-    context_derived_id(key, context, hint, bytes)
+    if crate::entity::RESERVED_ENTITY_NAMES.contains(&fragment) {
+        return Err(anyhow!("entity fragment '{fragment}' is reserved"));
+    }
+    Ok(())
 }
 
 host_fn!(ma_create_entity_fn(user_data: CreateEntityCtx; input: Vec<u8>) -> Vec<u8> {
     let req: CreateEntityInput = from_cbor_bytes(&input)?;
     let arc = user_data.get()?;
     let mut ctx = arc.lock().unwrap();
-    let fragment = req
-        .fragment_hint
-        .as_ref()
-        .map_or_else(generate_fragment, |hint| fragment_from_hint(&ctx.avatar_key, hint));
+    let fragment = if let Some(fragment) = req.fragment {
+        validate_entity_fragment(&fragment)?;
+        fragment
+    } else {
+        generate_fragment()
+    };
     let parent = ctx.caller_fragment.clone();
     ctx.pending.push(CreateEntityRequest {
         fragment: fragment.clone(),
@@ -293,29 +266,6 @@ host_fn!(ma_entity_exists_fn(user_data: EntityExistsCtx; input: Vec<u8>) -> Vec<
     Ok(if exists { b"true".to_vec() } else { b"false".to_vec() })
 });
 
-// ── ma_derived_id host function ──────────────────────────────────────────────
-
-#[derive(serde::Deserialize)]
-struct DerivedIdInput {
-    context: String,
-    hint: String,
-    bytes: u8,
-}
-
-// `ma_derived_id` host function: compute a runtime-scoped deterministic ID.
-//
-// Input is CBOR-encoded `{ "context": text, "hint": text, "bytes": int }`.
-// Output is raw UTF-8 lower-hex, two chars per requested byte.
-host_fn!(ma_derived_id_fn(user_data: AvatarIdCtx; input: Vec<u8>) -> Vec<u8> {
-    let req: DerivedIdInput = from_cbor_bytes(&input)?;
-    if req.bytes == 0 || req.bytes > 32 {
-        return Err(extism::Error::msg("ma_derived_id: bytes must be in 1..=32"));
-    }
-    let arc = user_data.get()?;
-    let key = arc.lock().unwrap().key;
-    Ok(derived_id(&key, &req.context, &req.hint, req.bytes as usize).into_bytes())
-});
-
 fn entity_fragment(target: &str, our_did: &str) -> Option<String> {
     let target = target.trim();
     if target.is_empty() {
@@ -333,37 +283,6 @@ fn entity_fragment(target: &str, our_did: &str) -> Option<String> {
     }
     (!target.contains('#') && !target.contains('/')).then(|| target.to_string())
 }
-
-// ── ma_avatar_id host function ────────────────────────────────────────────────
-
-// Context captured by `ma_avatar_id` host function.
-// The key is derived from the runtime's IPNS secret at startup and never changes.
-struct AvatarIdCtx {
-    key: [u8; 32],
-}
-
-// `ma_avatar_id` host function: compute a per-runtime pseudonymous avatar ID.
-//
-// Input:  DID string (UTF-8 bytes), e.g. "did:ma:k51alice…"
-// Output: 24 hex chars (first 12 bytes of blake3 keyed hash).
-//
-// The key is derived from the runtime's IPNS secret, so:
-//   - Same DID → same avatar_id within this runtime (deterministic across restarts).
-//   - Different runtimes → different avatar_ids (privacy across worlds).
-//   - The DID is never stored by avatar plugins; only the avatar_id is kept.
-host_fn!(ma_avatar_id_fn(user_data: AvatarIdCtx; input: Vec<u8>) -> Vec<u8> {
-    let did = String::from_utf8(input)
-        .map_err(|e| extism::Error::msg(format!("ma_avatar_id: invalid UTF-8: {e}")))?;
-    let arc = user_data.get()?;
-    let key = arc.lock().unwrap().key;
-    let hash = blake3::keyed_hash(&key, did.as_bytes());
-    let mut hex = String::with_capacity(24);
-    for b in &hash.as_bytes()[..12] {
-        hex.push(b"0123456789abcdef"[(b >> 4) as usize] as char);
-        hex.push(b"0123456789abcdef"[(b & 0x0f) as usize] as char);
-    }
-    Ok(hex.into_bytes())
-});
 
 // ── Wasm execution timeouts ───────────────────────────────────────────────────
 
@@ -522,7 +441,6 @@ pub(super) struct WasmThreadCfg {
     pub(super) behaviour_text: Option<Vec<u8>>,
     pub(super) node_kind: String,
     pub(super) envelope_tx: UnboundedSender<(String, SendEnvelope)>,
-    pub(super) avatar_key: [u8; 32],
     /// IPFS CID of the kind's shared Wasm binary (`KindNode.cid`).
     pub(super) wasm_cid: String,
     /// This entity's own behaviour source reference, if any (`EntityNode.behaviour`).
@@ -603,7 +521,6 @@ fn build_wasm_plugin(cfg: &WasmThreadCfg) -> Result<WasmThreadState> {
     let create_queue: UserData<CreateEntityCtx> = UserData::new(CreateEntityCtx {
         pending: Vec::new(),
         caller_fragment: cfg.fragment.clone(),
-        avatar_key: cfg.avatar_key,
     });
     let delete_queue: UserData<DeleteEntityCtx> = UserData::new(DeleteEntityCtx {
         pending: Vec::new(),
@@ -613,9 +530,6 @@ fn build_wasm_plugin(cfg: &WasmThreadCfg) -> Result<WasmThreadState> {
     let behaviour_queue: UserData<SetBehaviourCtx> = UserData::new(SetBehaviourCtx {
         pending: Vec::new(),
         self_fragment: cfg.fragment.clone(),
-    });
-    let avatar_id_ctx: UserData<AvatarIdCtx> = UserData::new(AvatarIdCtx {
-        key: cfg.avatar_key,
     });
     let entity_exists_ctx: UserData<EntityExistsCtx> = UserData::new(EntityExistsCtx {
         registry: cfg.entity_registry.clone(),
@@ -634,7 +548,6 @@ fn build_wasm_plugin(cfg: &WasmThreadCfg) -> Result<WasmThreadState> {
             create_queue: create_queue.clone(),
             delete_queue: delete_queue.clone(),
             behaviour_queue: behaviour_queue.clone(),
-            avatar_id_ctx,
             entity_exists_ctx,
             behaviour,
         },
@@ -667,7 +580,6 @@ struct HostFunctionCtx {
     create_queue: UserData<CreateEntityCtx>,
     delete_queue: UserData<DeleteEntityCtx>,
     behaviour_queue: UserData<SetBehaviourCtx>,
-    avatar_id_ctx: UserData<AvatarIdCtx>,
     entity_exists_ctx: UserData<EntityExistsCtx>,
     behaviour: UserData<BehaviourCtx>,
 }
@@ -677,25 +589,8 @@ fn build_host_functions(
     outbox_ctx_reply: UserData<OutboxCtx>,
     ctx: HostFunctionCtx,
 ) -> Vec<Function> {
-    // IMPORTANT: This order MUST match the @extism.import_fn declaration order
-    // in the Python actor library chain (actor.py → avatar.py / root.py).
-    // extism-py assigns IMPORT_INDEX sequentially across all @extism.import_fn
-    // declarations, and ffi.__invoke_host_func(idx) indexes into the FILTERED
-    // host_fns array by position.  The filter preserves all_fns order, so
-    // IMPORT_INDEX must equal the position in this list after filtering.
-    //
-    // Python IMPORT_INDEX assignments:
-    //   actor.py:  ma_reply=0, ma_set_state=1, ma_send=2, ma_end=3
-    //   avatar.py: ma_avatar_id=3 (without ma_end) or 4 (with ma_end)
-    //   root.py:   ma_create_entity=3/4, ma_delete_entity=4/5
-    //   root.py:   ma_create_entity=5, ma_delete_entity=6
-    //
-    // Plugins that do NOT declare ma_end skip it via the host_functions filter,
-    // so their existing indices (ma_avatar_id=4, ma_create_entity=4) are unchanged.
-    //
-    // NOTE: the three behaviour-management functions below are appended at
-    // the end and are NOT YET aligned with python-ma-actors IMPORT_INDEX
-    // declarations (deferred; Rust-only kinds for now — see AGENTS.md).
+    // The filter preserves this list order for hosts that request only a subset
+    // of functions.
     let all_fns: Vec<(&str, Function)> = vec![
         (
             "ma_reply",
@@ -712,16 +607,6 @@ fn build_host_functions(
         (
             "ma_end",
             Function::new("ma_end", [PTR], [PTR], ctx.delete_queue.clone(), ma_end_fn),
-        ),
-        (
-            "ma_avatar_id",
-            Function::new(
-                "ma_avatar_id",
-                [PTR],
-                [PTR],
-                ctx.avatar_id_ctx.clone(),
-                ma_avatar_id_fn,
-            ),
         ),
         (
             "ma_create_entity",
@@ -771,16 +656,6 @@ fn build_host_functions(
                 [PTR],
                 ctx.entity_exists_ctx,
                 ma_entity_exists_fn,
-            ),
-        ),
-        (
-            "ma_derived_id",
-            Function::new(
-                "ma_derived_id",
-                [PTR],
-                [PTR],
-                ctx.avatar_id_ctx,
-                ma_derived_id_fn,
             ),
         ),
     ];
@@ -1085,9 +960,7 @@ fn from_cbor_bytes<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        derived_id, fragment_from_hint, generate_fragment, StateCtx, ENTITY_FRAGMENT_CONTEXT,
-    };
+    use super::{generate_fragment, validate_entity_fragment, StateCtx};
 
     #[test]
     fn generate_fragment_is_8_alphanumeric() {
@@ -1103,14 +976,12 @@ mod tests {
     }
 
     #[test]
-    fn fragment_from_hint_uses_entity_fragment_derivation() {
-        let key = [7; 32];
-        let hint = "did:ma:k51user";
-        assert_eq!(
-            fragment_from_hint(&key, hint),
-            derived_id(&key, ENTITY_FRAGMENT_CONTEXT, hint, 8)
-        );
-        assert_eq!(fragment_from_hint(&key, hint).len(), 16);
+    fn explicit_entity_fragment_validation_rejects_invalid_names() {
+        assert!(validate_entity_fragment("6437b3ac38465133").is_ok());
+        assert!(validate_entity_fragment("").is_err());
+        assert!(validate_entity_fragment("bad\nname").is_err());
+        assert!(validate_entity_fragment("bad#name").is_err());
+        assert!(validate_entity_fragment("root").is_err());
     }
 
     #[test]
