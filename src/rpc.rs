@@ -15,6 +15,7 @@ use crate::entity::{
     CastInput, IpldLink, Lifecycle, LocalMessage, PluginMsg, SendEnvelope, SetBehaviourRequest,
 };
 use crate::plugin::EntityRegistry;
+use crate::routing::local_target_fragment;
 use crate::status::SharedStats;
 
 pub const RPC_PROTOCOL_ID: &str = "/ma/rpc/0.0.1";
@@ -208,28 +209,22 @@ pub async fn handle_rpc_message(
         return Ok(());
     }
 
-    // Intra-runtime messages (sender = `<our_did>#<entity>`) skip the root ACL
-    // transport gate — they are trusted local dispatches between entities on
-    // this runtime.
-    let intra_runtime = message.from.starts_with(&format!("{}#", ctx.our_did));
-    if !intra_runtime {
-        let owners = ctx.stats.read().await.owners.clone();
-        if !crate::acl::is_owner(&owners, &message.from) {
-            let group_cache = ctx.group_cache.clone();
-            check_full(acl, &message.from, &[CAP_RPC], |key| {
-                let group_cache = group_cache.clone();
-                let name = key.strip_prefix('+').unwrap_or(key).to_string();
-                async move {
-                    Ok(group_cache
-                        .read()
-                        .await
-                        .get(&name)
-                        .cloned()
-                        .unwrap_or_default())
-                }
-            })
-            .await?;
-        }
+    let owners = ctx.stats.read().await.owners.clone();
+    if !crate::acl::is_owner(&owners, &message.from) {
+        let group_cache = ctx.group_cache.clone();
+        check_full(acl, &message.from, &[CAP_RPC], |key| {
+            let group_cache = group_cache.clone();
+            let name = key.strip_prefix('+').unwrap_or(key).to_string();
+            async move {
+                Ok(group_cache
+                    .read()
+                    .await
+                    .get(&name)
+                    .cloned()
+                    .unwrap_or_default())
+            }
+        })
+        .await?;
     }
 
     if rpc_message_kind(&message.message_type) != RpcMessageKind::Request {
@@ -257,8 +252,8 @@ pub async fn handle_rpc_message(
         ciborium::de::from_reader(payload.as_slice()).context("invalid CBOR in RPC message")?;
 
     // Fragment routing: entity plugin dispatch.
-    if let Some(fragment) = extract_fragment(&message.to, &ctx.our_did) {
-        let ep = ctx.entity_registry.read().await.get(fragment).cloned();
+    if let Some(fragment) = local_target_fragment(&message.to, &ctx.our_did) {
+        let ep = ctx.entity_registry.read().await.get(&fragment).cloned();
         return if let Some(entity) = ep {
             let fragment_for_log = entity.fragment.clone();
             match handle_entity_plugin_message(message, term, entity, ctx).await {
@@ -361,12 +356,6 @@ async fn runtime_config_text_value(ctx: &RpcHandlerCtx, key: &str) -> Result<Str
 }
 
 // ── Fragment extraction ────────────────────────────────────────────────────────
-
-/// Strip `<our_did>#` from `to` and return the bare fragment, if present.
-fn extract_fragment<'a>(to: &'a str, our_did: &str) -> Option<&'a str> {
-    let prefix = format!("{our_did}#");
-    to.strip_prefix(prefix.as_str())
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RpcMessageKind {
@@ -803,28 +792,7 @@ mod tests {
 
     use ma_core::{MESSAGE_TYPE_RPC, MESSAGE_TYPE_RPC_REPLY};
 
-    use super::{
-        extract_fragment, handle_entity_plugin_message, rpc_message_kind, RpcMessageKind,
-        RPC_PROTOCOL_ID,
-    };
-
-    #[test]
-    fn strips_matching_did_prefix() {
-        assert_eq!(
-            extract_fragment("did:ma:abc#rms", "did:ma:abc"),
-            Some("rms")
-        );
-    }
-
-    #[test]
-    fn none_for_different_did() {
-        assert_eq!(extract_fragment("did:ma:xyz#rms", "did:ma:abc"), None);
-    }
-
-    #[test]
-    fn none_without_fragment() {
-        assert_eq!(extract_fragment("did:ma:abc", "did:ma:abc"), None);
-    }
+    use super::{handle_entity_plugin_message, rpc_message_kind, RpcMessageKind, RPC_PROTOCOL_ID};
 
     #[test]
     fn rpc_reply_is_classified_separately_from_requests() {

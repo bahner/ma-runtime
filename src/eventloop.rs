@@ -8,10 +8,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use ciborium::Value as CborValue;
 use ma_core::config::Config;
 use ma_core::{
-    ipfs_add, Did, Inbox, IpfsGatewayResolver, MaEndpoint, Message, SigningKey, INBOX_PROTOCOL_ID,
-    IPFS_PROTOCOL_ID, MESSAGE_TYPE_CRUD, MESSAGE_TYPE_CRUD_REPLY,
+    ipfs_add, Did, Inbox, IpfsGatewayResolver, MaEndpoint, Message, SigningKey, CONTENT_TYPE_TERM,
+    INBOX_PROTOCOL_ID, IPFS_PROTOCOL_ID, MESSAGE_TYPE_CRUD, MESSAGE_TYPE_CRUD_REPLY,
     MESSAGE_TYPE_IDENTITY_PUBLISH_REQUEST, MESSAGE_TYPE_IPFS_REQUEST, MESSAGE_TYPE_RPC,
     MESSAGE_TYPE_RPC_REPLY,
 };
@@ -26,6 +27,7 @@ use crate::entity::{CastInput, KindRegistry, LocalMessage, PluginMsg, SendEnvelo
 use crate::ipfs::IpfsServiceState;
 use crate::manifest::ManifestWriter;
 use crate::plugin::EntityRegistry;
+use crate::routing::{local_actor_url, local_target_fragment};
 use crate::status::SharedStats;
 use crate::{bootstrap, crud, i18n, inbox, ipfs, rpc, status};
 
@@ -43,24 +45,57 @@ fn protocol_for(msg_type: &str) -> &'static str {
     }
 }
 
-fn local_target_fragment(target: &str, our_did: &str) -> Option<String> {
-    let target = target.trim();
-    if !target.starts_with("did:ma:") {
-        return None;
-    }
-    let target_did = Did::try_from(target).ok()?;
-    let our_base =
-        Did::try_from(our_did).map_or_else(|_| our_did.trim().to_string(), |did| did.base_id());
-    if target_did.base_id() != our_base {
-        return None;
-    }
-    target_did.fragment.filter(|fragment| !fragment.is_empty())
+fn delivery_failed_content(to: &str, reason: &str, original_content: &[u8]) -> Result<Vec<u8>> {
+    let original_term = ciborium::de::from_reader(original_content).unwrap_or(CborValue::Null);
+    let term = CborValue::Array(vec![
+        CborValue::Text(":delivery-failed".to_string()),
+        CborValue::Text(to.to_string()),
+        CborValue::Text(reason.to_string()),
+        original_term,
+    ]);
+    let mut content = Vec::new();
+    ciborium::ser::into_writer(&term, &mut content)?;
+    Ok(content)
 }
 
-fn local_actor_url(our_did: &str, fragment: &str) -> String {
-    let base =
-        Did::try_from(our_did).map_or_else(|_| our_did.trim().to_string(), |did| did.base_id());
-    format!("{base}#{fragment}")
+async fn dispatch_delivery_failed(
+    sender_fragment: &str,
+    failed_envelope: SendEnvelope,
+    reason: &str,
+    entity_registry: &EntityRegistry,
+    manifest_writer: &ManifestWriter,
+    kubo_url: &str,
+    our_did: &str,
+) {
+    let content = match delivery_failed_content(
+        &failed_envelope.to,
+        reason,
+        &failed_envelope.content,
+    ) {
+        Ok(content) => content,
+        Err(err) => {
+            warn!(fragment = %sender_fragment, to = %failed_envelope.to, error = %err, "plugin envelope: failed to encode delivery failure");
+            return;
+        }
+    };
+    let failure = SendEnvelope {
+        to: local_actor_url(our_did, sender_fragment),
+        content_type: CONTENT_TYPE_TERM.to_string(),
+        message_type: Some(MESSAGE_TYPE_RPC.to_string()),
+        content,
+        reply_to: None,
+    };
+    dispatch_local_plugin_envelope(
+        sender_fragment,
+        sender_fragment,
+        failure,
+        MESSAGE_TYPE_RPC,
+        entity_registry,
+        manifest_writer,
+        kubo_url,
+        our_did,
+    )
+    .await;
 }
 
 async fn dispatch_local_plugin_envelope(
@@ -430,27 +465,65 @@ pub async fn run(
                             continue;
                         }
                     };
-                    msg.reply_to = env.reply_to;
+                    msg.reply_to = env.reply_to.clone();
                     let protocol = protocol_for(&msg_type);
                     // Spawn each delivery independently so one unreachable peer
                     // cannot block others. Cap the outbox-open at 5 seconds.
-                    let ep   = Arc::clone(&endpoint);
-                    let res  = Arc::clone(&shared_resolver);
+                    let ep = Arc::clone(&endpoint);
+                    let res = Arc::clone(&shared_resolver);
+                    let doc_cache = ipfs_state.as_ref().map(|ipfs| Arc::clone(&ipfs.doc_cache));
                     let base = recipient.base_id().clone();
+                    let entity_registry = entity_registry.clone();
+                    let manifest_writer = manifest_writer.clone();
+                    let kubo_url = kubo_url.clone();
+                    let our_did = our_did.clone();
+                    let failed_envelope = env.clone();
                     tokio::spawn(async move {
-                        match tokio::time::timeout(
-                            Duration::from_secs(5),
-                            ep.outbox(res.as_ref(), &base, protocol),
-                        )
-                        .await
-                        {
-                            Ok(Ok(mut outbox)) => {
+                        let outbox_result = if let Some(doc_cache) = doc_cache {
+                            ipfs::open_outbox_for_did(&ep, &res, &doc_cache, &recipient, protocol)
+                                .await
+                        } else {
+                            match tokio::time::timeout(
+                                Duration::from_secs(5),
+                                ep.outbox(res.as_ref(), &base, protocol),
+                            )
+                            .await
+                            {
+                                Ok(Ok(outbox)) => Ok(outbox),
+                                Ok(Err(err)) => Err(anyhow::Error::from(err)),
+                                Err(_) => Err(anyhow::anyhow!("outbox connect timed out (5 s)")),
+                            }
+                        };
+
+                        match outbox_result {
+                            Ok(mut outbox) => {
                                 if let Err(e) = outbox.send(&msg).await {
                                     warn!(fragment = %fragment, to = %env.to, error = %e, "plugin envelope delivery failed");
+                                    dispatch_delivery_failed(
+                                        &fragment,
+                                        failed_envelope,
+                                        &format!("delivery failed: {e}"),
+                                        &entity_registry,
+                                        &manifest_writer,
+                                        &kubo_url,
+                                        &our_did,
+                                    )
+                                    .await;
                                 }
                             }
-                            Ok(Err(e)) => warn!(fragment = %fragment, to = %env.to, error = %e, "plugin envelope: outbox open failed"),
-                            Err(_)     => warn!(fragment = %fragment, to = %env.to, "plugin envelope: outbox connect timed out (5 s)"),
+                            Err(e) => {
+                                warn!(fragment = %fragment, to = %env.to, error = %e, "plugin envelope: outbox open failed");
+                                dispatch_delivery_failed(
+                                    &fragment,
+                                    failed_envelope,
+                                    &format!("outbox open failed: {e}"),
+                                    &entity_registry,
+                                    &manifest_writer,
+                                    &kubo_url,
+                                    &our_did,
+                                )
+                                .await;
+                            }
                         }
                     });
                 }

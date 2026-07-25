@@ -11,6 +11,7 @@ mod kubo;
 mod manifest;
 mod plugin;
 mod republish;
+mod routing;
 mod rpc;
 mod schedule;
 mod scheduler_actor;

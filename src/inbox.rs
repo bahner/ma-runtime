@@ -13,6 +13,7 @@ use tracing::{error, info, warn};
 
 use crate::entity::{CastInput, LocalMessage, PluginMsg};
 use crate::plugin::EntityRegistry;
+use crate::routing::local_target_fragment;
 
 pub struct InboxHandlerCtx {
     pub our_did: Arc<str>,
@@ -33,9 +34,9 @@ pub async fn handle_inbox_message(message: &ma_core::Message, ctx: &InboxHandler
         return Ok(());
     }
 
-    let fragment = extract_fragment(&message.to, &ctx.our_did);
+    let fragment = local_target_fragment(&message.to, &ctx.our_did);
 
-    let Some(fragment) = fragment else {
+    let Some(fragment) = fragment.as_deref() else {
         info!(
             from = %message.from,
             to = %message.to,
@@ -105,10 +106,4 @@ pub async fn handle_inbox_message(message: &ma_core::Message, ctx: &InboxHandler
     }
 
     Ok(())
-}
-
-/// Strip `<our_did>#` from `to` and return the bare fragment, if present.
-fn extract_fragment<'a>(to: &'a str, our_did: &str) -> Option<&'a str> {
-    let prefix = format!("{our_did}#");
-    to.strip_prefix(prefix.as_str())
 }

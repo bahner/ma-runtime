@@ -439,46 +439,48 @@ fn build_rpc_reply_message(
     Ok((reply, sender, rpc_did_url))
 }
 
-/// Extract the iroh endpoint ID for `RPC_PROTOCOL_ID` from a document's `ma.services`.
-fn rpc_endpoint_from_doc(doc: &Document) -> Option<String> {
+/// Extract the iroh endpoint ID for `protocol` from a document's `ma.services`.
+fn endpoint_for_protocol_from_doc(doc: &Document, protocol: &str) -> Option<String> {
     let services = doc
         .ma
         .as_ref()
         .and_then(|ma| ma.get("services").ok().flatten())
         .and_then(|s| serde_json::to_value(s).ok());
-    resolve_endpoint_for_protocol(services.as_ref(), RPC_PROTOCOL_ID)
+    resolve_endpoint_for_protocol(services.as_ref(), protocol)
 }
 
-/// Open an RPC outbox for `sender`.  Prefers a cached document (avoids IPNS
+/// Open an outbox for `target`.  Prefers a cached document (avoids IPNS
 /// re-resolution); falls back to the resolver if the cache misses or if the
 /// cached endpoint is stale (connect times out or errors).
 ///
 /// Takes individual Arc values so it can be called from spawned tasks without
 /// needing a reference to the short-lived `IpfsHandlerCtx`.
-async fn open_rpc_outbox_for_sender(
+pub(crate) async fn open_outbox_for_did(
     endpoint: &Arc<dyn ma_core::MaEndpoint>,
     resolver: &Arc<IpfsGatewayResolver>,
     doc_cache: &DocCache,
-    sender: &Did,
+    target: &Did,
+    protocol: &str,
 ) -> Result<ma_core::Outbox> {
-    let cached_doc = doc_cache.lock().await.get(&sender.base_id()).cloned();
+    let target_base = target.base_id();
+    let cached_doc = doc_cache.lock().await.get(&target_base).cloned();
 
     if let Some(ref doc) = cached_doc {
-        if let Some(eid) = rpc_endpoint_from_doc(doc) {
+        if let Some(eid) = endpoint_for_protocol_from_doc(doc, protocol) {
             // Use a short deadline so a stale cached endpoint ID does not block
             // the handler indefinitely.
             match tokio::time::timeout(
                 Duration::from_secs(5),
-                endpoint.connect_outbox(doc, &eid, &sender.base_id(), RPC_PROTOCOL_ID),
+                endpoint.connect_outbox(doc, &eid, &target_base, protocol),
             )
             .await
             {
                 Ok(Ok(outbox)) => return Ok(outbox),
                 Ok(Err(e)) => {
-                    warn!(error = %e, from = %sender.base_id(), "cached outbox connect failed, falling back to IPNS");
+                    warn!(error = %e, to = %target_base, protocol = %protocol, "cached outbox connect failed, falling back to IPNS");
                 }
                 Err(_elapsed) => {
-                    warn!(from = %sender.base_id(), "cached outbox connect timed out, falling back to IPNS");
+                    warn!(to = %target_base, protocol = %protocol, "cached outbox connect timed out, falling back to IPNS");
                 }
             }
         }
@@ -488,10 +490,10 @@ async fn open_rpc_outbox_for_sender(
     // resolver does not block the handler indefinitely.
     tokio::time::timeout(
         Duration::from_secs(10),
-        endpoint.outbox(resolver.as_ref(), &sender.base_id(), RPC_PROTOCOL_ID),
+        endpoint.outbox(resolver.as_ref(), &target_base, protocol),
     )
     .await
-    .map_err(|_| anyhow::anyhow!("IPNS outbox resolve timed out for {}", sender.base_id()))?
+    .map_err(|_| anyhow::anyhow!("IPNS outbox resolve timed out for {target_base}"))?
     .map_err(anyhow::Error::from)
 }
 
@@ -578,7 +580,7 @@ async fn handle_did_document_publish(
 
     // Spawn reply delivery so a slow or stale iroh connection never blocks
     // the main event loop (and therefore never prevents Ctrl-C from firing).
-    match rpc_endpoint_from_doc(&v.document) {
+    match endpoint_for_protocol_from_doc(&v.document, RPC_PROTOCOL_ID) {
         Some(eid) => {
             let endpoint = Arc::clone(&ctx.endpoint);
             let document = v.document.clone();
@@ -656,7 +658,8 @@ async fn handle_ipfs_store(
     let resolver = Arc::clone(&ctx.resolver);
     let doc_cache = Arc::clone(&ctx.doc_cache);
     tokio::spawn(async move {
-        match open_rpc_outbox_for_sender(&endpoint, &resolver, &doc_cache, &sender).await {
+        match open_outbox_for_did(&endpoint, &resolver, &doc_cache, &sender, RPC_PROTOCOL_ID).await
+        {
             Ok(mut outbox) => {
                 match tokio::time::timeout(Duration::from_secs(15), outbox.send(&reply)).await {
                     Ok(Ok(())) => {
