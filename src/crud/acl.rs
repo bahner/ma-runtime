@@ -5,7 +5,7 @@ use tracing::info;
 use crate::entity::IpldLink;
 
 use super::helpers::{
-    load_manifest, resolve_ipfs_ref, send_crud_error, send_crud_i18n_error, send_crud_ok_cid,
+    cidv1_ref, load_manifest, send_crud_error, send_crud_i18n_error, send_crud_ok_cid,
     send_crud_reply_cbor, with_manifest_crud,
 };
 use super::CrudHandlerCtx;
@@ -50,12 +50,11 @@ pub(super) async fn handle_root_acls(
             let Some(link) = manifest.acls.get(acl_name.as_str()) else {
                 return send_crud_error(message, reply_type, ctx, "acl-not-found").await;
             };
-            let ipfs_path = format!("/ipfs/{}", link.cid);
-            send_crud_reply_cbor(message, reply_type, ctx, &CborValue::Text(ipfs_path)).await
+            send_crud_reply_cbor(message, reply_type, ctx, &CborValue::Text(link.cid.clone())).await
         }
         // Set a named ACL by CID.
         ([acl_name], Some(""), [CborValue::Text(raw)]) => {
-            let Some(cid) = resolve_ipfs_ref(&ctx.kubo_rpc_url, raw).await? else {
+            let Some(cid) = cidv1_ref(raw) else {
                 return send_crud_i18n_error(message, reply_type, ctx, "cidv1-required").await;
             };
             // Validate ACL document shape before accepting it as a named ACL.
@@ -103,17 +102,15 @@ pub(super) async fn handle_root_acl(
     match (tail, args.as_slice()) {
         (None, []) => {
             let manifest = load_manifest(ctx).await?;
-            // No `/ipfs/` prefix when no root ACL has been set yet — there
-            // is genuinely no reference to point at.
             let value = manifest
                 .acl
                 .as_ref()
-                .map(|link| format!("/ipfs/{}", link.cid))
+                .map(|link| link.cid.clone())
                 .unwrap_or_default();
             send_crud_reply_cbor(message, reply_type, ctx, &CborValue::Text(value)).await
         }
         (Some(""), [CborValue::Text(raw)]) => {
-            let Some(cid) = resolve_ipfs_ref(&ctx.kubo_rpc_url, raw).await? else {
+            let Some(cid) = cidv1_ref(raw) else {
                 return send_crud_i18n_error(message, reply_type, ctx, "cidv1-required").await;
             };
             let acl_map = crate::acl::load_acl_from_cid(&ctx.kubo_rpc_url, &cid)

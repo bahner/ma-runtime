@@ -5,6 +5,7 @@ use std::{
 
 use anyhow::{anyhow, Context, Result};
 use ciborium::Value as CborValue;
+use cid::{Cid, Version};
 use ma_core::{
     Did, DidDocumentResolver, IpfsGatewayResolver, Ipld, CONTENT_TYPE_TERM, CONTENT_TYPE_TERM_CBOR,
     CONTENT_TYPE_TERM_YAML,
@@ -80,23 +81,24 @@ pub(super) fn decode_crud_payload(content: &[u8]) -> Result<CrudOp> {
     }
 }
 
-/// True if `s` is an explicit `/ipfs/<cid>` or `/ipns/<key>` reference.
+/// True if `s` is a bare base32 CIDv1.
 ///
-/// Explicit prefixes are required wherever a CID/IPNS reference is
-/// expected — bare CID strings are treated as plain text and never
-/// auto-detected.
-pub(super) fn is_ipfs_ref(s: &str) -> bool {
-    s.starts_with("/ipfs/") || s.starts_with("/ipns/")
+/// Structured CRUD fields store deterministic IPLD links, so IPNS and gateway
+/// path forms are intentionally rejected here.
+pub(super) fn is_cidv1_ref(s: &str) -> bool {
+    s.starts_with('b')
+        && Cid::try_from(s)
+            .map(|cid| cid.version() == Version::V1)
+            .unwrap_or(false)
 }
 
-/// Resolve an explicit `/ipfs/<cid>` or `/ipns/<key>` reference to a bare
-/// CID via Kubo's `dag/resolve` API. Returns `None` if `s` is not an
-/// `/ipfs/` or `/ipns/` reference (see [`is_ipfs_ref`]).
-pub(super) async fn resolve_ipfs_ref(kubo_url: &str, s: &str) -> Result<Option<String>> {
-    if !is_ipfs_ref(s) {
-        return Ok(None);
+/// Validate and return a bare CIDv1 reference. Returns `None` if `s` is not a
+/// bare CIDv1 (see [`is_cidv1_ref`]).
+pub(super) fn cidv1_ref(s: &str) -> Option<String> {
+    if !is_cidv1_ref(s) {
+        return None;
     }
-    Ok(Some(crate::kubo::dag_resolve(kubo_url, s).await?))
+    Some(s.to_string())
 }
 
 // ── Manifest helpers ───────────────────────────────────────────────────────────
@@ -716,7 +718,7 @@ async fn send_crud_reply_raw(
 
 #[cfg(test)]
 mod tests {
-    use super::{affected_kind_protocols, decode_crud_payload, is_ipfs_ref, parse_path, CrudOp};
+    use super::{affected_kind_protocols, decode_crud_payload, is_cidv1_ref, parse_path, CrudOp};
     use ciborium::Value as CborValue;
     use std::collections::{BTreeMap, HashMap};
 
@@ -826,16 +828,22 @@ mod tests {
     }
 
     #[test]
-    fn is_ipfs_ref_accepts_ipfs_and_ipns() {
-        assert!(is_ipfs_ref("/ipfs/bafy123"));
-        assert!(is_ipfs_ref("/ipns/k51q123"));
+    fn is_cidv1_ref_accepts_bare_cidv1() {
+        assert!(is_cidv1_ref(
+            "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"
+        ));
     }
 
     #[test]
-    fn is_ipfs_ref_rejects_bare_cid_and_other_paths() {
-        assert!(!is_ipfs_ref("bafy123"));
-        assert!(!is_ipfs_ref("/ipld/bafy123"));
-        assert!(!is_ipfs_ref("plain text"));
+    fn is_cidv1_ref_rejects_path_ipns_cidv0_and_plain_text() {
+        assert!(!is_cidv1_ref(
+            "/ipfs/bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"
+        ));
+        assert!(!is_cidv1_ref("/ipns/k51qzi5uqu5dl"));
+        assert!(!is_cidv1_ref(
+            "QmYwAPJzv5CZsnAzt8auVTLBhdgcq7M4Z6b5q8v8z6C6xF"
+        ));
+        assert!(!is_cidv1_ref("plain text"));
     }
 
     #[test]

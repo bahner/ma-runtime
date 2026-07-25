@@ -7,7 +7,7 @@ use crate::acl::check_full;
 use crate::entity::{EntityNode, IpldLink};
 
 use super::helpers::{
-    load_manifest, resolve_ipfs_ref, runtime_config_snapshot, send_crud_data_cbor, send_crud_error,
+    cidv1_ref, load_manifest, runtime_config_snapshot, send_crud_data_cbor, send_crud_error,
     send_crud_i18n_error, send_crud_i18n_errorf, send_crud_ok, send_crud_ok_cid,
     send_crud_reply_cbor, spawn_entity_reload, with_manifest_crud,
 };
@@ -131,7 +131,7 @@ async fn handle_single_entity(
                 )
                 .await;
             }
-            let Some(cid) = resolve_ipfs_ref(&ctx.kubo_rpc_url, raw).await? else {
+            let Some(cid) = cidv1_ref(raw) else {
                 return send_crud_i18n_error(message, reply_type, ctx, "cidv1-required").await;
             };
             let cid = cid.as_str();
@@ -313,8 +313,7 @@ async fn handle_entity_acl_field(
     match (tail, args.as_slice()) {
         (None, []) => {
             let entity = fetch_entity_node(ctx, name).await?;
-            let ipfs_path = format!("/ipfs/{}", entity.acl);
-            send_crud_reply_cbor(message, reply_type, ctx, &CborValue::Text(ipfs_path)).await
+            send_crud_reply_cbor(message, reply_type, ctx, &CborValue::Text(entity.acl)).await
         }
         (Some(""), [CborValue::Text(acl_name)]) => {
             let manifest = load_manifest(ctx).await?;

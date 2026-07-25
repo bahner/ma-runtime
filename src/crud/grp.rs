@@ -4,7 +4,7 @@ use ciborium::Value as CborValue;
 use crate::entity::IpldLink;
 
 use super::helpers::{
-    group_cache_update, load_manifest, resolve_ipfs_ref, send_crud_error, send_crud_i18n_error,
+    cidv1_ref, group_cache_update, load_manifest, send_crud_error, send_crud_i18n_error,
     send_crud_ok_cid, send_crud_reply_cbor, with_manifest_crud,
 };
 use super::CrudHandlerCtx;
@@ -56,13 +56,12 @@ pub(super) async fn handle_root_grp(
             let Some(link) = manifest.grp.get(name.as_str()) else {
                 return send_crud_error(message, reply_type, ctx, "group-not-found").await;
             };
-            let ipfs_path = format!("/ipfs/{}", link.cid);
-            send_crud_reply_cbor(message, reply_type, ctx, &CborValue::Text(ipfs_path)).await
+            send_crud_reply_cbor(message, reply_type, ctx, &CborValue::Text(link.cid.clone())).await
         }
         // Set a group by CID. Unrestricted — including "owners", and
         // including setting it to a CID for an empty list.
         ([name], Some(""), [CborValue::Text(raw)]) => {
-            let Some(cid) = resolve_ipfs_ref(&ctx.kubo_rpc_url, raw).await? else {
+            let Some(cid) = cidv1_ref(raw) else {
                 return send_crud_i18n_error(message, reply_type, ctx, "cidv1-required").await;
             };
             let name = name.clone();
