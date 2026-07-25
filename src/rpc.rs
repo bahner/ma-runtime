@@ -407,7 +407,7 @@ async fn handle_entity_plugin_message(
         }
         _ => None,
     };
-    info!(
+    debug!(
         fragment = %entity.fragment,
         from = %message.from,
         to = %message.to,
@@ -500,6 +500,18 @@ async fn handle_entity_plugin_message(
         );
         anyhow!("entity '{}' plugin execution failed", entity.fragment)
     })?;
+    info!(
+        fragment = %entity.fragment,
+        from = %message.from,
+        to = %message.to,
+        id = %message.id,
+        verb = ?verb_str,
+        create_requests = result.create_requests.len(),
+        pending_state = result.pending_state.is_some(),
+        delete_requests = result.delete_requests.len(),
+        behaviour_requests = result.behaviour_requests.len(),
+        "entity RPC dispatch side effects"
+    );
 
     // If the plugin called `ma_set_state` during this dispatch, persist to IPFS.
     // Spawned so the main event loop is not blocked by the IPFS round-trip.

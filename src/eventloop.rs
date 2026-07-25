@@ -7,7 +7,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use ciborium::Value as CborValue;
 use ma_core::config::Config;
 use ma_core::{
@@ -23,13 +23,74 @@ use uuid::Uuid;
 use zeroize::Zeroize;
 
 use crate::acl::{AclCache, GroupCache, SharedAcl};
-use crate::entity::{CastInput, KindRegistry, LocalMessage, PluginMsg, SendEnvelope};
+use crate::entity::{
+    CastInput, EntityNode, IpldLink, KindRegistry, Lifecycle, LocalMessage, PluginMsg, SendEnvelope,
+};
 use crate::ipfs::IpfsServiceState;
 use crate::manifest::ManifestWriter;
 use crate::plugin::EntityRegistry;
 use crate::routing::{local_actor_url, local_target_fragment};
 use crate::status::SharedStats;
 use crate::{bootstrap, crud, i18n, inbox, ipfs, rpc, status};
+
+#[derive(Clone)]
+struct LocalSideEffectCtx {
+    kind_registry: KindRegistry,
+    envelope_tx: UnboundedSender<(String, SendEnvelope)>,
+    stats: SharedStats,
+    shared_config: Arc<RwLock<Config>>,
+}
+
+async fn persist_new_entity(
+    manifest_writer: &ManifestWriter,
+    kubo_url: &str,
+    fragment: &str,
+    entity_node: &EntityNode,
+) -> Result<()> {
+    let entity_cid = crate::kubo::dag_put(kubo_url, entity_node).await?;
+    let fragment = fragment.to_string();
+    manifest_writer
+        .mutate(move |m| {
+            m.entities.insert(fragment, IpldLink::new(&entity_cid));
+            Ok(())
+        })
+        .await?;
+    Ok(())
+}
+
+fn normalize_behaviour_cid(value: &str) -> Result<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow!("behaviour reference is empty"));
+    }
+    if let Some(cid) = trimmed.strip_prefix("/ipfs/") {
+        if cid.is_empty() {
+            return Err(anyhow!("/ipfs/ behaviour reference is missing a CID"));
+        }
+        return Ok(cid.to_string());
+    }
+    if trimmed.starts_with("/ipns/") {
+        return Err(anyhow!("/ipns/ behaviour references are not supported here; publish the code to /ipfs/<cid> first"));
+    }
+    Ok(trimmed.to_string())
+}
+
+async fn public_plugin_config_for_local(
+    kubo_url: &str,
+    side_effects: &LocalSideEffectCtx,
+) -> Result<std::collections::BTreeMap<String, String>> {
+    let root_cid = side_effects
+        .stats
+        .read()
+        .await
+        .root_cid
+        .clone()
+        .ok_or_else(|| anyhow!("no manifest root CID available"))?;
+    let manifest: crate::entity::RuntimeManifest =
+        crate::kubo::dag_get(kubo_url, &root_cid).await?;
+    let cfg = side_effects.shared_config.read().await;
+    Ok(crate::crud::config::public_plugin_config(&manifest, &cfg))
+}
 
 /// Map a `message_type` string to the iroh delivery protocol.
 ///
@@ -94,6 +155,7 @@ async fn dispatch_delivery_failed(
         manifest_writer,
         kubo_url,
         our_did,
+        None,
     )
     .await;
 }
@@ -107,6 +169,7 @@ async fn dispatch_local_plugin_envelope(
     manifest_writer: &ManifestWriter,
     kubo_url: &str,
     our_did: &str,
+    side_effects: Option<LocalSideEffectCtx>,
 ) {
     let mut entity = None;
     for attempt in 0..40 {
@@ -186,6 +249,132 @@ async fn dispatch_local_plugin_envelope(
                 }
             }
         });
+    }
+
+    if let Some(side_effects) = side_effects {
+        for req in result.create_requests {
+            let maybe_kind = side_effects
+                .kind_registry
+                .read()
+                .await
+                .get(&req.kind_protocol)
+                .cloned();
+            let Some(kind_node) = maybe_kind else {
+                warn!(caller = %entity.fragment, kind = %req.kind_protocol,
+                    "ma_create_entity: kind not in registry; skipped");
+                continue;
+            };
+
+            let entity_node = EntityNode {
+                kind: req.kind_protocol.clone(),
+                behaviour: match req
+                    .behaviour_cid
+                    .as_deref()
+                    .map(normalize_behaviour_cid)
+                    .transpose()
+                {
+                    Ok(value) => value.as_deref().map(IpldLink::new),
+                    Err(e) => {
+                        warn!(fragment = %req.fragment, kind = %req.kind_protocol, error = %e,
+                            "ma_create_entity: invalid behaviour reference; skipped");
+                        continue;
+                    }
+                },
+                acl: entity.acl.clone(),
+                state: None,
+                parent: Some(entity.fragment.clone()),
+                label: None,
+                attributes: std::collections::BTreeMap::new(),
+                init: None,
+                initialised: false,
+            };
+
+            let (iroh_node_id, started_at) = {
+                let stats = side_effects.stats.read().await;
+                (stats.endpoint_id.clone(), stats.started_at)
+            };
+            let runtime_config = public_plugin_config_for_local(kubo_url, &side_effects)
+                .await
+                .unwrap_or_else(|e| {
+                    warn!(error = %e, "ma_create_entity: failed to build public plugin config; continuing with entity-local config only");
+                    std::collections::BTreeMap::new()
+                });
+
+            match crate::plugin::EntityPlugin::load(
+                req.fragment.clone(),
+                &entity_node,
+                &kind_node,
+                our_did,
+                kubo_url,
+                side_effects.envelope_tx.clone(),
+                entity_registry.clone(),
+                &iroh_node_id,
+                started_at,
+                runtime_config,
+                req.init_payload.clone(),
+            )
+            .await
+            {
+                Ok((ep, Lifecycle::Running)) => {
+                    let mut running_node = entity_node.clone();
+                    running_node.initialised = true;
+                    if let Ok(Some(cid)) = ep.trigger_save(kubo_url).await {
+                        running_node.state = Some(IpldLink::new(cid));
+                    }
+                    entity_registry
+                        .write()
+                        .await
+                        .insert(req.fragment.clone(), Arc::new(ep));
+                    info!(fragment = %req.fragment, kind = %req.kind_protocol,
+                        parent = %req.parent, "entity created via ma_create_entity");
+                    let kubo_url = kubo_url.to_string();
+                    let fragment = req.fragment.clone();
+                    let writer = manifest_writer.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) =
+                            persist_new_entity(&writer, &kubo_url, &fragment, &running_node).await
+                        {
+                            warn!(fragment = %fragment, error = %e, "failed to persist new entity to manifest");
+                        }
+                    });
+                }
+                Ok((_, Lifecycle::Error)) => {
+                    warn!(fragment = %req.fragment, kind = %req.kind_protocol,
+                        "ma_create_entity: init() returned :error; entity discarded");
+                    let err_content = {
+                        let mut buf = Vec::new();
+                        let _ = ciborium::ser::into_writer(
+                            &CborValue::Array(vec![
+                                CborValue::Text(":error".into()),
+                                CborValue::Text(format!("init() failed for #{}", req.fragment)),
+                                CborValue::Text(req.fragment.clone()),
+                            ]),
+                            &mut buf,
+                        );
+                        buf
+                    };
+                    let _ = side_effects.envelope_tx.send((
+                        req.parent.clone(),
+                        SendEnvelope {
+                            to: format!("{}#{}", our_did, req.parent),
+                            content_type: CONTENT_TYPE_TERM.to_string(),
+                            message_type: None,
+                            content: err_content,
+                            reply_to: None,
+                        },
+                    ));
+                }
+                Err(e) => {
+                    warn!(fragment = %req.fragment, kind = %req.kind_protocol,
+                        error = %e, "ma_create_entity: EntityPlugin::load failed");
+                }
+            }
+        }
+    } else if !result.create_requests.is_empty() {
+        warn!(
+            count = result.create_requests.len(),
+            "plugin envelope: create requests ignored without side-effect context"
+        );
     }
 }
 
@@ -421,6 +610,12 @@ pub async fn run(
                         let manifest_writer = manifest_writer.clone();
                         let kubo_url = kubo_url.clone();
                         let our_did = our_did.clone();
+                        let side_effects = LocalSideEffectCtx {
+                            kind_registry: kind_registry.clone(),
+                            envelope_tx: envelope_tx.clone(),
+                            stats: stats.clone(),
+                            shared_config: Arc::clone(&shared_config),
+                        };
                         tokio::spawn(async move {
                             if tokio::time::timeout(
                                 Duration::from_secs(30),
@@ -433,6 +628,7 @@ pub async fn run(
                                     &manifest_writer,
                                     &kubo_url,
                                     &our_did,
+                                    Some(side_effects),
                                 ),
                             )
                             .await
