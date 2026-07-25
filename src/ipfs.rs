@@ -556,6 +556,13 @@ async fn handle_did_document_publish(
 ) -> Result<()> {
     info!(from = %message.from, id = %message.id, "{}", i18n::t("did-publish-request-received"));
 
+    let ma_core::ValidatedIdentityPublish {
+        document_bytes,
+        ipns_secret_key,
+        document,
+        document_did,
+    } = v;
+
     // Cache the document NOW — before the slow Kubo publish — so any concurrent
     // IPFS-store reply tasks can resolve this sender's endpoint immediately.
     let sender_for_cache = ma_core::Did::try_from(message.from.as_str())
@@ -563,16 +570,16 @@ async fn handle_did_document_publish(
     ctx.doc_cache
         .lock()
         .await
-        .insert(sender_for_cache.base_id(), v.document.clone());
+        .insert(sender_for_cache.base_id(), document.clone());
 
-    let key = Zeroizing::new(v.ipns_secret_key.clone());
+    let key = Zeroizing::new(ipns_secret_key);
     let cid = ctx
         .publisher
-        .publish_document(&v.document_bytes, &key)
+        .publish_document(&document_bytes, &key)
         .await
         .context("kubo DID publish failed")?
         .ok_or_else(|| anyhow!("publisher returned no CID"))?;
-    info!(did = %v.document_did.id(), cid = %cid, "{}", i18n::t("document-published"));
+    info!(did = %document_did.id(), cid = %cid, "{}", i18n::t("document-published"));
 
     let reply_bytes = encode_ok_cid_reply(&cid)?;
     let (reply, sender, rpc_did_url) =
@@ -580,10 +587,10 @@ async fn handle_did_document_publish(
 
     // Spawn reply delivery so a slow or stale iroh connection never blocks
     // the main event loop (and therefore never prevents Ctrl-C from firing).
-    match endpoint_for_protocol_from_doc(&v.document, RPC_PROTOCOL_ID) {
+    match endpoint_for_protocol_from_doc(&document, RPC_PROTOCOL_ID) {
         Some(eid) => {
             let endpoint = Arc::clone(&ctx.endpoint);
-            let document = v.document.clone();
+            let document = document.clone();
             let sender_base = sender.base_id();
             tokio::spawn(async move {
                 match tokio::time::timeout(
