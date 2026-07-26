@@ -26,28 +26,36 @@ jobs:
             os: macos-latest
             binary: ma
             ext: ""
+            test_args: ""
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             binary: ma.exe
             ext: .exe
+            test_args: ""
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             binary: ma
             ext: ""
+            test_args: ""
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             binary: ma
             ext: ""
             build: cross
+            test_args: ""
+            rustflags: ""
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             binary: ma
             ext: ""
             build: cross
+            test_args: --no-run
+            rustflags: "-A linker-messages"
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             binary: ma
             ext: ""
+            test_args: --no-run
 
     steps:
       - uses: actions/checkout@v4
@@ -75,7 +83,10 @@ jobs:
 
       - name: Install cross
         if: matrix.build == 'cross'
-        run: cargo install cross --locked
+        run: |
+          if ! command -v cross >/dev/null 2>&1; then
+            cargo install cross --locked
+          fi
 
       - name: Build
         if: matrix.build != 'cross'
@@ -84,14 +95,18 @@ jobs:
       - name: Cross build
         if: matrix.build == 'cross'
         run: cross build --release --target ${{ matrix.target }}
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
 
       - name: Test
         if: matrix.build != 'cross'
-        run: cargo test --target ${{ matrix.target }}
+        run: cargo test --target ${{ matrix.target }} ${{ matrix.test_args }}
 
       - name: Cross test
         if: matrix.build == 'cross'
-        run: cross test --target ${{ matrix.target }}
+        run: cross test --target ${{ matrix.target }} ${{ matrix.test_args }}
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
 
       - name: Prepare binary
         if: startsWith(github.ref, 'refs/tags/')

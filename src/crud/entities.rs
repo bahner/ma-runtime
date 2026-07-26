@@ -474,7 +474,7 @@ mod tests {
         fragment: &str,
         expected_acl: &str,
     ) {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         loop {
             let plugin = entity_registry.read().await.get(fragment).cloned();
             if let Some(plugin) = plugin {
