@@ -34,6 +34,16 @@ jobs:
             os: ubuntu-latest
             binary: ma
             ext: ""
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            binary: ma
+            ext: ""
+            build: cross
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            binary: ma
+            ext: ""
+            build: cross
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             binary: ma
@@ -47,10 +57,6 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install musl-tools
-        if: matrix.target == 'x86_64-unknown-linux-musl'
-        run: sudo apt-get install -y musl-tools
-
       - name: Cache Cargo
         uses: actions/cache@v4
         with:
@@ -63,11 +69,29 @@ jobs:
           key: ${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-${{ matrix.target }}-
 
+      - name: Install Linux target dependencies
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get install -y musl-tools
+
+      - name: Install cross
+        if: matrix.build == 'cross'
+        run: cargo install cross --locked
+
       - name: Build
+        if: matrix.build != 'cross'
         run: cargo build --release --target ${{ matrix.target }}
 
+      - name: Cross build
+        if: matrix.build == 'cross'
+        run: cross build --release --target ${{ matrix.target }}
+
       - name: Test
+        if: matrix.build != 'cross'
         run: cargo test --target ${{ matrix.target }}
+
+      - name: Cross test
+        if: matrix.build == 'cross'
+        run: cross test --target ${{ matrix.target }}
 
       - name: Prepare binary
         if: startsWith(github.ref, 'refs/tags/')
