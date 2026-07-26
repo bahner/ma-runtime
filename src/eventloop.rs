@@ -160,6 +160,7 @@ async fn dispatch_delivery_failed(
     .await;
 }
 
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 async fn dispatch_local_plugin_envelope(
     sender_fragment: &str,
     target_fragment: &str,
@@ -661,7 +662,7 @@ pub async fn run(
                             continue;
                         }
                     };
-                    msg.reply_to = env.reply_to.clone();
+                    msg.reply_to.clone_from(&env.reply_to);
                     let protocol = protocol_for(&msg_type);
                     // Spawn each delivery independently so one unreachable peer
                     // cannot block others. Cap the outbox-open at 5 seconds.

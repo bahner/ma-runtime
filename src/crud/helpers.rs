@@ -81,19 +81,16 @@ pub(super) fn decode_crud_payload(content: &[u8]) -> Result<CrudOp> {
     }
 }
 
-/// True if `s` is a bare base32 CIDv1.
+/// True if `s` is a bare base32 `CIDv1`.
 ///
 /// Structured CRUD fields store deterministic IPLD links, so IPNS and gateway
 /// path forms are intentionally rejected here.
 pub(super) fn is_cidv1_ref(s: &str) -> bool {
-    s.starts_with('b')
-        && Cid::try_from(s)
-            .map(|cid| cid.version() == Version::V1)
-            .unwrap_or(false)
+    s.starts_with('b') && Cid::try_from(s).is_ok_and(|cid| cid.version() == Version::V1)
 }
 
-/// Validate and return a bare CIDv1 reference. Returns `None` if `s` is not a
-/// bare CIDv1 (see [`is_cidv1_ref`]).
+/// Validate and return a bare `CIDv1` reference. Returns `None` if `s` is not a
+/// bare `CIDv1` (see [`is_cidv1_ref`]).
 pub(super) fn cidv1_ref(s: &str) -> Option<String> {
     if !is_cidv1_ref(s) {
         return None;
@@ -112,6 +109,18 @@ where
     let new_cid = ctx.manifest_writer.mutate(f).await?;
     update_stats_entities(ctx).await;
     Ok(new_cid)
+}
+
+pub(super) async fn with_manifest_crud_async<F, T>(
+    ctx: &CrudHandlerCtx,
+    f: F,
+) -> Result<(String, T)>
+where
+    F: for<'a> FnOnce(&'a mut RuntimeManifest) -> crate::manifest::ManifestMutationFuture<'a, T>,
+{
+    let result = ctx.manifest_writer.mutate_async(f).await?;
+    update_stats_entities(ctx).await;
+    Ok(result)
 }
 
 pub(super) async fn current_root_cid(ctx: &CrudHandlerCtx) -> Result<String> {
@@ -207,17 +216,28 @@ fn kind_depends_on(
     false
 }
 
+#[cfg(test)]
 pub(super) fn affected_kind_protocols(
     updated_protocol: &str,
     raw_kinds: &HashMap<String, KindNode>,
 ) -> BTreeSet<String> {
-    let mut affected = BTreeSet::from([updated_protocol.to_string()]);
-    affected.extend(
-        raw_kinds
-            .keys()
-            .filter(|protocol| kind_depends_on(protocol, updated_protocol, raw_kinds))
-            .cloned(),
-    );
+    affected_kind_protocols_for(&[updated_protocol.to_string()], raw_kinds)
+}
+
+fn affected_kind_protocols_for(
+    updated_protocols: &[String],
+    raw_kinds: &HashMap<String, KindNode>,
+) -> BTreeSet<String> {
+    let mut affected = BTreeSet::new();
+    for updated_protocol in updated_protocols {
+        affected.insert(updated_protocol.clone());
+        affected.extend(
+            raw_kinds
+                .keys()
+                .filter(|protocol| kind_depends_on(protocol, updated_protocol, raw_kinds))
+                .cloned(),
+        );
+    }
     affected
 }
 
@@ -255,9 +275,17 @@ pub(super) async fn spawn_kind_dependency_reloads(
     ctx: &CrudHandlerCtx,
     runtime_config: BTreeMap<String, String>,
 ) -> Result<usize> {
+    spawn_kind_dependency_reloads_for(&[updated_protocol.to_string()], ctx, runtime_config).await
+}
+
+pub(super) async fn spawn_kind_dependency_reloads_for(
+    updated_protocols: &[String],
+    ctx: &CrudHandlerCtx,
+    runtime_config: BTreeMap<String, String>,
+) -> Result<usize> {
     let manifest = load_manifest(ctx).await?;
     let raw_kinds = load_raw_kind_nodes(ctx, &manifest).await;
-    let affected = affected_kind_protocols(updated_protocol, &raw_kinds);
+    let affected = affected_kind_protocols_for(updated_protocols, &raw_kinds);
     hydrate_affected_kind_registry(ctx, &manifest, &raw_kinds, &affected).await;
     let mut reload_count = 0usize;
     let reload_shutdown_timeout = {
@@ -386,7 +414,8 @@ pub(super) fn spawn_entity_reload(
         };
 
         let mut entity_node = entity_node;
-        if let Some(current) = entity_registry.read().await.get(&name).cloned() {
+        let current_entity = entity_registry.read().await.get(&name).cloned();
+        if let Some(current) = current_entity {
             match current
                 .prepare_reload_save(&kubo_rpc_url, reload_shutdown_timeout)
                 .await

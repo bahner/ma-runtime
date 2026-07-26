@@ -165,6 +165,94 @@ pub async fn run_bootstrap(
     .await
 }
 
+pub async fn run_kinds_bootstrap(yaml_path: &std::path::Path, kubo_url: &str) -> Result<String> {
+    let raw = std::fs::read_to_string(yaml_path)
+        .with_context(|| format!("reading bootstrap file: {}", yaml_path.display()))?;
+    let yaml: BootstrapYaml = serde_yaml::from_str(&raw).context("parsing bootstrap YAML")?;
+    let kinds = publish_kinds(&yaml.runtime, kubo_url).await?;
+    let cid = kubo::dag_put(kubo_url, &kinds)
+        .await
+        .context("dag_put kinds tree")?;
+    kubo::pin_add(kubo_url, &cid)
+        .await
+        .context("pinning kinds tree")?;
+    tracing::info!(kinds_cid = %cid, "Published runtime kinds tree");
+    Ok(cid)
+}
+
+#[derive(Debug, Clone)]
+pub struct KindsOverlayResult {
+    pub root_cid: String,
+    pub changed_protocols: Vec<String>,
+}
+
+pub async fn apply_kinds_overlay(
+    root_cid: &str,
+    kinds_cid: &str,
+    kubo_url: &str,
+) -> Result<KindsOverlayResult> {
+    let mut manifest: RuntimeManifest = kubo::dag_get(kubo_url, root_cid)
+        .await
+        .with_context(|| format!("fetching runtime manifest {root_cid}"))?;
+    let kinds: KindTree = kubo::dag_get(kubo_url, kinds_cid)
+        .await
+        .with_context(|| format!("fetching kinds tree {kinds_cid}"))?;
+    let changed_protocols = apply_kinds_tree_overlay(&mut manifest, &kinds, kubo_url).await?;
+    if changed_protocols.is_empty() {
+        return Ok(KindsOverlayResult {
+            root_cid: root_cid.to_string(),
+            changed_protocols,
+        });
+    }
+
+    let new_root_cid = kubo::dag_put(kubo_url, &manifest)
+        .await
+        .context("dag_put root manifest after kinds overlay")?;
+    if let Err(e) = kubo::pin_update(kubo_url, root_cid, &new_root_cid).await {
+        tracing::warn!(old = %root_cid, new = %new_root_cid, error = %e, "pin/update failed after kinds overlay");
+    }
+    tracing::info!(root_cid = %new_root_cid, changed = changed_protocols.len(), "Published runtime manifest after kinds overlay");
+    Ok(KindsOverlayResult {
+        root_cid: new_root_cid,
+        changed_protocols,
+    })
+}
+
+pub async fn apply_kinds_tree_overlay(
+    manifest: &mut RuntimeManifest,
+    kinds: &KindTree,
+    kubo_url: &str,
+) -> Result<Vec<String>> {
+    let mut changed_protocols = Vec::new();
+    for (protocol, link) in kinds.iter_protocols() {
+        let raw_kind: KindNode = kubo::dag_get(kubo_url, &link.cid)
+            .await
+            .with_context(|| format!("fetching overlay kind {protocol}"))?;
+        if raw_kind.protocol != protocol {
+            return Err(anyhow!(
+                "overlay kind protocol mismatch: tree has '{protocol}', node has '{}'",
+                raw_kind.protocol
+            ));
+        }
+        let mut candidate_manifest = manifest.clone();
+        candidate_manifest
+            .kinds
+            .insert_protocol(&protocol, link.clone());
+        if raw_kind.extends.is_some() {
+            crate::entity::resolve_kind_extends(kubo_url, &candidate_manifest, raw_kind).await?;
+        }
+        if manifest
+            .kinds
+            .get_protocol(&protocol)
+            .is_none_or(|old| old.cid != link.cid)
+        {
+            changed_protocols.push(protocol.clone());
+        }
+        manifest.kinds.insert_protocol(&protocol, link.clone());
+    }
+    Ok(changed_protocols)
+}
+
 /// Build the full IPLD manifest and publish to Kubo. Returns root CID.
 pub async fn build_manifest(
     cfg: &BootstrapRuntime,
@@ -823,8 +911,10 @@ pub async fn save_all_entity_states(
 
 #[cfg(test)]
 mod tests {
-    use super::BootstrapYaml;
+    use super::{apply_kinds_overlay, BootstrapYaml};
+    use crate::entity::{EntityNode, Evaluator, IpldLink, KindNode, KindTree, RuntimeManifest};
     use ma_core::{check_cap, CAP_IDENTITY_PUBLISH, CAP_IPFS, CAP_RPC};
+    use std::collections::{BTreeMap, HashMap};
 
     #[test]
     fn example_yaml_parses() {
@@ -855,5 +945,98 @@ mod tests {
         assert!(check_cap(&root_acl, "did:ma:alice", CAP_IPFS).is_ok());
         assert!(check_cap(&root_acl, "did:ma:alice", CAP_IDENTITY_PUBLISH).is_ok());
         assert!(check_cap(&root_acl, "did:ma:alice", CAP_RPC).is_ok());
+    }
+
+    #[tokio::test]
+    async fn kinds_overlay_preserves_entities_and_entity_state() {
+        let kubo = crate::testkubo::MockKubo::start().await;
+        let old_kind = kind_node("/ma/test/0.0.1", "bafyoldbehaviour");
+        let new_kind = kind_node("/ma/test/0.0.1", "bafynewbehaviour");
+        let custom_kind = kind_node("/ma/custom/0.0.1", "bafycustombehaviour");
+        let old_kind_cid = crate::kubo::dag_put(kubo.url(), &old_kind).await.unwrap();
+        let new_kind_cid = crate::kubo::dag_put(kubo.url(), &new_kind).await.unwrap();
+        let custom_kind_cid = crate::kubo::dag_put(kubo.url(), &custom_kind)
+            .await
+            .unwrap();
+        let state_cid = kubo.add_bytes(b"persisted-state".to_vec()).await;
+        let entity = EntityNode {
+            kind: "/ma/test/0.0.1".to_string(),
+            behaviour: None,
+            acl: String::new(),
+            state: Some(IpldLink::new(&state_cid)),
+            parent: None,
+            label: None,
+            attributes: BTreeMap::new(),
+            init: None,
+            initialised: true,
+        };
+        let entity_cid = crate::kubo::dag_put(kubo.url(), &entity).await.unwrap();
+        let mut manifest = RuntimeManifest {
+            acl: None,
+            acls: HashMap::new(),
+            protocol: "/ma/runtime/0.1.0".to_string(),
+            kinds: KindTree::default(),
+            entities: HashMap::from([("room".to_string(), IpldLink::new(&entity_cid))]),
+            i18n: HashMap::new(),
+            grp: HashMap::new(),
+            config: BTreeMap::new(),
+        };
+        manifest
+            .kinds
+            .insert_protocol("/ma/test/0.0.1", IpldLink::new(&old_kind_cid));
+        manifest
+            .kinds
+            .insert_protocol("/ma/custom/0.0.1", IpldLink::new(&custom_kind_cid));
+        let root_cid = crate::kubo::dag_put(kubo.url(), &manifest).await.unwrap();
+
+        let mut overlay = KindTree::default();
+        overlay.insert_protocol("/ma/test/0.0.1", IpldLink::new(&new_kind_cid));
+        let kinds_cid = crate::kubo::dag_put(kubo.url(), &overlay).await.unwrap();
+
+        let result = apply_kinds_overlay(&root_cid, &kinds_cid, kubo.url())
+            .await
+            .unwrap();
+        assert_eq!(result.changed_protocols, vec!["/ma/test/0.0.1"]);
+
+        let updated: RuntimeManifest = crate::kubo::dag_get(kubo.url(), &result.root_cid)
+            .await
+            .unwrap();
+        assert_eq!(
+            updated.entities.get("room").map(|link| link.cid.as_str()),
+            Some(entity_cid.as_str())
+        );
+        assert_eq!(
+            updated
+                .kinds
+                .get_protocol("/ma/test/0.0.1")
+                .map(|link| link.cid.as_str()),
+            Some(new_kind_cid.as_str())
+        );
+        assert_eq!(
+            updated
+                .kinds
+                .get_protocol("/ma/custom/0.0.1")
+                .map(|link| link.cid.as_str()),
+            Some(custom_kind_cid.as_str())
+        );
+        let entity_after: EntityNode = crate::kubo::dag_get(kubo.url(), &entity_cid).await.unwrap();
+        assert_eq!(
+            entity_after.state.map(|link| link.cid),
+            Some(state_cid),
+            "overlay must not rewrite entity state"
+        );
+    }
+
+    fn kind_node(protocol: &str, behaviour_cid: &str) -> KindNode {
+        KindNode {
+            protocol: protocol.to_string(),
+            cid: None,
+            kind_type: Evaluator::Extism,
+            behaviour: Some(IpldLink::new(behaviour_cid)),
+            behaviour_chain: Vec::new(),
+            host_functions: Vec::new(),
+            attributes: BTreeMap::new(),
+            extends: None,
+        }
     }
 }

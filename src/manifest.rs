@@ -15,17 +15,20 @@
 //! manifest directly.  The writer must therefore be spawned *after* startup has
 //! settled the initial root CID, and all concurrent mutations must go through it.
 
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use anyhow::Result;
 use ma_core::config::Config;
-use tokio::sync::Mutex;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, MutexGuard, RwLock};
 use tracing::warn;
 
 use crate::entity::{EntityNode, IpldLink, RuntimeManifest};
 use crate::status::SharedStats;
+
+pub type ManifestMutationFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
 
 /// Cloneable handle to the serialised manifest writer.
 #[derive(Clone)]
@@ -80,6 +83,24 @@ impl ManifestWriter {
         }
     }
 
+    async fn publish_manifest_update(
+        &self,
+        guard: &mut MutexGuard<'_, String>,
+        old_cid: String,
+        manifest: &RuntimeManifest,
+    ) -> Result<String> {
+        let inner = &self.inner;
+        let new_cid = crate::kubo::dag_put(&inner.kubo_url, manifest).await?;
+        if let Err(e) = crate::kubo::pin_update(&inner.kubo_url, &old_cid, &new_cid).await {
+            warn!(old = %old_cid, new = %new_cid, error = %e, "manifest pin_update failed");
+        }
+
+        guard.clone_from(&new_cid);
+        inner.stats.write().await.root_cid = Some(new_cid.clone());
+        self.persist_root_cid(&new_cid).await;
+        Ok(new_cid)
+    }
+
     /// Apply `f` to the current manifest, publish it, swap the pin, and return
     /// the new root CID.  Mutations are fully serialised: each observes the
     /// result of the previous one.
@@ -99,15 +120,27 @@ impl ManifestWriter {
 
         let mut manifest: RuntimeManifest = crate::kubo::dag_get(&inner.kubo_url, &old_cid).await?;
         f(&mut manifest)?;
-        let new_cid = crate::kubo::dag_put(&inner.kubo_url, &manifest).await?;
-        if let Err(e) = crate::kubo::pin_update(&inner.kubo_url, &old_cid, &new_cid).await {
-            warn!(old = %old_cid, new = %new_cid, error = %e, "manifest pin_update failed");
-        }
+        self.publish_manifest_update(&mut guard, old_cid, &manifest)
+            .await
+    }
 
-        guard.clone_from(&new_cid);
-        inner.stats.write().await.root_cid = Some(new_cid.clone());
-        self.persist_root_cid(&new_cid).await;
-        Ok(new_cid)
+    /// Async variant of [`Self::mutate`] for mutations that must validate
+    /// against IPFS while the manifest writer lock is held.
+    #[allow(clippy::significant_drop_tightening)]
+    pub async fn mutate_async<F, T>(&self, f: F) -> Result<(String, T)>
+    where
+        F: for<'a> FnOnce(&'a mut RuntimeManifest) -> ManifestMutationFuture<'a, T>,
+    {
+        let inner = &self.inner;
+        let mut guard = inner.current.lock().await;
+        let old_cid = guard.clone();
+
+        let mut manifest: RuntimeManifest = crate::kubo::dag_get(&inner.kubo_url, &old_cid).await?;
+        let value = f(&mut manifest).await?;
+        let new_cid = self
+            .publish_manifest_update(&mut guard, old_cid, &manifest)
+            .await?;
+        Ok((new_cid, value))
     }
 
     /// Publish an updated entity node whose `state` points at `state_cid`, then

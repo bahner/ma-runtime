@@ -455,7 +455,7 @@ fn endpoint_for_protocol_from_doc(doc: &Document, protocol: &str) -> Option<Stri
 ///
 /// Takes individual Arc values so it can be called from spawned tasks without
 /// needing a reference to the short-lived `IpfsHandlerCtx`.
-pub(crate) async fn open_outbox_for_did(
+pub async fn open_outbox_for_did(
     endpoint: &Arc<dyn ma_core::MaEndpoint>,
     resolver: &Arc<IpfsGatewayResolver>,
     doc_cache: &DocCache,

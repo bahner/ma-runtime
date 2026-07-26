@@ -3,12 +3,12 @@ use std::sync::Arc;
 use anyhow::{anyhow, Context, Result};
 use ciborium::Value as CborValue;
 
-use crate::entity::{IpldLink, KindNode};
+use crate::entity::{IpldLink, KindNode, KindTree};
 
 use super::helpers::{
     load_manifest, runtime_config_snapshot, send_crud_error, send_crud_i18n_error, send_crud_ok,
     send_crud_ok_cid, send_crud_ok_yaml, send_crud_reply_cbor, spawn_kind_dependency_reloads,
-    with_manifest_crud,
+    spawn_kind_dependency_reloads_for, with_manifest_crud, with_manifest_crud_async,
 };
 use super::CrudHandlerCtx;
 
@@ -19,6 +19,7 @@ use super::CrudHandlerCtx;
 /// | Operation | Path | Body |
 /// |-----------|------|------|
 /// | List all  | `GET /kinds` | — |
+/// | Apply tree | `SET /kinds` | `/ipfs/<cid>` |
 /// | Get kind  | `GET /kinds/ma/avatar/0.0.1` | — |
 /// | Upsert    | `SET /kinds/ma/avatar/0.0.1` | `/ipfs/<cid>` |
 /// | Delete    | `DEL /kinds/ma/avatar/0.0.1` | — |
@@ -42,6 +43,10 @@ pub(super) async fn handle_kinds_ns(
             // DELETE /kinds → refuse
             (Some(""), []) => {
                 send_crud_i18n_error(message, reply_type, ctx, "refuse-delete-root").await
+            }
+            // SET /kinds <cid> → apply a KindTree overlay; absent protocols are preserved.
+            (Some(""), [CborValue::Text(raw)]) => {
+                apply_kinds_tree(message, reply_type, ctx, raw).await
             }
             _ => Err(anyhow!("unknown kinds root operation")),
         };
@@ -115,5 +120,51 @@ pub(super) async fn handle_kinds_ns(
             send_crud_ok(message, reply_type, ctx).await
         }
         _ => Err(anyhow!("unknown kinds operation")),
+    }
+}
+
+async fn apply_kinds_tree(
+    message: &ma_core::Message,
+    reply_type: &str,
+    ctx: &CrudHandlerCtx,
+    raw: &str,
+) -> Result<()> {
+    let cid = crate::kubo::dag_resolve(&ctx.kubo_rpc_url, raw).await?;
+    let overlay: KindTree = crate::kubo::dag_get(&ctx.kubo_rpc_url, &cid)
+        .await
+        .with_context(|| format!("fetching kinds tree '{cid}'"))?;
+    let kubo_rpc_url = ctx.kubo_rpc_url.clone();
+    let (_, changed_protocols) = with_manifest_crud_async(ctx, |manifest| {
+        Box::pin(async move {
+            crate::bootstrap::apply_kinds_tree_overlay(manifest, &overlay, &kubo_rpc_url).await
+        })
+    })
+    .await?;
+    schedule_overlay_reloads(ctx, &changed_protocols).await;
+    send_crud_ok_cid(message, reply_type, ctx, &cid).await
+}
+
+async fn schedule_overlay_reloads(ctx: &CrudHandlerCtx, changed_protocols: &[String]) {
+    if changed_protocols.is_empty() {
+        return;
+    }
+    let runtime_config = match runtime_config_snapshot(ctx).await {
+        Ok(runtime_config) => runtime_config,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to build runtime config for kind overlay reloads");
+            return;
+        }
+    };
+    match spawn_kind_dependency_reloads_for(changed_protocols, ctx, runtime_config).await {
+        Ok(reload_count) => {
+            tracing::info!(
+                changed = changed_protocols.len(),
+                reload_count,
+                "kind overlay dependents scheduled for reload"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(changed = changed_protocols.len(), error = %e, "failed to schedule kind overlay dependent reloads");
+        }
     }
 }

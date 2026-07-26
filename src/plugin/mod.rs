@@ -160,7 +160,7 @@ pub fn new_entity_registry() -> EntityRegistry {
     Arc::new(RwLock::new(HashMap::new()))
 }
 
-pub(crate) fn graceful_shutdown_timeout() -> std::time::Duration {
+pub fn graceful_shutdown_timeout() -> std::time::Duration {
     backend::wasm_call_timeout() * 2
 }
 

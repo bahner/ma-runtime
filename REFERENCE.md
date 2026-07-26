@@ -330,7 +330,9 @@ ma --acl-file /etc/ma/acl.yaml --status-bind 0.0.0.0:5003
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--gen-root-cid <YAML>` | — | Publish bootstrap manifest to IPFS, print `root_cid`, then exit |
+| `--gen-kinds-cid <YAML>` | — | Publish only `runtime.kinds` from bootstrap YAML to IPFS, print the kinds CID, then exit |
 | `--root-cid <CID>` | — | WARNING: resets runtime head for this process; recover prior CID from logs if mistaken |
+| `--kinds-cid <CID>` | — | Apply a kinds-tree CID over the selected runtime head without replacing entities or entity state |
 | `--owner <DID>` | — | DID(s) of the runtime owner(s); repeat for multiple; falls back to `owners:` in config |
 | `--acl-file <PATH>` | — | ACL YAML; open (`*`) if omitted |
 | `--poll-ms <MS>` | `100` | Service poll interval |
@@ -347,21 +349,25 @@ ma --acl-file /etc/ma/acl.yaml --status-bind 0.0.0.0:5003
 2. If `--gen-headless-config`: write config + bundle (including `runtime_ipns` key), exit.
 3. If secret bundle is missing: auto-generate headless config and continue.
 4. If `--gen-root-cid <yaml>`: wait for Kubo, publish IPLD manifest, print `root_cid`, exit.
-5. Load ACL (deny-all until manifest is loaded later).
-6. Load `SecretBundle`.
-7. Create iroh QUIC endpoint, register services (RPC, IPFS publisher if enabled, CRUD if enabled).
-8. Build own DID document, spawn background publish to IPNS.
-9. Wait for Kubo readiness (10 attempts).
-10. Resolve `root_cid` from `--root-cid` CLI or runtime IPNS. If none found, publish a
+5. If `--gen-kinds-cid <yaml>`: wait for Kubo, publish only `runtime.kinds`, print the kinds CID, exit.
+6. Load ACL (deny-all until manifest is loaded later).
+7. Load `SecretBundle`.
+8. Create iroh QUIC endpoint, register services (RPC, IPFS publisher if enabled, CRUD if enabled).
+9. Build own DID document, spawn background publish to IPNS.
+10. Wait for Kubo readiness (10 attempts).
+11. Resolve `root_cid` from `--root-cid` CLI or runtime IPNS. If none found, publish a
     minimal empty `RuntimeManifest` to Kubo and use that CID as the runtime head.
-11. Fetch locale from `RuntimeManifest.config.i18n`; fall back to embedded FTL if unavailable.
-12. Load Wasm entity plugins from IPFS manifest.
-13. Start `#scheduler` native actor.
-14. Load named ACLs into cache from manifest; replace transport-gate ACL from manifest ACL.
-15. Resolve owners from CLI `--owner` and `config.extra.owners`; seed live ACL.
-16. Start status HTTP server.
-17. Main event loop: drain RPC, IPFS, and CRUD inboxes every `poll_ms`.
-18. On `Ctrl-C`: save entity states to IPFS, update manifest CID in config, close endpoint.
+12. If `--kinds-cid <cid>` is present, read that CID as a `KindTree` overlay,
+  apply it additively to the selected manifest, and publish a new runtime head
+  whose `entities` links are preserved.
+13. Fetch locale from `RuntimeManifest.config.i18n`; fall back to embedded FTL if unavailable.
+14. Load Wasm entity plugins from IPFS manifest.
+15. Start `#scheduler` native actor.
+16. Load named ACLs into cache from manifest; replace transport-gate ACL from manifest ACL.
+17. Resolve owners from CLI `--owner` and `config.extra.owners`; seed live ACL.
+18. Start status HTTP server.
+19. Main event loop: drain RPC, IPFS, and CRUD inboxes every `poll_ms`.
+20. On `Ctrl-C`: save entity states to IPFS, update manifest CID in config, close endpoint.
 
 ---
 

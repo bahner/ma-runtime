@@ -332,6 +332,24 @@ echo "root_cid: bafyreiabc123…" >> ~/.config/ma/ma.yaml
 
 Then restart `ma` and it will load the kinds and entities from the new manifest.
 
+Later kind/behaviour upgrades do not need a new world manifest. Generate a
+kinds-only CID from the profile YAML and apply it over the existing runtime
+head. The apply operation is additive: protocols present in the kinds CID are
+updated or added, protocols absent from it are preserved, and existing entity
+links and state CIDs are not replaced.
+
+```sh
+ma --gen-kinds-cid ../lambda-ma/dist/lambda-ma.yaml
+ma --kinds-cid <printed-kinds-cid>
+```
+
+If the runtime is already running and reachable over CRUD, apply the same CID
+live instead of restarting:
+
+```text
+@runtime/kinds: /ipfs/<printed-kinds-cid>
+```
+
 Kinds are the most important architectural decision in your runtime.  A
 kind defines the whole contract — changing a kind after entities use it is
 a breaking change.  Design kinds to be stable and reusable; entities are

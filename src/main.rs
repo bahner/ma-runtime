@@ -56,6 +56,10 @@ struct Cli {
     #[arg(long)]
     gen_root_cid: Option<PathBuf>,
 
+    /// Publish only runtime.kinds from YAML and print the resulting kinds CID, then exit.
+    #[arg(long)]
+    gen_kinds_cid: Option<PathBuf>,
+
     /// Bootstrap from YAML: publish manifest to IPFS and start the daemon using the resulting root CID.
     #[arg(long)]
     bootstrap: Option<PathBuf>,
@@ -63,6 +67,10 @@ struct Cli {
     /// WARNING: resets runtime head for this process. If wrong, recover old CID from logs.
     #[arg(long)]
     root_cid: Option<String>,
+
+    /// Apply a kinds-tree CID over the selected runtime head without replacing entities.
+    #[arg(long)]
+    kinds_cid: Option<String>,
 
     /// Poll interval in milliseconds.
     #[arg(long, default_value_t = 100)]
@@ -166,6 +174,22 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // ── gen-kinds-cid: publish only runtime.kinds to IPFS, print CID, exit ──
+    if let Some(ref yaml_path) = cli.gen_kinds_cid {
+        let publisher = IpfsDidPublisher::new(&config.kubo_rpc_url)
+            .with_context(|| format!("invalid kubo_rpc_url: {}", config.kubo_rpc_url))?;
+        publisher
+            .wait_until_ready(10)
+            .await
+            .context("kubo RPC is not reachable for kinds bootstrap")?;
+
+        let kinds_cid = bootstrap::run_kinds_bootstrap(yaml_path, &config.kubo_rpc_url)
+            .await
+            .context("kinds bootstrap failed")?;
+        println!("{kinds_cid}");
+        return Ok(());
+    }
+
     // ── bootstrap: publish manifest from YAML, use resulting CID, then continue ──
     let bootstrap_root_cid: Option<String> = if let Some(ref yaml_path) = cli.bootstrap {
         let publisher = IpfsDidPublisher::new(&config.kubo_rpc_url)
@@ -194,6 +218,9 @@ async fn main() -> Result<()> {
     if let Some(ref cid) = cli.root_cid {
         Cid::try_from(cid.as_str()).with_context(|| format!("invalid --root-cid CID: {cid}"))?;
         info!(root_cid = %cid, "runtime head reset for this session");
+    }
+    if let Some(ref cid) = cli.kinds_cid {
+        Cid::try_from(cid.as_str()).with_context(|| format!("invalid --kinds-cid CID: {cid}"))?;
     }
 
     // ── gen-lang-cid has been replaced by `make src/i18n.yaml` ────────────
@@ -345,6 +372,18 @@ async fn main() -> Result<()> {
                 }
                 Err(e) => warn!(error = %format!("{e:#}"), "Failed to bootstrap minimal manifest"),
             }
+        }
+    }
+
+    if let (Some(rc), Some(kinds_cid)) = (root_cid.as_deref(), cli.kinds_cid.as_deref()) {
+        let result = bootstrap::apply_kinds_overlay(rc, kinds_cid, &config.kubo_rpc_url)
+            .await
+            .context("applying kinds CID overlay failed")?;
+        if result.root_cid == rc {
+            info!(changed = 0, "Kinds overlay made no manifest changes");
+        } else {
+            info!(root_cid = %result.root_cid, changed = result.changed_protocols.len(), "Kinds overlay applied");
+            root_cid = Some(result.root_cid);
         }
     }
 
