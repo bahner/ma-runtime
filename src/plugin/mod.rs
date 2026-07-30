@@ -320,6 +320,18 @@ impl EntityPlugin {
             } else {
                 kind_node.behaviour_chain.clone()
             };
+            let kind_behaviour_cids = kind_behaviours
+                .iter()
+                .map(|link| link.cid.as_str())
+                .collect::<Vec<_>>()
+                .join(",");
+            info!(
+                fragment = %fragment,
+                kind = %kind_node.protocol,
+                kind_behaviour_cids = %kind_behaviour_cids,
+                entity_behaviour_cid = ?entity_behaviour_cid,
+                "resolved entity behaviour chain"
+            );
             let behaviour_text: Option<Vec<u8>> =
                 if kind_behaviours.is_empty() && entity_behaviour_cid.is_none() {
                     None
