@@ -204,7 +204,7 @@ On first start with no prior manifest, `ma` publishes an empty
 
 ```sh
 # from the zion terminal:
-.my.ma:claim
+.ma!claim
 # or from anywhere with your DID:
 curl -X POST http://127.0.0.1:5003/claim \
   -H 'Content-Type: application/json' \
