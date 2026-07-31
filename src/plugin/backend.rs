@@ -306,6 +306,13 @@ pub(super) fn wasm_call_timeout() -> std::time::Duration {
     env_secs("MA_WASM_CALL_TIMEOUT_SECS", 30)
 }
 
+/// Hard cap on building a Wasm plugin and completing its startup lifecycle.
+/// Kept separate from the per-call cap so tests can shorten execution timeout
+/// without making unrelated plugin instantiation flaky on slower targets.
+pub(super) fn wasm_load_timeout() -> std::time::Duration {
+    env_secs("MA_WASM_LOAD_TIMEOUT_SECS", 60)
+}
+
 fn wasm_max_pages() -> u32 {
     std::env::var("MA_WASM_MAX_PAGES")
         .ok()

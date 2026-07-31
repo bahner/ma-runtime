@@ -439,7 +439,7 @@ impl EntityPlugin {
         // extism epoch timeout, but plugin *instantiation* (compilation) is
         // not — a pathological module could otherwise hang bootstrap or a
         // reload task forever.
-        let load_timeout = backend::wasm_call_timeout() * 2;
+        let load_timeout = backend::wasm_load_timeout();
         let lifecycle = match tokio::time::timeout(load_timeout, life_rx).await {
             Ok(Ok(Ok(lc))) => lc,
             Ok(Ok(Err(e))) => return Err(e),
@@ -688,7 +688,10 @@ mod hostile {
     //! Kubo or network needed.
 
     use std::collections::BTreeMap;
+    use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
+
+    use anyhow::{bail, Context as _};
 
     use crate::entity::{
         CastInput, EntityNode, Evaluator, IpldLink, KindNode, Lifecycle, PluginKind, PluginMsg,
@@ -810,6 +813,39 @@ mod hostile {
         }
     }
 
+    fn lambda_ma_fixture_dir() -> anyhow::Result<Option<PathBuf>> {
+        if let Some(dir) = std::env::var_os("LAMBDA_MA_DIR") {
+            let dir = PathBuf::from(dir);
+            let wasm = dir.join("scheme-actor/actor.wasm");
+            if !wasm.is_file() {
+                bail!(
+                    "LAMBDA_MA_DIR points at '{}', but '{}' does not exist; build lambda-ma/scheme-actor first",
+                    dir.display(),
+                    wasm.display()
+                );
+            }
+            return Ok(Some(dir));
+        }
+
+        let dir = PathBuf::from("../lambda-ma");
+        if dir.join("scheme-actor/actor.wasm").is_file() {
+            Ok(Some(dir))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn read_lambda_ma_fixture(lambda_ma_dir: &Path, relative: &str) -> anyhow::Result<Vec<u8>> {
+        let path = lambda_ma_dir.join(relative);
+        std::fs::read(&path).with_context(|| format!("read lambda-ma fixture '{}'", path.display()))
+    }
+
+    fn read_lambda_ma_text(lambda_ma_dir: &Path, relative: &str) -> anyhow::Result<String> {
+        let path = lambda_ma_dir.join(relative);
+        std::fs::read_to_string(&path)
+            .with_context(|| format!("read lambda-ma fixture '{}'", path.display()))
+    }
+
     async fn load(
         kubo_url: &str,
         fragment: &str,
@@ -834,37 +870,27 @@ mod hostile {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn scheme_actor_wasm_dispatches_report_parent_with_args_first() {
-        let required_paths = [
-            "../lambda-ma/scheme-actor/actor.wasm",
-            "../lambda-ma/scheme-actor/stdlib.ma",
-            "../lambda-ma/scheme-actor/actor.ma",
-            "../lambda-ma/scheme-actor/state.ma",
-            "../lambda-ma/actors/agent.ma",
-            "../lambda-ma/actors/duck.ma",
-        ];
-        if required_paths
-            .iter()
-            .any(|path| !std::path::Path::new(path).exists())
-        {
-            eprintln!("skipping scheme actor integration test; lambda-ma fixtures not present");
-            return;
-        }
+    async fn scheme_actor_wasm_dispatches_report_parent_with_args_first() -> anyhow::Result<()> {
+        let Some(lambda_ma_dir) = lambda_ma_fixture_dir()? else {
+            eprintln!(
+                "skipping lambda-ma scheme actor fixture test; set LAMBDA_MA_DIR to a checkout with scheme-actor/actor.wasm"
+            );
+            return Ok(());
+        };
 
         let kubo = MockKubo::start().await;
         let (envelope_tx, mut envelope_rx) =
             tokio::sync::mpsc::unbounded_channel::<(String, SendEnvelope)>();
         let registry = new_entity_registry();
-        let wasm = std::fs::read("../lambda-ma/scheme-actor/actor.wasm")
-            .expect("lambda-ma scheme actor wasm must be built");
+        let wasm = read_lambda_ma_fixture(&lambda_ma_dir, "scheme-actor/actor.wasm")?;
         let wasm_cid = kubo.add_bytes(wasm).await;
 
         let behaviour = [
-            std::fs::read_to_string("../lambda-ma/scheme-actor/stdlib.ma").unwrap(),
-            std::fs::read_to_string("../lambda-ma/scheme-actor/actor.ma").unwrap(),
-            std::fs::read_to_string("../lambda-ma/scheme-actor/state.ma").unwrap(),
-            std::fs::read_to_string("../lambda-ma/actors/agent.ma").unwrap(),
-            std::fs::read_to_string("../lambda-ma/actors/duck.ma").unwrap(),
+            read_lambda_ma_text(&lambda_ma_dir, "scheme-actor/stdlib.ma")?,
+            read_lambda_ma_text(&lambda_ma_dir, "scheme-actor/actor.ma")?,
+            read_lambda_ma_text(&lambda_ma_dir, "scheme-actor/state.ma")?,
+            read_lambda_ma_text(&lambda_ma_dir, "actors/agent.ma")?,
+            read_lambda_ma_text(&lambda_ma_dir, "actors/duck.ma")?,
         ]
         .join("\n");
         let behaviour_cid = kubo.add_bytes(behaviour.into_bytes()).await;
@@ -927,6 +953,7 @@ mod hostile {
             saw_parent_report,
             "agent should answer room with parent report"
         );
+        Ok(())
     }
 
     /// One combined test (not parallel-safe pieces): the Wasm timeout env var
