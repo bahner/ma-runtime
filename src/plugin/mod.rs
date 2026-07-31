@@ -835,6 +835,22 @@ mod hostile {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn scheme_actor_wasm_dispatches_report_parent_with_args_first() {
+        let required_paths = [
+            "../lambda-ma/scheme-actor/actor.wasm",
+            "../lambda-ma/scheme-actor/stdlib.ma",
+            "../lambda-ma/scheme-actor/actor.ma",
+            "../lambda-ma/scheme-actor/state.ma",
+            "../lambda-ma/actors/agent.ma",
+            "../lambda-ma/actors/duck.ma",
+        ];
+        if required_paths
+            .iter()
+            .any(|path| !std::path::Path::new(path).exists())
+        {
+            eprintln!("skipping scheme actor integration test; lambda-ma fixtures not present");
+            return;
+        }
+
         let kubo = MockKubo::start().await;
         let (envelope_tx, mut envelope_rx) =
             tokio::sync::mpsc::unbounded_channel::<(String, SendEnvelope)>();
