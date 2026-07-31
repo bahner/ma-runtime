@@ -63,6 +63,7 @@ pub fn native_actor(
     ctx: SchedulerCtx,
 ) -> NativeActor {
     let schedule_registry = ScheduleRegistry::new();
+    let signal_schedule_registry = schedule_registry.clone();
     NativeActor::new(move |input: &CastInput| -> Result<DispatchResult> {
         let term: CborValue = ciborium::de::from_reader(input.msg.content.as_slice())
             .map_err(|e| anyhow!("scheduler: invalid CBOR in message: {e}"))?;
@@ -92,11 +93,15 @@ pub fn native_actor(
         })
     })
     .with_state_hooks(|| None, |_| {})
-    .with_signal(|signal| {
+    .with_signal(move |signal| {
+        let shutdown = matches!(&signal, NativeSignal::Shutdown);
         match signal {
             NativeSignal::SetState(_bytes) => {}
             NativeSignal::Init(_payload) => {}
             NativeSignal::Start | NativeSignal::Shutdown => {}
+        }
+        if shutdown {
+            signal_schedule_registry.deactivate_all();
         }
         Ok(())
     })
@@ -207,6 +212,10 @@ impl ScheduleRegistry {
         {
             map.remove(schedule_key);
         }
+    }
+
+    fn deactivate_all(&self) {
+        self.jobs.lock().expect("jobs map poisoned").clear();
     }
 }
 
@@ -597,6 +606,18 @@ mod tests {
 
         let latest_guard = registry.active_guard(key, second.version);
         assert!(latest_guard());
+    }
+
+    #[test]
+    fn deactivate_all_disables_registered_generations() {
+        let key = "did:ma:abc#duck-quack".to_string();
+        let registry = ScheduleRegistry::new();
+        let registration = registry.begin_registration(&key);
+        let guard = registry.active_guard(key, registration.version);
+
+        assert!(guard());
+        registry.deactivate_all();
+        assert!(!guard());
     }
 
     #[test]

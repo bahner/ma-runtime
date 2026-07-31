@@ -792,6 +792,24 @@ mod hostile {
         }
     }
 
+    fn cast_input_with_content(id: &str, content_value: ciborium::Value) -> CastInput {
+        let mut content = Vec::new();
+        ciborium::ser::into_writer(&content_value, &mut content).unwrap();
+        CastInput {
+            msg: PluginMsg {
+                id: id.to_string(),
+                from: "did:ma:testrunner#construct".to_string(),
+                to: "did:ma:testrunner#duckie".to_string(),
+                created_at: 0,
+                exp: 0,
+                reply_to: None,
+                message_type: ma_core::MESSAGE_TYPE_RPC.to_string(),
+                content_type: ma_core::CONTENT_TYPE_TERM.to_string(),
+                content,
+            },
+        }
+    }
+
     async fn load(
         kubo_url: &str,
         fragment: &str,
@@ -813,6 +831,86 @@ mod hostile {
             None,
         )
         .await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scheme_actor_wasm_dispatches_report_parent_with_args_first() {
+        let kubo = MockKubo::start().await;
+        let (envelope_tx, mut envelope_rx) =
+            tokio::sync::mpsc::unbounded_channel::<(String, SendEnvelope)>();
+        let registry = new_entity_registry();
+        let wasm = std::fs::read("../lambda-ma/scheme-actor/actor.wasm")
+            .expect("lambda-ma scheme actor wasm must be built");
+        let wasm_cid = kubo.add_bytes(wasm).await;
+
+        let behaviour = [
+            std::fs::read_to_string("../lambda-ma/scheme-actor/stdlib.ma").unwrap(),
+            std::fs::read_to_string("../lambda-ma/scheme-actor/actor.ma").unwrap(),
+            std::fs::read_to_string("../lambda-ma/scheme-actor/state.ma").unwrap(),
+            std::fs::read_to_string("../lambda-ma/actors/agent.ma").unwrap(),
+            std::fs::read_to_string("../lambda-ma/actors/duck.ma").unwrap(),
+        ]
+        .join("\n");
+        let behaviour_cid = kubo.add_bytes(behaviour.into_bytes()).await;
+
+        let mut node = entity_node();
+        node.kind = "/ma/scheme/agent/0.0.1".to_string();
+        node.behaviour = None;
+        node.initialised = true;
+        let mut kind = kind_node(&wasm_cid);
+        kind.protocol = "/ma/scheme/agent/0.0.1".to_string();
+        kind.behaviour_chain = vec![IpldLink::new(&behaviour_cid)];
+        kind.host_functions = vec![
+            "ma_reply".to_string(),
+            "ma_send".to_string(),
+            "ma_set_state".to_string(),
+            "ma_ipfs_include".to_string(),
+            "ma_create_entity".to_string(),
+            "ma_entity_exists".to_string(),
+            "ma_end".to_string(),
+            "ma_set_behaviour".to_string(),
+        ];
+
+        let (plugin, _) = EntityPlugin::load(
+            "duckie",
+            &node,
+            &kind,
+            "did:ma:testrunner",
+            kubo.url(),
+            envelope_tx,
+            registry,
+            "",
+            1,
+            std::collections::BTreeMap::new(),
+            None,
+        )
+        .await
+        .expect("scheme actor wasm must load");
+
+        let input = cast_input_with_content(
+            "report-parent-1",
+            ciborium::Value::Array(vec![
+                ciborium::Value::Text(":report-parent".into()),
+                ciborium::Value::Text("did:ma:testrunner#construct".into()),
+                ciborium::Value::Text("tick-1".into()),
+                ciborium::Value::Text("nonce-1".into()),
+            ]),
+        );
+        plugin
+            .on_message(&input)
+            .await
+            .expect("report-parent dispatch");
+
+        let mut saw_parent_report = false;
+        while let Ok((_fragment, envelope)) = envelope_rx.try_recv() {
+            if envelope.to == "did:ma:testrunner#construct" {
+                saw_parent_report = true;
+            }
+        }
+        assert!(
+            saw_parent_report,
+            "agent should answer room with parent report"
+        );
     }
 
     /// One combined test (not parallel-safe pieces): the Wasm timeout env var
