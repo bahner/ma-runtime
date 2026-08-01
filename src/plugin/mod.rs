@@ -474,12 +474,14 @@ impl EntityPlugin {
     /// callers never need to branch on kind themselves.
     pub async fn on_message(&self, input: &CastInput) -> Result<DispatchResult> {
         let before_rss = current_rss_kib();
+        let message_verb = plugin_message_verb(&input.msg.content);
         debug!(
             fragment = %self.fragment,
             from = %input.msg.from,
             to = %input.msg.to,
             id = %input.msg.id,
             content_len = input.msg.content.len(),
+            verb = ?message_verb,
             "plugin dispatch start"
         );
         let result = self
@@ -492,6 +494,7 @@ impl EntityPlugin {
                 to = %input.msg.to,
                 id = %input.msg.id,
                 content_len = input.msg.content.len(),
+                verb = ?message_verb,
                 pending_state_bytes = result.pending_state_len(),
                 create_requests = result.create_requests.len(),
                 delete_requests = result.delete_requests.len(),
@@ -504,6 +507,7 @@ impl EntityPlugin {
                 to = %input.msg.to,
                 id = %input.msg.id,
                 content_len = input.msg.content.len(),
+                verb = ?message_verb,
                 error = %error,
                 "plugin dispatch failed"
             ),
@@ -640,6 +644,17 @@ impl EntityPlugin {
         backstop: std::time::Duration,
     ) -> Result<Option<String>> {
         self.shutdown_signal_save(kubo_url, backstop).await
+    }
+}
+
+fn plugin_message_verb(content: &[u8]) -> Option<String> {
+    match ciborium::de::from_reader::<ciborium::Value, _>(content) {
+        Ok(ciborium::Value::Text(verb)) => Some(verb),
+        Ok(ciborium::Value::Array(items)) => match items.first() {
+            Some(ciborium::Value::Text(verb)) => Some(verb.clone()),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
