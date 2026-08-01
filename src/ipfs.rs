@@ -486,10 +486,7 @@ pub async fn open_outbox_for_did(
         }
     }
 
-    let doc = tokio::time::timeout(Duration::from_secs(10), resolver.resolve(&target_base))
-        .await
-        .map_err(|_| anyhow::anyhow!("DID document resolve timed out for {target_base}"))?
-        .map_err(anyhow::Error::from)?;
+    let doc = resolve_did_for_outbox(resolver, &target_base).await?;
     let eid = endpoint_for_protocol_from_doc(&doc, protocol)
         .ok_or_else(|| anyhow::anyhow!("{target_base} has no service for {protocol}"))?;
 
@@ -500,6 +497,114 @@ pub async fn open_outbox_for_did(
     .await
     .map_err(|_| anyhow::anyhow!("iroh outbox connect timed out for {target_base} endpoint {eid}"))?
     .map_err(anyhow::Error::from)
+}
+
+async fn resolve_did_for_outbox(
+    resolver: &Arc<dyn DidDocumentResolver>,
+    target_base: &str,
+) -> Result<Document> {
+    const START_DELAYS: [Duration; 4] = [
+        Duration::from_secs(1),
+        Duration::from_secs(2),
+        Duration::from_secs(3),
+        Duration::from_secs(5),
+    ];
+    let mut resolves = tokio::task::JoinSet::new();
+    let mut last_error = None;
+    let mut attempt = 1;
+
+    spawn_did_resolve_attempt(&mut resolves, resolver, target_base, attempt);
+
+    for delay in START_DELAYS {
+        let next_start = tokio::time::sleep(delay);
+        tokio::pin!(next_start);
+
+        loop {
+            tokio::select! {
+                result = resolves.join_next(), if !resolves.is_empty() => {
+                    if let Some((resolved_attempt, result)) = flatten_resolve_join(target_base, result) {
+                        match result {
+                            Ok(doc) => return Ok(doc),
+                            Err(error) => {
+                                warn!(
+                                    to = %target_base,
+                                    attempt = resolved_attempt,
+                                    error = %error,
+                                    "DID document resolve failed"
+                                );
+                                last_error = Some(error);
+                            }
+                        }
+                    }
+                }
+                () = &mut next_start => break,
+            }
+        }
+
+        attempt += 1;
+        spawn_did_resolve_attempt(&mut resolves, resolver, target_base, attempt);
+    }
+
+    while let Some(result) = resolves.join_next().await {
+        if let Some((resolved_attempt, result)) = flatten_resolve_join(target_base, Some(result)) {
+            match result {
+                Ok(doc) => return Ok(doc),
+                Err(error) => {
+                    warn!(
+                        to = %target_base,
+                        attempt = resolved_attempt,
+                        error = %error,
+                        "DID document resolve failed"
+                    );
+                    last_error = Some(error);
+                }
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!(
+        "DID document resolve failed for {target_base}"
+    )))
+}
+
+fn spawn_did_resolve_attempt(
+    resolves: &mut tokio::task::JoinSet<(usize, Result<Document>)>,
+    resolver: &Arc<dyn DidDocumentResolver>,
+    target_base: &str,
+    attempt: usize,
+) {
+    let resolver = Arc::clone(resolver);
+    let target_base = target_base.to_string();
+    resolves.spawn(async move {
+        let result = match tokio::time::timeout(
+            Duration::from_secs(10),
+            resolver.resolve(&target_base),
+        )
+        .await
+        {
+            Ok(result) => result.map_err(anyhow::Error::from),
+            Err(_elapsed) => Err(anyhow::anyhow!(
+                "DID document resolve timed out for {target_base}"
+            )),
+        };
+        (attempt, result)
+    });
+}
+
+fn flatten_resolve_join(
+    target_base: &str,
+    result: Option<std::result::Result<(usize, Result<Document>), tokio::task::JoinError>>,
+) -> Option<(usize, Result<Document>)> {
+    match result {
+        Some(Ok(result)) => Some(result),
+        Some(Err(error)) => Some((
+            0,
+            Err(anyhow::anyhow!(
+                "DID document resolve task failed for {target_base}: {error}"
+            )),
+        )),
+        None => None,
+    }
 }
 
 pub async fn handle_ipfs_message(

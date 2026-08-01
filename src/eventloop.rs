@@ -668,7 +668,8 @@ pub async fn run(
                     msg.reply_to.clone_from(&env.reply_to);
                     let protocol = protocol_for(&msg_type);
                     // Spawn each delivery independently so one unreachable peer
-                    // cannot block others. Cap the outbox-open at 5 seconds.
+                    // cannot block others. Outbox opening applies its own
+                    // bounded retries for transient DID/IPNS resolution delays.
                     let ep = Arc::clone(&endpoint);
                     let res = Arc::clone(&shared_resolver);
                     let doc_cache = ipfs_state.as_ref().map(|ipfs| Arc::clone(&ipfs.doc_cache));
