@@ -7,7 +7,7 @@ use anyhow::{anyhow, Context, Result};
 use ciborium::Value as CborValue;
 use cid::{Cid, Version};
 use ma_core::{
-    Did, DidDocumentResolver, IpfsGatewayResolver, Ipld, CONTENT_TYPE_TERM, CONTENT_TYPE_TERM_CBOR,
+    Did, DidDocumentResolver, Ipld, CONTENT_TYPE_TERM, CONTENT_TYPE_TERM_CBOR,
     CONTENT_TYPE_TERM_YAML,
 };
 use tracing::{info, warn};
@@ -525,7 +525,7 @@ async fn update_stats_entities(ctx: &CrudHandlerCtx) {
 
 /// Resolve caller's DID document and extract their preferred language.
 /// Falls back to the runtime's own language on any error.
-pub(super) async fn caller_lang(from: &str, resolver: &IpfsGatewayResolver) -> String {
+pub(super) async fn caller_lang(from: &str, resolver: &dyn DidDocumentResolver) -> String {
     if let Ok(doc) = resolver.resolve(from).await {
         if let Some(Ipld::Map(ma)) = &doc.ma {
             if let Some(Ipld::String(lang)) = ma.get("lang") {
@@ -730,15 +730,27 @@ async fn send_crud_reply_raw(
     .context("failed to build CRUD reply")?;
     reply.reply_to = Some(incoming.id.clone());
 
-    match ctx
-        .endpoint
-        .outbox(
-            ctx.resolver.as_ref(),
-            &sender.base_id(),
+    let outbox_result = if let Some(doc_cache) = &ctx.doc_cache {
+        crate::ipfs::open_outbox_for_did(
+            &ctx.endpoint,
+            &ctx.resolver,
+            doc_cache,
+            &sender,
             ma_core::CRUD_PROTOCOL_ID,
         )
         .await
-    {
+    } else {
+        ctx.endpoint
+            .outbox(
+                ctx.resolver.as_ref(),
+                &sender.base_id(),
+                ma_core::CRUD_PROTOCOL_ID,
+            )
+            .await
+            .map_err(anyhow::Error::from)
+    };
+
+    match outbox_result {
         Ok(mut outbox) => {
             outbox
                 .send(&reply)

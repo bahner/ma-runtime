@@ -34,6 +34,7 @@ impl MockKubo {
             .route("/api/v0/dag/put", post(dag_put))
             .route("/api/v0/dag/get", post(dag_get))
             .route("/api/v0/dag/resolve", post(dag_resolve))
+            .route("/api/v0/name/resolve", post(name_resolve))
             .route("/api/v0/block/get", post(block_get))
             .route("/api/v0/cat", post(cat))
             .route("/api/v0/pin/update", post(pin_ok))
@@ -60,6 +61,11 @@ impl MockKubo {
         let cid = fake_cid(&bytes);
         self.store.0.lock().await.insert(cid.clone(), bytes);
         cid
+    }
+
+    /// Store raw bytes under a caller-chosen key.
+    pub async fn add_bytes_at(&self, key: &str, bytes: Vec<u8>) {
+        self.store.0.lock().await.insert(key.to_string(), bytes);
     }
 }
 
@@ -126,13 +132,15 @@ async fn dag_get(State(store): State<Store>, RawQuery(q): RawQuery) -> Vec<u8> {
 }
 
 async fn cat(State(store): State<Store>, RawQuery(q): RawQuery) -> Vec<u8> {
-    let cid = query_arg(q, "arg").unwrap_or_default();
-    store.0.lock().await.get(&cid).cloned().unwrap_or_default()
+    let arg = query_arg(q, "arg").unwrap_or_default();
+    let cid = arg.strip_prefix("/ipfs/").unwrap_or(&arg);
+    store.0.lock().await.get(cid).cloned().unwrap_or_default()
 }
 
 async fn block_get(State(store): State<Store>, RawQuery(q): RawQuery) -> Vec<u8> {
-    let cid = query_arg(q, "arg").unwrap_or_default();
-    store.0.lock().await.get(&cid).cloned().unwrap_or_default()
+    let arg = query_arg(q, "arg").unwrap_or_default();
+    let cid = arg.strip_prefix("/ipfs/").unwrap_or(&arg);
+    store.0.lock().await.get(cid).cloned().unwrap_or_default()
 }
 
 async fn dag_resolve(RawQuery(q): RawQuery) -> String {
@@ -149,6 +157,12 @@ async fn dag_resolve(RawQuery(q): RawQuery) -> String {
         .or_else(|| arg.strip_prefix("/ipns/"))
         .unwrap_or(&arg);
     format!("{{\"Cid\":{{\"/\":\"{cid}\"}}}}")
+}
+
+async fn name_resolve(RawQuery(q): RawQuery) -> String {
+    let arg = query_arg(q, "arg").unwrap_or_default();
+    let cid = arg.strip_prefix("/ipns/").unwrap_or(&arg);
+    format!("{{\"Path\":\"/ipfs/{cid}\"}}")
 }
 
 async fn pin_ok() -> &'static str {

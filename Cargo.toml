@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
+async-trait = "0.1"
 axum = { version = "0.7", default-features = false, features = ["http1", "tokio", "json"] }
 ciborium = "0.2"
 cid = "0.11"

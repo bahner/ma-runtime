@@ -11,7 +11,7 @@ use anyhow::{anyhow, Result};
 use ciborium::Value as CborValue;
 use ma_core::config::Config;
 use ma_core::{
-    ipfs_add, Did, Inbox, IpfsGatewayResolver, MaEndpoint, Message, SigningKey, CONTENT_TYPE_TERM,
+    ipfs_add, Did, DidDocumentResolver, Inbox, MaEndpoint, Message, SigningKey, CONTENT_TYPE_TERM,
     INBOX_PROTOCOL_ID, IPFS_PROTOCOL_ID, MESSAGE_TYPE_CRUD, MESSAGE_TYPE_CRUD_REPLY,
     MESSAGE_TYPE_IDENTITY_PUBLISH_REQUEST, MESSAGE_TYPE_IPFS_REQUEST, MESSAGE_TYPE_RPC,
     MESSAGE_TYPE_RPC_REPLY,
@@ -389,7 +389,7 @@ pub async fn run(
     envelope_tx: UnboundedSender<(String, SendEnvelope)>,
     mut envelope_rx: UnboundedReceiver<(String, SendEnvelope)>,
     shared_config: Arc<RwLock<Config>>,
-    shared_resolver: Arc<IpfsGatewayResolver>,
+    shared_resolver: Arc<dyn DidDocumentResolver>,
     stats: SharedStats,
     acl: SharedAcl,
     acl_cache: AclCache,
@@ -414,6 +414,7 @@ pub async fn run(
             _ = ticker.tick() => {
                 let now = status::now_unix_secs();
                 let kubo_url = shared_config.read().await.kubo_rpc_url.clone();
+                let shared_doc_cache = ipfs_state.as_ref().map(|ipfs| Arc::clone(&ipfs.doc_cache));
 
                 // Drain /ma/rpc/0.0.1
                 while let Some(mut message) = rpc_messages.pop(now) {
@@ -440,6 +441,7 @@ pub async fn run(
                         endpoint: Arc::clone(&endpoint),
                         kubo_rpc_url: Arc::from(kubo_url.as_str()),
                         resolver: Arc::clone(&shared_resolver),
+                        doc_cache: shared_doc_cache.as_ref().map(Arc::clone),
                         entity_registry: entity_registry.clone(),
                         kind_registry: kind_registry.clone(),
                         envelope_tx: envelope_tx.clone(),
@@ -533,6 +535,7 @@ pub async fn run(
                             endpoint: Arc::clone(&endpoint),
                             kubo_rpc_url: Arc::from(kubo_url.as_str()),
                             resolver: Arc::clone(&shared_resolver),
+                            doc_cache: shared_doc_cache.as_ref().map(Arc::clone),
                             stats: stats.clone(),
                             entity_registry: entity_registry.clone(),
                             kind_registry: kind_registry.clone(),

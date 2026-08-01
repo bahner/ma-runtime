@@ -4,7 +4,7 @@ use ma_core::ipfs::IpfsDidPublisher;
 use ma_core::ipfs_add;
 use ma_core::{
     ipns_from_secret, resolve_endpoint_for_protocol, validate_identity_publish_message,
-    validate_ipfs_request, Did, Document, Inbox, IpfsGatewayResolver, ReplayGuard, SigningKey,
+    validate_ipfs_request, Did, DidDocumentResolver, Document, Inbox, ReplayGuard, SigningKey,
     MESSAGE_TYPE_IDENTITY_PUBLISH_REQUEST, MESSAGE_TYPE_IPFS_REQUEST, MESSAGE_TYPE_RPC_REPLY,
 };
 use reqwest::multipart;
@@ -52,7 +52,7 @@ pub struct IpfsHandlerCtx<'a> {
     pub endpoint: Arc<dyn ma_core::MaEndpoint>,
     pub kubo_rpc_url: &'a str,
     pub publisher: &'a IpfsDidPublisher,
-    pub resolver: Arc<IpfsGatewayResolver>,
+    pub resolver: Arc<dyn DidDocumentResolver>,
     /// Shared document cache — populated on `DidDocumentPublish`, read on Store.
     pub doc_cache: DocCache,
     /// Named group cache — backs the `+<name>` principal syntax in the root ACL.
@@ -457,7 +457,7 @@ fn endpoint_for_protocol_from_doc(doc: &Document, protocol: &str) -> Option<Stri
 /// needing a reference to the short-lived `IpfsHandlerCtx`.
 pub async fn open_outbox_for_did(
     endpoint: &Arc<dyn ma_core::MaEndpoint>,
-    resolver: &Arc<IpfsGatewayResolver>,
+    resolver: &Arc<dyn DidDocumentResolver>,
     doc_cache: &DocCache,
     target: &Did,
     protocol: &str,
@@ -477,23 +477,28 @@ pub async fn open_outbox_for_did(
             {
                 Ok(Ok(outbox)) => return Ok(outbox),
                 Ok(Err(e)) => {
-                    warn!(error = %e, to = %target_base, protocol = %protocol, "cached outbox connect failed, falling back to IPNS");
+                    warn!(error = %e, to = %target_base, protocol = %protocol, "cached outbox connect failed, falling back to resolver");
                 }
                 Err(_elapsed) => {
-                    warn!(to = %target_base, protocol = %protocol, "cached outbox connect timed out, falling back to IPNS");
+                    warn!(to = %target_base, protocol = %protocol, "cached outbox connect timed out, falling back to resolver");
                 }
             }
         }
     }
 
-    // IPNS fallback — also guarded by a timeout so a slow or unreachable
-    // resolver does not block the handler indefinitely.
+    let doc = tokio::time::timeout(Duration::from_secs(10), resolver.resolve(&target_base))
+        .await
+        .map_err(|_| anyhow::anyhow!("DID document resolve timed out for {target_base}"))?
+        .map_err(anyhow::Error::from)?;
+    let eid = endpoint_for_protocol_from_doc(&doc, protocol)
+        .ok_or_else(|| anyhow::anyhow!("{target_base} has no service for {protocol}"))?;
+
     tokio::time::timeout(
         Duration::from_secs(10),
-        endpoint.outbox(resolver.as_ref(), &target_base, protocol),
+        endpoint.connect_outbox(&doc, &eid, &target_base, protocol),
     )
     .await
-    .map_err(|_| anyhow::anyhow!("IPNS outbox resolve timed out for {target_base}"))?
+    .map_err(|_| anyhow::anyhow!("iroh outbox connect timed out for {target_base} endpoint {eid}"))?
     .map_err(anyhow::Error::from)
 }
 

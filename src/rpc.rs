@@ -5,7 +5,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, Context, Result};
 use ciborium::Value as CborValue;
 use ma_core::{
-    ipfs_add, Did, DidDocumentResolver, IpfsGatewayResolver, Ipld, SigningKey, CONTENT_TYPE_TERM,
+    ipfs_add, Did, DidDocumentResolver, Ipld, SigningKey, CONTENT_TYPE_TERM,
     MESSAGE_TYPE_RPC, MESSAGE_TYPE_RPC_REPLY,
 };
 use tracing::{debug, error, info, warn};
@@ -27,7 +27,8 @@ pub struct RpcHandlerCtx {
     pub signing_key: Arc<SigningKey>,
     pub endpoint: Arc<dyn ma_core::MaEndpoint>,
     pub kubo_rpc_url: Arc<str>,
-    pub resolver: Arc<IpfsGatewayResolver>,
+    pub resolver: Arc<dyn DidDocumentResolver>,
+    pub doc_cache: Option<crate::ipfs::DocCache>,
     pub entity_registry: EntityRegistry,
     pub kind_registry: crate::entity::KindRegistry,
     pub envelope_tx: tokio::sync::mpsc::UnboundedSender<(String, SendEnvelope)>,
@@ -730,13 +731,27 @@ fn send_rpc_reply_typed(
     // perspective; failures are logged but do not affect the caller.
     let endpoint = Arc::clone(&ctx.endpoint);
     let resolver = Arc::clone(&ctx.resolver);
+    let doc_cache = ctx.doc_cache.as_ref().map(Arc::clone);
     let from = incoming.from.clone();
     let msg_id = incoming.id.clone();
     tokio::spawn(async move {
-        match endpoint
-            .outbox(resolver.as_ref(), &sender.base_id(), RPC_PROTOCOL_ID)
+        let outbox_result = if let Some(doc_cache) = doc_cache {
+            crate::ipfs::open_outbox_for_did(
+                &endpoint,
+                &resolver,
+                &doc_cache,
+                &sender,
+                RPC_PROTOCOL_ID,
+            )
             .await
-        {
+        } else {
+            endpoint
+                .outbox(resolver.as_ref(), &sender.base_id(), RPC_PROTOCOL_ID)
+                .await
+                .map_err(anyhow::Error::from)
+        };
+
+        match outbox_result {
             Ok(mut outbox) => {
                 if let Err(err) = outbox.send(&reply).await {
                     warn!(error = %err, to = %from, "RPC reply send failed");
@@ -926,6 +941,7 @@ mod tests {
             endpoint: runtime_endpoint,
             kubo_rpc_url: Arc::from(kubo.url().to_string()),
             resolver: Arc::new(ma_core::IpfsGatewayResolver::new("http://127.0.0.1:9")),
+            doc_cache: None,
             entity_registry: entity_registry.clone(),
             kind_registry,
             envelope_tx,

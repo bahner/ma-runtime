@@ -2955,6 +2955,7 @@ name = "ma-runtime"
 version = "0.4.1"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "blake3",
  "ciborium",

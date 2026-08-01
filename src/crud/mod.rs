@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use ciborium::Value as CborValue;
-use ma_core::{IpfsGatewayResolver, SigningKey, MESSAGE_TYPE_CRUD, MESSAGE_TYPE_CRUD_REPLY};
+use ma_core::{DidDocumentResolver, SigningKey, MESSAGE_TYPE_CRUD, MESSAGE_TYPE_CRUD_REPLY};
 use tokio::sync::RwLock;
 
 use crate::acl::{check_full, AclCache, AclMap, GroupCache, SharedAcl, CAP_CRUD};
@@ -38,7 +38,8 @@ pub struct CrudHandlerCtx {
     pub signing_key: Arc<SigningKey>,
     pub endpoint: Arc<dyn ma_core::MaEndpoint>,
     pub kubo_rpc_url: Arc<str>,
-    pub resolver: Arc<IpfsGatewayResolver>,
+    pub resolver: Arc<dyn DidDocumentResolver>,
+    pub doc_cache: Option<crate::ipfs::DocCache>,
     pub stats: SharedStats,
     pub entity_registry: EntityRegistry,
     pub kind_registry: KindRegistry,
