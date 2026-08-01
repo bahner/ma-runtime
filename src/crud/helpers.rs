@@ -351,6 +351,14 @@ pub(super) fn spawn_entity_reload(
     reload_shutdown_timeout: std::time::Duration,
 ) {
     tokio::spawn(async move {
+        info!(
+            name = %name,
+            kind = %entity_node.kind,
+            state_cid = ?entity_node.state.as_ref().map(|link| link.cid.as_str()),
+            behaviour_cid = ?entity_node.behaviour.as_ref().map(|link| link.cid.as_str()),
+            "entity reload started"
+        );
+
         // Prefer the hydrated in-memory kind registry, with a manifest/IPFS
         // fallback for stale or externally-mutated roots.
         let kind_node: Arc<KindNode> = {

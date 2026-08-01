@@ -22,6 +22,14 @@ pub fn load_secret_bundle(config: &Config) -> Result<SecretBundle> {
     })
 }
 
+pub fn should_generate_headless_config(config: &Config, bundle_path: &Path) -> bool {
+    let config_exists = config
+        .config_path
+        .as_ref()
+        .is_some_and(|path| path.exists());
+    !config_exists && !bundle_path.exists()
+}
+
 pub fn get_u64_setting(config: &Config, key: &str, default: u64) -> u64 {
     config
         .extra
@@ -171,7 +179,10 @@ pub fn runtime_manifest_config(
 
 #[cfg(test)]
 mod tests {
-    use super::{persist_root_cid_to_config, root_cid_setting, select_root_cid};
+    use super::{
+        persist_root_cid_to_config, root_cid_setting, select_root_cid,
+        should_generate_headless_config,
+    };
 
     #[test]
     fn cli_root_cid_overrides_invalid_config_root_cid() {
@@ -220,5 +231,41 @@ mod tests {
         ));
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn does_not_autogenerate_when_config_exists_but_bundle_is_missing() {
+        let dir = std::env::temp_dir().join(format!(
+            "ma-runtime-existing-config-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_path = dir.join("sky.yaml");
+        let bundle_path = dir.join("sky.bin");
+        std::fs::write(&config_path, "secret_bundle_passphrase: test\n").unwrap();
+
+        let mut config =
+            ma_core::config::Config::from_yaml_str("secret_bundle_passphrase: test\n").unwrap();
+        config.config_path = Some(config_path.clone());
+
+        assert!(!should_generate_headless_config(&config, &bundle_path));
+
+        let _ = std::fs::remove_file(config_path);
+        let _ = std::fs::remove_dir(dir);
+    }
+
+    #[test]
+    fn autogenerates_only_when_config_and_bundle_are_missing() {
+        let dir = std::env::temp_dir().join(format!(
+            "ma-runtime-missing-config-test-{}",
+            std::process::id()
+        ));
+        let config_path = dir.join("sky.yaml");
+        let bundle_path = dir.join("sky.bin");
+
+        let mut config = ma_core::config::Config::from_yaml_str("{}\n").unwrap();
+        config.config_path = Some(config_path);
+
+        assert!(should_generate_headless_config(&config, &bundle_path));
     }
 }

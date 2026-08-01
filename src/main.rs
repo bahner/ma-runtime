@@ -35,7 +35,7 @@ use tracing::{error, info, warn};
 
 use startup::{
     get_u64_setting, load_secret_bundle, persist_root_cid_to_config, runtime_manifest_config,
-    select_root_cid,
+    select_root_cid, should_generate_headless_config,
 };
 
 const MA_DEFAULT_SLUG: &str = "ma";
@@ -128,7 +128,19 @@ async fn main() -> Result<()> {
     // headless config automatically so the daemon works out of the box without
     // manual configuration.
     let bundle_path = config.effective_secret_bundle()?;
-    let config = if bundle_path.exists() {
+    let config = if !should_generate_headless_config(&config, &bundle_path) {
+        if !bundle_path.exists() {
+            let config_path = config
+                .config_path
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "<unknown>".to_string());
+            return Err(anyhow!(
+                "secret bundle not found: {} (loaded config from {}; set secret_bundle in that config or pass --secret-bundle)",
+                bundle_path.display(),
+                config_path
+            ));
+        }
         config
     } else {
         warn!("No config found.");

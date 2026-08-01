@@ -12,7 +12,7 @@ use tokio::sync::{
     mpsc::{UnboundedReceiver, UnboundedSender},
     oneshot,
 };
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::entity::{
     CastInput, CreateEntityRequest, Lifecycle, ReplyRequest, SendEnvelope, SetBehaviourRequest,
@@ -735,15 +735,18 @@ fn signal_with_data(name: &str, data: &[u8]) -> Vec<u8> {
 /// §14.3.
 fn run_genesis_and_start(ts: &mut WasmThreadState, cfg: &WasmThreadCfg) -> Result<Lifecycle> {
     if !cfg.init_state.is_empty() {
+        info!(fragment = %cfg.fragment, state_bytes = cfg.init_state.len(), "entity lifecycle signal start: set-state");
         ts.plugin
             .call::<&[u8], Vec<u8>>(
                 "on_signal",
                 signal_with_data(":set-state", &cfg.init_state).as_slice(),
             )
             .map_err(|e| anyhow!("on_signal(:set-state) failed for '{}': {e}", cfg.fragment))?;
+        info!(fragment = %cfg.fragment, "entity lifecycle signal finish: set-state");
     }
 
     if let Some(text) = &cfg.behaviour_text {
+        info!(fragment = %cfg.fragment, behaviour_bytes = text.len(), "entity lifecycle signal start: set-behaviour");
         ts.plugin
             .call::<&[u8], Vec<u8>>(
                 "on_signal",
@@ -755,11 +758,13 @@ fn run_genesis_and_start(ts: &mut WasmThreadState, cfg: &WasmThreadCfg) -> Resul
                     cfg.fragment
                 )
             })?;
+        info!(fragment = %cfg.fragment, "entity lifecycle signal finish: set-behaviour");
     }
 
     let mut lifecycle = Lifecycle::Running;
     if cfg.is_genesis {
         let payload = cfg.init_payload.as_deref().unwrap_or(&[]);
+        info!(fragment = %cfg.fragment, init_payload_bytes = payload.len(), "entity lifecycle signal start: init");
         let result_bytes = ts
             .plugin
             .call::<&[u8], Vec<u8>>("on_signal", signal_with_data(":init", payload).as_slice())
@@ -768,8 +773,10 @@ fn run_genesis_and_start(ts: &mut WasmThreadState, cfg: &WasmThreadCfg) -> Resul
             warn!(fragment = %cfg.fragment, reason = %reason, "on_signal(:init) returned :error");
             lifecycle = Lifecycle::Error;
         }
+        info!(fragment = %cfg.fragment, "entity lifecycle signal finish: init");
     }
 
+    info!(fragment = %cfg.fragment, "entity lifecycle signal start: start");
     let result_bytes = ts
         .plugin
         .call::<&[u8], Vec<u8>>("on_signal", signal_atom(":start").as_slice())
@@ -777,6 +784,7 @@ fn run_genesis_and_start(ts: &mut WasmThreadState, cfg: &WasmThreadCfg) -> Resul
     if let Some(reason) = parse_error_reason(&result_bytes) {
         warn!(fragment = %cfg.fragment, reason = %reason, "on_signal(:start) returned :error");
     }
+    info!(fragment = %cfg.fragment, "entity lifecycle signal finish: start");
 
     Ok(lifecycle)
 }
@@ -869,6 +877,15 @@ pub(super) fn run_wasm_thread(
     mut rx: UnboundedReceiver<EntityMsg>,
     life_tx: oneshot::Sender<Result<Lifecycle>>,
 ) {
+    info!(
+        fragment = %cfg.fragment,
+        kind = %cfg.node_kind,
+        wasm_bytes = cfg.wasm_bytes.len(),
+        state_bytes = cfg.init_state.len(),
+        behaviour_bytes = cfg.behaviour_text.as_ref().map_or(0, Vec::len),
+        init_payload_bytes = cfg.init_payload.as_ref().map_or(0, Vec::len),
+        "entity wasm worker build start"
+    );
     let mut ts = match build_wasm_plugin(&cfg) {
         Ok(ts) => ts,
         Err(e) => {
@@ -876,6 +893,7 @@ pub(super) fn run_wasm_thread(
             return;
         }
     };
+    info!(fragment = %cfg.fragment, "entity wasm worker build finish");
     let lifecycle = match run_genesis_and_start(&mut ts, &cfg) {
         Ok(lc) => lc,
         Err(e) => {

@@ -129,17 +129,22 @@ async fn apply_kinds_tree(
     ctx: &CrudHandlerCtx,
     raw: &str,
 ) -> Result<()> {
+    tracing::info!(from = %message.from, reference = %raw, "kinds tree overlay requested");
     let cid = crate::kubo::dag_resolve(&ctx.kubo_rpc_url, raw).await?;
+    tracing::info!(from = %message.from, cid = %cid, "kinds tree overlay resolved");
     let overlay: KindTree = crate::kubo::dag_get(&ctx.kubo_rpc_url, &cid)
         .await
         .with_context(|| format!("fetching kinds tree '{cid}'"))?;
+    tracing::info!(from = %message.from, cid = %cid, "kinds tree overlay loaded");
     let kubo_rpc_url = ctx.kubo_rpc_url.clone();
+    tracing::info!(from = %message.from, cid = %cid, "applying kinds tree overlay to manifest");
     let (_, changed_protocols) = with_manifest_crud_async(ctx, |manifest| {
         Box::pin(async move {
             crate::bootstrap::apply_kinds_tree_overlay(manifest, &overlay, &kubo_rpc_url).await
         })
     })
     .await?;
+    tracing::info!(from = %message.from, cid = %cid, changed = changed_protocols.len(), "kinds tree overlay applied");
     schedule_overlay_reloads(ctx, &changed_protocols).await;
     send_crud_ok_cid(message, reply_type, ctx, &cid).await
 }
