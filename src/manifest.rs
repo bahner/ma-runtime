@@ -109,7 +109,7 @@ impl ManifestWriter {
         if let Err(e) = crate::kubo::pin_update(&inner.kubo_url, &old_cid, &new_cid).await {
             warn!(old = %old_cid, new = %new_cid, error = %e, "manifest pin_update failed");
         }
-        self.pin_remote_root(&new_cid).await;
+        self.replace_remote_root_pin(Some(&old_cid), &new_cid).await;
 
         guard.clone_from(&new_cid);
         inner.stats.write().await.root_cid = Some(new_cid.clone());
@@ -117,37 +117,40 @@ impl ManifestWriter {
         Ok(new_cid)
     }
 
-    async fn pin_remote_root(&self, new_cid: &str) {
+    async fn replace_remote_root_pin(&self, old_cid: Option<&str>, new_cid: &str) {
         let inner = &self.inner;
         let Some(remote) = inner.remote_pin_config().await else {
             return;
         };
-        match ma_core::remote_pin_replace(&inner.kubo_url, &remote, None, new_cid).await {
+        match ma_core::remote_pin_replace(&inner.kubo_url, &remote, old_cid, new_cid).await {
             Ok(outcome) => {
                 if let Some(error) = outcome.previous_remove_error {
                     warn!(
+                        old = old_cid.unwrap_or(""),
                         new = %new_cid,
                         service = %remote.service,
                         name = %remote.name,
                         error = %error,
-                        "remote root pin left a previous pin in place"
+                        "remote root pin replacement left the previous pin in place"
                     );
                 } else {
                     info!(
+                        old = old_cid.unwrap_or(""),
                         new = %new_cid,
                         service = %remote.service,
                         name = %remote.name,
-                        "remote root pinned"
+                        "remote root pin replaced"
                     );
                 }
             }
             Err(err) => {
                 warn!(
+                    old = old_cid.unwrap_or(""),
                     new = %new_cid,
                     service = %remote.service,
                     name = %remote.name,
                     error = %err,
-                    "remote root pin failed"
+                    "remote root pin replacement failed"
                 );
             }
         }

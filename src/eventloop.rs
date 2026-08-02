@@ -235,7 +235,7 @@ async fn dispatch_local_plugin_envelope(
         let writer = manifest_writer.clone();
         let kubo_url = kubo_url.to_string();
         tokio::spawn(async move {
-            match crate::kubo::ipfs_add_bytes(&kubo_url, state_bytes.clone()).await {
+            match crate::kubo::ipfs_add_bytes_unpinned(&kubo_url, state_bytes.clone()).await {
                 Ok(cid) => match writer.set_entity_state(&entity_arc.fragment, &cid).await {
                     Ok(root_cid) => {
                         entity_arc.mark_saved(state_bytes);

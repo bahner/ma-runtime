@@ -966,6 +966,7 @@ pub(super) fn run_wasm_thread(
                     Err(e) => reply.send(Err(anyhow!("on_signal(:shutdown) failed: {e}"))),
                 };
             }
+            EntityMsg::Terminate => break,
         }
     }
 }
@@ -1002,6 +1003,7 @@ pub(super) fn run_native_thread(
                     Err(e) => reply.send(Err(anyhow!("native on_signal(:shutdown) failed: {e}"))),
                 };
             }
+            EntityMsg::Terminate => break,
         }
     }
 }

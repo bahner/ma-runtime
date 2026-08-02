@@ -62,6 +62,8 @@ enum EntityMsg {
     Shutdown {
         reply: oneshot::Sender<Result<Option<Vec<u8>>>>,
     },
+    /// Stop the worker thread and drop the owned plugin/native actor.
+    Terminate,
 }
 
 // ── Native dispatch type ─────────────────────────────────────────────────────
@@ -519,6 +521,11 @@ impl EntityPlugin {
             if delta >= threshold {
                 warn!(
                     fragment = %self.fragment,
+                    from = %input.msg.from,
+                    to = %input.msg.to,
+                    id = %input.msg.id,
+                    content_len = input.msg.content.len(),
+                    verb = ?message_verb,
                     rss_before_kib = before,
                     rss_after_kib = after,
                     rss_delta_kib = delta,
@@ -595,7 +602,7 @@ impl EntityPlugin {
         };
 
         if let Some(bytes) = pending {
-            let cid = crate::kubo::ipfs_add_bytes(kubo_url, bytes.clone())
+            let cid = crate::kubo::ipfs_add_bytes_unpinned(kubo_url, bytes.clone())
                 .await
                 .map_err(|e| anyhow!("ipfs_add for '{}' state: {e}", self.fragment))?;
             self.mark_saved(bytes);
@@ -627,7 +634,7 @@ impl EntityPlugin {
         };
 
         if let Some(bytes) = pending {
-            let cid = crate::kubo::ipfs_add_bytes(kubo_url, bytes.clone())
+            let cid = crate::kubo::ipfs_add_bytes_unpinned(kubo_url, bytes.clone())
                 .await
                 .map_err(|e| anyhow!("ipfs_add for '{}' shutdown state: {e}", self.fragment))?;
             self.mark_saved(bytes);
@@ -645,6 +652,12 @@ impl EntityPlugin {
         backstop: std::time::Duration,
     ) -> Result<Option<String>> {
         self.shutdown_signal_save(kubo_url, backstop).await
+    }
+
+    /// Stop this entity's worker thread after it has been removed from the
+    /// live registry or superseded by a replacement plugin.
+    pub fn terminate_worker(&self) {
+        let _ = self.tx.send(EntityMsg::Terminate);
     }
 }
 

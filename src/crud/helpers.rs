@@ -449,7 +449,7 @@ pub(super) fn spawn_entity_reload(
         let mut entity_node = entity_node;
         let current_entity = entity_registry.read().await.get(&name).cloned();
         let had_current_entity = current_entity.is_some();
-        if let Some(current) = current_entity {
+        if let Some(current) = current_entity.as_ref() {
             match current
                 .prepare_reload_save(&kubo_rpc_url, reload_shutdown_timeout)
                 .await
@@ -499,6 +499,9 @@ pub(super) fn spawn_entity_reload(
                     .write()
                     .await
                     .insert(name.clone(), Arc::new(ep));
+                if let Some(current) = current_entity {
+                    current.terminate_worker();
+                }
                 info!(name = %name, lifecycle = %lifecycle, "{}", crate::i18n::t("entity-reloaded"));
                 // Persist lifecycle/state changes to IPFS, exactly like
                 // bootstrap::load_entities does at startup. Otherwise a later

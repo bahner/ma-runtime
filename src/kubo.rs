@@ -154,8 +154,7 @@ pub async fn pin_update(kubo_url: &str, old_cid: &str, new_cid: &str) -> Result<
     Err(anyhow!("pin/update {old_cid} → {new_cid} failed: {body}"))
 }
 
-/// Add raw bytes to IPFS via Kubo and return the resulting CID.
-pub async fn ipfs_add_bytes(kubo_url: &str, data: Vec<u8>) -> Result<String> {
+async fn ipfs_add_bytes_with_pin(kubo_url: &str, data: Vec<u8>, pin: bool) -> Result<String> {
     let _permit = acquire_request_permit("add").await?;
     let base = kubo_url.trim_end_matches('/');
     let url = format!("{base}/api/v0/add");
@@ -165,7 +164,7 @@ pub async fn ipfs_add_bytes(kubo_url: &str, data: Vec<u8>) -> Result<String> {
 
     let body = client()
         .post(url)
-        .query(&[("pin", "true")])
+        .query(&[("pin", if pin { "true" } else { "false" })])
         .multipart(form)
         .send()
         .await?
@@ -176,6 +175,19 @@ pub async fn ipfs_add_bytes(kubo_url: &str, data: Vec<u8>) -> Result<String> {
     let parsed: AddResponse = serde_json::from_str(&body)
         .map_err(|e| anyhow!("failed parsing add response: {e} body={body}"))?;
     Ok(parsed.hash)
+}
+
+/// Add raw bytes to IPFS via Kubo, pin them directly, and return the CID.
+pub async fn ipfs_add_bytes(kubo_url: &str, data: Vec<u8>) -> Result<String> {
+    ipfs_add_bytes_with_pin(kubo_url, data, true).await
+}
+
+/// Add raw bytes to IPFS via Kubo without creating a direct local pin.
+///
+/// Use this for runtime-owned state that is linked from the root manifest and
+/// therefore kept alive by the root recursive pin lifecycle.
+pub async fn ipfs_add_bytes_unpinned(kubo_url: &str, data: Vec<u8>) -> Result<String> {
+    ipfs_add_bytes_with_pin(kubo_url, data, false).await
 }
 
 /// Fetch raw bytes from IPFS through Kubo's `/cat` endpoint.
@@ -296,4 +308,69 @@ pub async fn dag_resolve(kubo_url: &str, path: &str) -> Result<String> {
     let parsed: DagResolveResponse = serde_json::from_str(&body)
         .map_err(|e| anyhow!("failed parsing dag/resolve response for {path}: {e} body={body}"))?;
     Ok(parsed.cid.slash)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        body::Bytes,
+        extract::{RawQuery, State},
+        routing::post,
+        Router,
+    };
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    #[derive(Clone, Default)]
+    struct AddState(Arc<Mutex<Vec<String>>>);
+
+    async fn add_handler(State(state): State<AddState>, RawQuery(q): RawQuery, _: Bytes) -> String {
+        let pin = q
+            .unwrap_or_default()
+            .split('&')
+            .find_map(|kv| kv.strip_prefix("pin="))
+            .unwrap_or("")
+            .to_string();
+        state.0.lock().await.push(pin);
+        "{\"Hash\":\"bafyreibkhaddtestcid\"}".to_string()
+    }
+
+    async fn start_add_server(state: AddState) -> String {
+        let app = Router::new()
+            .route("/api/v0/add", post(add_handler))
+            .with_state(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn state_add_uses_unpinned_kubo_add() {
+        let state = AddState::default();
+        let url = start_add_server(state.clone()).await;
+
+        let cid = ipfs_add_bytes_unpinned(&url, b"state".to_vec())
+            .await
+            .unwrap();
+
+        assert_eq!(cid, "bafyreibkhaddtestcid");
+        assert_eq!(state.0.lock().await.as_slice(), &["false"]);
+    }
+
+    #[tokio::test]
+    async fn explicit_add_uses_pinned_kubo_add() {
+        let state = AddState::default();
+        let url = start_add_server(state.clone()).await;
+
+        let cid = ipfs_add_bytes(&url, b"published".to_vec()).await.unwrap();
+
+        assert_eq!(cid, "bafyreibkhaddtestcid");
+        assert_eq!(state.0.lock().await.as_slice(), &["true"]);
+    }
 }

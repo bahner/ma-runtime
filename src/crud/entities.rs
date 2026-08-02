@@ -110,7 +110,10 @@ async fn handle_single_entity(
             if !manifest.entities.contains_key(name) {
                 return send_crud_error(message, reply_type, ctx, "entity-not-found").await;
             }
-            ctx.entity_registry.write().await.remove(name);
+            let removed = ctx.entity_registry.write().await.remove(name);
+            if let Some(entity) = removed {
+                entity.terminate_worker();
+            }
             let new_root = with_manifest_crud(ctx, |m| {
                 m.entities.remove(name);
                 Ok(())

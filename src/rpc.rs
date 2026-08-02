@@ -196,6 +196,9 @@ async fn apply_behaviour_request(req: SetBehaviourRequest, ctx: &RpcHandlerCtx) 
         .write()
         .await
         .insert(req.fragment.clone(), plugin);
+    if let Some(current) = current_entity {
+        current.terminate_worker();
+    }
     info!(fragment = %req.fragment, ?lifecycle, %root_cid, "entity behaviour updated via ma_set_behaviour");
     Ok(())
 }
@@ -521,7 +524,7 @@ async fn handle_entity_plugin_message(
         let kubo_url = ctx.kubo_rpc_url.to_string();
         let writer = ctx.manifest_writer.clone();
         tokio::spawn(async move {
-            match crate::kubo::ipfs_add_bytes(&kubo_url, state_bytes.clone()).await {
+            match crate::kubo::ipfs_add_bytes_unpinned(&kubo_url, state_bytes.clone()).await {
                 Ok(cid) => match writer.set_entity_state(&entity_arc.fragment, &cid).await {
                     Ok(root_cid) => {
                         debug!(fragment = %entity_arc.fragment, %cid, %root_cid, "plugin state saved via ma_set_state");

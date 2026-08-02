@@ -416,7 +416,7 @@ pub async fn dispatch_scheduled(
 
     // Persist state if changed.
     if let Some(state_bytes) = result.pending_state {
-        match crate::kubo::ipfs_add_bytes(&ctx.kubo_rpc_url, state_bytes.clone()).await {
+        match crate::kubo::ipfs_add_bytes_unpinned(&ctx.kubo_rpc_url, state_bytes.clone()).await {
             Ok(_) => plugin.mark_saved(state_bytes),
             Err(e) => warn!(
                 fragment = %fragment,
