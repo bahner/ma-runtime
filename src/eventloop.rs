@@ -288,6 +288,7 @@ async fn dispatch_local_plugin_envelope(
                 attributes: std::collections::BTreeMap::new(),
                 init: None,
                 initialised: false,
+                reload_error: None,
             };
 
             let (iroh_node_id, started_at) = {
@@ -406,8 +407,7 @@ pub async fn run(
     poll_ms: u64,
 ) -> Result<()> {
     let mut ticker = tokio::time::interval(Duration::from_millis(poll_ms));
-    let ctrl_c = tokio::signal::ctrl_c();
-    tokio::pin!(ctrl_c);
+    let mut ctrl_c = Box::pin(tokio::signal::ctrl_c());
 
     loop {
         tokio::select! {
@@ -758,6 +758,7 @@ pub async fn run(
                             Err(e) => {
                                 error!(error = %e, "Failed to save entity states");
                                 error!("shutdown aborted; runtime remains active so state can be saved on a later shutdown attempt");
+                                ctrl_c = Box::pin(tokio::signal::ctrl_c());
                                 continue;
                             }
                         }

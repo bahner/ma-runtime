@@ -381,7 +381,9 @@ pub(super) fn spawn_entity_reload(
                 drop(registry);
                 let root_cid = stats.read().await.root_cid.clone();
                 let Some(root_cid) = root_cid else {
-                    warn!(name = %name, kind = %entity_node.kind, "no root CID available; cannot reload entity");
+                    let reason = "no root CID available; cannot reload entity";
+                    warn!(name = %name, kind = %entity_node.kind, reason);
+                    mark_entity_reload_failed(&manifest_writer, &name, reason).await;
                     return;
                 };
                 let manifest: crate::entity::RuntimeManifest = match crate::kubo::dag_get(
@@ -392,14 +394,21 @@ pub(super) fn spawn_entity_reload(
                 {
                     Ok(m) => m,
                     Err(e) => {
+                        let reason = format!("failed to load manifest for kind lookup: {e}");
                         warn!(name = %name, kind = %entity_node.kind, error = %e, "failed to load manifest for kind lookup");
+                        mark_entity_reload_failed(&manifest_writer, &name, &reason).await;
                         return;
                     }
                 };
                 let kind_link = if let Some(l) = manifest.kinds.get_protocol(&entity_node.kind) {
                     l.clone()
                 } else {
+                    let reason = format!(
+                        "kind '{}' is not in manifest; cannot reload entity",
+                        entity_node.kind
+                    );
                     warn!(name = %name, kind = %entity_node.kind, "kind not in manifest; cannot reload entity");
+                    mark_entity_reload_failed(&manifest_writer, &name, &reason).await;
                     return;
                 };
                 let raw_kind: KindNode = match crate::kubo::dag_get(&kubo_rpc_url, &kind_link.cid)
@@ -407,7 +416,9 @@ pub(super) fn spawn_entity_reload(
                 {
                     Ok(k) => k,
                     Err(e) => {
+                        let reason = format!("failed to fetch kind node: {e}");
                         warn!(name = %name, kind = %entity_node.kind, error = %e, "failed to fetch kind node; cannot reload entity");
+                        mark_entity_reload_failed(&manifest_writer, &name, &reason).await;
                         return;
                     }
                 };
@@ -417,7 +428,9 @@ pub(super) fn spawn_entity_reload(
                     {
                         Ok(k) => k,
                         Err(e) => {
+                            let reason = format!("failed to resolve kind extends chain: {e}");
                             warn!(name = %name, kind = %entity_node.kind, error = %e, "failed to resolve kind extends chain; cannot reload entity");
+                            mark_entity_reload_failed(&manifest_writer, &name, &reason).await;
                             return;
                         }
                     }
@@ -435,6 +448,7 @@ pub(super) fn spawn_entity_reload(
 
         let mut entity_node = entity_node;
         let current_entity = entity_registry.read().await.get(&name).cloned();
+        let had_current_entity = current_entity.is_some();
         if let Some(current) = current_entity {
             match current
                 .prepare_reload_save(&kubo_rpc_url, reload_shutdown_timeout)
@@ -445,7 +459,10 @@ pub(super) fn spawn_entity_reload(
                 }
                 Ok(None) => {}
                 Err(e) => {
-                    warn!(name = %name, timeout_ms = reload_shutdown_timeout.as_millis(), error = %e, "failed to persist current state before reload; proceeding with replacement");
+                    let reason = format!("failed to persist current state before reload: {e}");
+                    warn!(name = %name, timeout_ms = reload_shutdown_timeout.as_millis(), error = %e, "failed to persist current state before reload; keeping current plugin");
+                    mark_entity_reload_failed(&manifest_writer, &name, &reason).await;
+                    return;
                 }
             }
         }
@@ -467,7 +484,14 @@ pub(super) fn spawn_entity_reload(
         .await
         {
             Ok((ep, lifecycle)) => {
+                if lifecycle == crate::entity::Lifecycle::Error && had_current_entity {
+                    let reason = "plugin lifecycle returned error during reload";
+                    warn!(name = %name, "{reason}; keeping current plugin");
+                    mark_entity_reload_failed(&manifest_writer, &name, reason).await;
+                    return;
+                }
                 let mut updated_node = entity_node.clone();
+                updated_node.reload_error = None;
                 if let Ok(Some(cid)) = ep.trigger_save(&kubo_rpc_url).await {
                     updated_node.state = Some(crate::entity::IpldLink::new(cid));
                 }
@@ -481,8 +505,9 @@ pub(super) fn spawn_entity_reload(
                 // daemon restart re-reads stale state and/or `initialised`.
                 let state_changed = entity_node.state.as_ref().map(|l| l.cid.as_str())
                     != updated_node.state.as_ref().map(|l| l.cid.as_str());
+                let reload_error_changed = entity_node.reload_error.is_some();
                 if lifecycle == crate::entity::Lifecycle::Running
-                    && (!entity_node.initialised || state_changed)
+                    && (!entity_node.initialised || state_changed || reload_error_changed)
                 {
                     let mut updated = updated_node;
                     if !entity_node.initialised {
@@ -517,12 +542,14 @@ pub(super) fn spawn_entity_reload(
                 }
             }
             Err(e) => {
+                let reason = format!("failed to load entity plugin: {e}");
                 warn!(
                     name = %name,
                     error = %e,
                     "{}",
                     crate::i18n::t("entity-load-failed")
                 );
+                mark_entity_reload_failed(&manifest_writer, &name, &reason).await;
             }
         }
     });
@@ -531,6 +558,19 @@ pub(super) fn spawn_entity_reload(
 async fn update_stats_entities(ctx: &CrudHandlerCtx) {
     let names: Vec<String> = ctx.entity_registry.read().await.keys().cloned().collect();
     ctx.stats.write().await.entity_names = names;
+}
+
+async fn mark_entity_reload_failed(
+    manifest_writer: &crate::manifest::ManifestWriter,
+    name: &str,
+    reason: &str,
+) {
+    if let Err(e) = manifest_writer
+        .set_entity_reload_error(name, Some(reason))
+        .await
+    {
+        warn!(name = %name, reason = %reason, error = %e, "failed to persist entity reload error");
+    }
 }
 
 // ── i18n helpers ───────────────────────────────────────────────────────────────

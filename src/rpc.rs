@@ -568,6 +568,7 @@ async fn handle_entity_plugin_message(
             attributes: std::collections::BTreeMap::new(),
             init: None,
             initialised: false,
+            reload_error: None,
         };
 
         let (iroh_node_id, started_at) = {
@@ -905,6 +906,7 @@ mod tests {
             attributes: BTreeMap::new(),
             init: None,
             initialised: true,
+            reload_error: None,
         };
         let job_scheduler = Arc::new(tokio_cron_scheduler::JobScheduler::new().await.unwrap());
         let native_actor = scheduler_actor::native_actor(

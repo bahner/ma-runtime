@@ -580,6 +580,12 @@ pub struct EntityNode {
     /// purely transient, see [`Lifecycle`].
     #[serde(default)]
     pub initialised: bool,
+    /// Last recoverable reload failure for this entity, if any. The runtime
+    /// sets this when a kind/entity reload cannot replace the current plugin,
+    /// then clears it after a later successful reload. It does not prevent
+    /// future CRUD or reload attempts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reload_error: Option<String>,
 }
 
 /// Read attribute `key`, checking `entity.attributes` first and falling
@@ -766,6 +772,7 @@ mod tests {
             attributes: BTreeMap::new(),
             init: None,
             initialised: false,
+            reload_error: None,
         };
 
         let value = serde_json::to_value(&node).expect("serialise entity node");
@@ -789,6 +796,7 @@ mod tests {
             attributes: BTreeMap::new(),
             init: None,
             initialised: false,
+            reload_error: None,
         };
         let value = serde_json::to_value(&node).expect("serialise entity node");
         assert!(
@@ -821,6 +829,7 @@ mod tests {
             attributes: BTreeMap::new(),
             init: None,
             initialised: false,
+            reload_error: None,
         }
     }
 

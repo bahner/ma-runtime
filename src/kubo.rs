@@ -6,6 +6,11 @@ use anyhow::{anyhow, Result};
 use reqwest::multipart;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::sync::OnceLock;
+use std::time::Duration;
+use tokio::sync::{Semaphore, SemaphorePermit};
+
+const MAX_CONCURRENT_KUBO_REQUESTS: usize = 16;
+const KUBO_PERMIT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// HTTP client with hard timeouts.  `dag/get` on a CID that is not in the
 /// local store makes Kubo search the network — without a client-side bound
@@ -20,6 +25,18 @@ pub(crate) fn client() -> &'static reqwest::Client {
             .build()
             .unwrap_or_else(|_| reqwest::Client::new())
     })
+}
+
+fn request_gate() -> &'static Semaphore {
+    static GATE: OnceLock<Semaphore> = OnceLock::new();
+    GATE.get_or_init(|| Semaphore::new(MAX_CONCURRENT_KUBO_REQUESTS))
+}
+
+async fn acquire_request_permit(op: &str) -> Result<SemaphorePermit<'static>> {
+    tokio::time::timeout(KUBO_PERMIT_TIMEOUT, request_gate().acquire())
+        .await
+        .map_err(|_| anyhow!("kubo request queue timed out for {op}"))?
+        .map_err(|_| anyhow!("kubo request gate closed for {op}"))
 }
 
 // ── Response types ────────────────────────────────────────────────────────────
@@ -64,6 +81,7 @@ struct AddResponse {
 /// Input is serialised as `dag-json`; Kubo converts and stores as `dag-cbor`.
 /// Returns the resulting CID string.
 pub async fn dag_put<T: Serialize + Sync>(kubo_url: &str, value: &T) -> Result<String> {
+    let _permit = acquire_request_permit("dag/put").await?;
     let base = kubo_url.trim_end_matches('/');
     let url = format!("{base}/api/v0/dag/put");
     let payload = serde_json::to_vec(value)?;
@@ -99,6 +117,7 @@ pub async fn dag_put<T: Serialize + Sync>(kubo_url: &str, value: &T) -> Result<S
 /// Recursively pin a CID. Used for first-time bootstrap when there is no
 /// prior root to update from.
 pub async fn pin_add(kubo_url: &str, cid: &str) -> Result<()> {
+    let _permit = acquire_request_permit("pin/add").await?;
     let base = kubo_url.trim_end_matches('/');
     let url = format!("{base}/api/v0/pin/add");
     client()
@@ -114,6 +133,7 @@ pub async fn pin_add(kubo_url: &str, cid: &str) -> Result<()> {
 /// Kubo's `pin/update` endpoint (`unpin=true`).  If `old_cid` was not
 /// pinned, falls back to `pin_add(new_cid)` so first-time callers work too.
 pub async fn pin_update(kubo_url: &str, old_cid: &str, new_cid: &str) -> Result<()> {
+    let permit = acquire_request_permit("pin/update").await?;
     let base = kubo_url.trim_end_matches('/');
     let url = format!("{base}/api/v0/pin/update");
     let resp = client()
@@ -128,6 +148,7 @@ pub async fn pin_update(kubo_url: &str, old_cid: &str, new_cid: &str) -> Result<
     // Kubo returns "not recursively pinned already" (or similar) when the old
     // CID was never pinned.  Fall back to a plain recursive pin of the new CID.
     if body.contains("not recursively pinned") || body.contains("not pinned") {
+        drop(permit);
         return pin_add(kubo_url, new_cid).await;
     }
     Err(anyhow!("pin/update {old_cid} → {new_cid} failed: {body}"))
@@ -135,6 +156,7 @@ pub async fn pin_update(kubo_url: &str, old_cid: &str, new_cid: &str) -> Result<
 
 /// Add raw bytes to IPFS via Kubo and return the resulting CID.
 pub async fn ipfs_add_bytes(kubo_url: &str, data: Vec<u8>) -> Result<String> {
+    let _permit = acquire_request_permit("add").await?;
     let base = kubo_url.trim_end_matches('/');
     let url = format!("{base}/api/v0/add");
 
@@ -158,6 +180,7 @@ pub async fn ipfs_add_bytes(kubo_url: &str, data: Vec<u8>) -> Result<String> {
 
 /// Fetch raw bytes from IPFS through Kubo's `/cat` endpoint.
 pub async fn cat_bytes(kubo_url: &str, cid: &str) -> Result<Vec<u8>> {
+    let _permit = acquire_request_permit("cat").await?;
     let base = kubo_url.trim_end_matches('/');
     let url = format!("{base}/api/v0/cat");
 
@@ -175,6 +198,7 @@ pub async fn cat_bytes(kubo_url: &str, cid: &str) -> Result<Vec<u8>> {
 
 /// Fetch an IPLD node from Kubo and deserialise it from `dag-json`.
 pub async fn dag_get<T: DeserializeOwned>(kubo_url: &str, cid: &str) -> Result<T> {
+    let _permit = acquire_request_permit("dag/get").await?;
     let base = kubo_url.trim_end_matches('/');
     let url = format!("{base}/api/v0/dag/get");
 
@@ -193,6 +217,7 @@ pub async fn dag_get<T: DeserializeOwned>(kubo_url: &str, cid: &str) -> Result<T
 
 /// Fetch raw IPLD block bytes from local Kubo using `/api/v0/block/get`.
 pub async fn block_get_bytes(kubo_url: &str, cid: &str) -> Result<Vec<u8>> {
+    let _permit = acquire_request_permit("block/get").await?;
     let base = kubo_url.trim_end_matches('/');
     let url = format!("{base}/api/v0/block/get");
 
@@ -210,6 +235,7 @@ pub async fn block_get_bytes(kubo_url: &str, cid: &str) -> Result<Vec<u8>> {
 
 /// Resolve an IPNS key through local Kubo's name resolver and return the target CID.
 pub async fn name_resolve(kubo_url: &str, ipns_id: &str) -> Result<String> {
+    let _permit = acquire_request_permit("name/resolve").await?;
     let base = kubo_url.trim_end_matches('/');
     let url = format!("{base}/api/v0/name/resolve");
     let arg = format!("/ipns/{ipns_id}");
@@ -252,6 +278,8 @@ pub async fn dag_resolve(kubo_url: &str, path: &str) -> Result<String> {
     if !path.starts_with('/') {
         return Ok(path.to_string());
     }
+
+    let _permit = acquire_request_permit("dag/resolve").await?;
 
     let base = kubo_url.trim_end_matches('/');
     let url = format!("{base}/api/v0/dag/resolve");

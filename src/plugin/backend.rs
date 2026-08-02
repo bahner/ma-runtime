@@ -91,6 +91,10 @@ struct StateCtx {
     /// `true` when `pending` differs from `persisted` and has not yet been
     /// written to IPFS.
     dirty: bool,
+    /// Monotonic counter bumped when a dispatch queues a distinct pending
+    /// state. Used to report state persistence work once per change, not once
+    /// per later message while the same bytes remain unsaved.
+    save_generation: u64,
 }
 
 impl StateCtx {
@@ -99,6 +103,7 @@ impl StateCtx {
             pending: None,
             persisted: Some(persisted),
             dirty: false,
+            save_generation: 0,
         }
     }
 
@@ -114,6 +119,16 @@ impl StateCtx {
                 .is_some_and(|pending| Some(pending) != self.persisted.as_deref());
         }
     }
+
+    fn queue_state(&mut self, bytes: Vec<u8>) {
+        if self.persisted.as_deref() != Some(bytes.as_slice())
+            && self.pending.as_deref() != Some(bytes.as_slice())
+        {
+            self.pending = Some(bytes);
+            self.dirty = true;
+            self.save_generation = self.save_generation.wrapping_add(1);
+        }
+    }
 }
 
 // `ma_set_state` host function: plugin calls this to queue a new state.
@@ -122,11 +137,8 @@ impl StateCtx {
 host_fn!(ma_set_state_fn(user_data: StateCtx; input: Vec<u8>) -> Vec<u8> {
     let arc = user_data.get()?;
     let mut ctx = arc.lock().unwrap();
-    if ctx.persisted.as_deref() != Some(input.as_slice()) {
-        ctx.pending = Some(input);
-        ctx.dirty = true;
-        drop(ctx);
-    }
+    ctx.queue_state(input);
+    drop(ctx);
     Ok(Vec::new())
 });
 
@@ -803,6 +815,14 @@ fn execute_dispatch(
     ciborium::ser::into_writer(input, &mut input_bytes)
         .map_err(|e| anyhow!("failed to CBOR-encode CastInput: {e}"))?;
 
+    let state_generation_before = ts
+        .state
+        .get()
+        .map_err(|e| anyhow!("state error: {e}"))?
+        .lock()
+        .map_err(|e| anyhow!("state poisoned: {e}"))?
+        .save_generation;
+
     let output = ts
         .plugin
         .call::<&[u8], Vec<u8>>(export, input_bytes.as_slice())
@@ -810,14 +830,15 @@ fn execute_dispatch(
 
     let output = output?;
 
-    let pending_state = ts
-        .state
-        .get()
-        .map_err(|e| anyhow!("state error: {e}"))?
-        .lock()
-        .map_err(|e| anyhow!("state poisoned: {e}"))?
-        .pending
-        .clone();
+    let pending_state = {
+        let state = ts.state.get().map_err(|e| anyhow!("state error: {e}"))?;
+        let state = state.lock().map_err(|e| anyhow!("state poisoned: {e}"))?;
+        if state.dirty && state.save_generation != state_generation_before {
+            state.pending.clone()
+        } else {
+            None
+        }
+    };
 
     let create_requests = ts
         .create_queue
@@ -1034,5 +1055,22 @@ mod tests {
         assert_eq!(state.persisted.as_deref(), Some(b"new".as_slice()));
         assert!(state.pending.is_none());
         assert!(!state.dirty);
+    }
+
+    #[test]
+    fn queue_state_bumps_generation_only_for_distinct_unsaved_state() {
+        let mut state = StateCtx::new(b"initial".to_vec());
+
+        state.queue_state(b"next".to_vec());
+        assert_eq!(state.save_generation, 1);
+        assert_eq!(state.pending.as_deref(), Some(b"next".as_slice()));
+        assert!(state.dirty);
+
+        state.queue_state(b"next".to_vec());
+        assert_eq!(state.save_generation, 1);
+
+        state.queue_state(b"newer".to_vec());
+        assert_eq!(state.save_generation, 2);
+        assert_eq!(state.pending.as_deref(), Some(b"newer".as_slice()));
     }
 }

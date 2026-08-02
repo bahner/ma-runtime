@@ -368,6 +368,7 @@ async fn publish_entities(
                     attributes: attributes.clone(),
                     init: init.clone(),
                     initialised: false,
+                    reload_error: None,
                 };
                 let cid = kubo::dag_put(kubo_url, &node)
                     .await
@@ -969,6 +970,7 @@ mod tests {
             attributes: BTreeMap::new(),
             init: None,
             initialised: true,
+            reload_error: None,
         };
         let entity_cid = crate::kubo::dag_put(kubo.url(), &entity).await.unwrap();
         let mut manifest = RuntimeManifest {

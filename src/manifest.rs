@@ -213,6 +213,48 @@ impl ManifestWriter {
         self.persist_root_cid(&new_cid).await;
         Ok(new_cid)
     }
+
+    /// Publish an updated entity node carrying the latest recoverable reload
+    /// error. `None` clears a previous reload error after a later successful
+    /// reload.
+    #[allow(clippy::significant_drop_tightening)]
+    pub async fn set_entity_reload_error(
+        &self,
+        fragment: &str,
+        reason: Option<&str>,
+    ) -> Result<String> {
+        let inner = &self.inner;
+        let mut guard = inner.current.lock().await;
+        let old_cid = guard.clone();
+
+        let mut manifest: RuntimeManifest = crate::kubo::dag_get(&inner.kubo_url, &old_cid).await?;
+        let entity_link = manifest
+            .entities
+            .get(fragment)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("entity '{fragment}' is not in the manifest"))?;
+        let mut entity_node: EntityNode =
+            crate::kubo::dag_get(&inner.kubo_url, &entity_link.cid).await?;
+        let next_error = reason.map(ToString::to_string);
+        if entity_node.reload_error == next_error {
+            return Ok(old_cid);
+        }
+        entity_node.reload_error = next_error;
+        let entity_cid = crate::kubo::dag_put(&inner.kubo_url, &entity_node).await?;
+        manifest
+            .entities
+            .insert(fragment.to_string(), IpldLink::new(&entity_cid));
+
+        let new_cid = crate::kubo::dag_put(&inner.kubo_url, &manifest).await?;
+        if let Err(e) = crate::kubo::pin_update(&inner.kubo_url, &old_cid, &new_cid).await {
+            warn!(old = %old_cid, new = %new_cid, error = %e, "manifest pin_update failed");
+        }
+
+        guard.clone_from(&new_cid);
+        inner.stats.write().await.root_cid = Some(new_cid.clone());
+        self.persist_root_cid(&new_cid).await;
+        Ok(new_cid)
+    }
 }
 
 impl std::fmt::Debug for ManifestWriter {
@@ -311,6 +353,7 @@ mod tests {
             attributes: std::collections::BTreeMap::new(),
             init: None,
             initialised: false,
+            reload_error: None,
         };
         let entity_cid = crate::kubo::dag_put(kubo.url(), &entity_node)
             .await
@@ -356,6 +399,7 @@ mod tests {
             attributes: std::collections::BTreeMap::new(),
             init: Some("(set-prop! \"name\" \"Construct\")".to_string()),
             initialised: false,
+            reload_error: None,
         };
         let entity_cid = crate::kubo::dag_put(kubo.url(), &entity_node)
             .await
@@ -386,6 +430,67 @@ mod tests {
                 .unwrap();
         assert!(updated_node.initialised);
         assert_eq!(updated_node.behaviour.unwrap().cid, "bafybehaviour");
+    }
+
+    #[tokio::test]
+    async fn set_entity_reload_error_sets_and_clears_error() {
+        let kubo = MockKubo::start().await;
+        let entity_node = crate::entity::EntityNode {
+            kind: "/ma/room/0.0.1".to_string(),
+            behaviour: None,
+            acl: "open".to_string(),
+            state: None,
+            parent: None,
+            label: None,
+            attributes: std::collections::BTreeMap::new(),
+            init: None,
+            initialised: true,
+            reload_error: None,
+        };
+        let entity_cid = crate::kubo::dag_put(kubo.url(), &entity_node)
+            .await
+            .unwrap();
+        let mut manifest = RuntimeManifest::default();
+        manifest
+            .entities
+            .insert("construct".to_string(), IpldLink::new(entity_cid));
+        let initial = crate::kubo::dag_put(kubo.url(), &manifest).await.unwrap();
+        let stats = Arc::new(RwLock::new(Stats {
+            root_cid: Some(initial.clone()),
+            ..Default::default()
+        }));
+        let writer = ManifestWriter::new(initial, kubo.url().to_string(), stats, None, None);
+
+        let failed_root = writer
+            .set_entity_reload_error("construct", Some("kind fetch failed"))
+            .await
+            .unwrap();
+        let failed_manifest: RuntimeManifest = crate::kubo::dag_get(kubo.url(), &failed_root)
+            .await
+            .unwrap();
+        let failed_link = failed_manifest.entities.get("construct").unwrap();
+        let failed_node: crate::entity::EntityNode =
+            crate::kubo::dag_get(kubo.url(), &failed_link.cid)
+                .await
+                .unwrap();
+        assert_eq!(
+            failed_node.reload_error.as_deref(),
+            Some("kind fetch failed")
+        );
+
+        let cleared_root = writer
+            .set_entity_reload_error("construct", None)
+            .await
+            .unwrap();
+        let cleared_manifest: RuntimeManifest = crate::kubo::dag_get(kubo.url(), &cleared_root)
+            .await
+            .unwrap();
+        let cleared_link = cleared_manifest.entities.get("construct").unwrap();
+        let cleared_node: crate::entity::EntityNode =
+            crate::kubo::dag_get(kubo.url(), &cleared_link.cid)
+                .await
+                .unwrap();
+        assert_eq!(cleared_node.reload_error, None);
     }
 
     #[tokio::test]

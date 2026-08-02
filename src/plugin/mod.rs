@@ -790,6 +790,7 @@ mod hostile {
             attributes: BTreeMap::new(),
             init: None,
             initialised: false,
+            reload_error: None,
         }
     }
 
