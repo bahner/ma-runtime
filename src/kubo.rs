@@ -62,14 +62,6 @@ struct DagResolveResponse {
 }
 
 #[derive(Deserialize)]
-struct NameResolveResponse {
-    #[serde(default, rename = "Path")]
-    path_upper: String,
-    #[serde(default, rename = "path")]
-    path_lower: String,
-}
-
-#[derive(Deserialize)]
 struct AddResponse {
     #[serde(rename = "Hash")]
     hash: String,
@@ -220,60 +212,6 @@ pub async fn dag_get<T: DeserializeOwned>(kubo_url: &str, cid: &str) -> Result<T
 
     serde_json::from_str(&body)
         .map_err(|e| anyhow!("failed to deserialise dag/get response for {cid}: {e} body={body}"))
-}
-
-/// Fetch raw IPLD block bytes from local Kubo using `/api/v0/block/get`.
-pub async fn block_get_bytes(kubo_url: &str, cid: &str) -> Result<Vec<u8>> {
-    let _permit = acquire_request_permit("block/get").await?;
-    let base = kubo_url.trim_end_matches('/');
-    let url = format!("{base}/api/v0/block/get");
-
-    let body = client()
-        .post(&url)
-        .query(&[("arg", cid)])
-        .send()
-        .await?
-        .error_for_status()?
-        .bytes()
-        .await?;
-
-    Ok(body.to_vec())
-}
-
-/// Resolve an IPNS key through local Kubo's name resolver and return the target CID.
-pub async fn name_resolve(kubo_url: &str, ipns_id: &str) -> Result<String> {
-    let _permit = acquire_request_permit("name/resolve").await?;
-    let base = kubo_url.trim_end_matches('/');
-    let url = format!("{base}/api/v0/name/resolve");
-    let arg = format!("/ipns/{ipns_id}");
-
-    let body = client()
-        .post(&url)
-        .query(&[("arg", arg.as_str()), ("recursive", "true")])
-        .send()
-        .await?
-        .error_for_status()?
-        .text()
-        .await?;
-
-    let parsed: NameResolveResponse = serde_json::from_str(&body)
-        .map_err(|e| anyhow!("failed parsing name/resolve response for {arg}: {e} body={body}"))?;
-    let path = if parsed.path_upper.is_empty() {
-        parsed.path_lower
-    } else {
-        parsed.path_upper
-    };
-    let cid = path
-        .trim()
-        .strip_prefix("/ipfs/")
-        .map_or_else(|| path.trim().to_string(), ToString::to_string);
-    if cid.is_empty() {
-        Err(anyhow!(
-            "name/resolve returned empty path for {arg}: {body}"
-        ))
-    } else {
-        Ok(cid)
-    }
 }
 
 /// Resolve an IPFS/IPNS path to a bare CID string.

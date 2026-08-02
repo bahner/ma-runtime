@@ -811,7 +811,7 @@ fn send_rpc_reply_typed(
                 }
             }
             Err(err) => {
-                warn!(error = %err, to = %from, "RPC reply delivery failed");
+                debug!(error = %err, to = %from, "RPC reply delivery failed");
             }
         }
     });

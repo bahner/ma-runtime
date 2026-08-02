@@ -64,10 +64,6 @@ impl MockKubo {
         cid
     }
 
-    /// Store raw bytes under a caller-chosen key.
-    pub async fn add_bytes_at(&self, key: &str, bytes: Vec<u8>) {
-        self.store.0.lock().await.insert(key.to_string(), bytes);
-    }
 }
 
 /// Content-address a node body.  Deterministic and CID-shaped, but not a real

@@ -11,7 +11,7 @@ use ma_core::{
     CONTENT_TYPE_TERM_YAML,
 };
 use tokio::sync::Semaphore;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::entity::{EntityNode, KindNode, RuntimeManifest};
 
@@ -822,7 +822,7 @@ async fn send_crud_reply_raw(
             info!(to = %incoming.from, reply_to = %incoming.id, "CRUD reply sent");
         }
         Err(err) => {
-            warn!(error = %err, to = %incoming.from, "CRUD reply delivery failed");
+            debug!(error = %err, to = %incoming.from, "CRUD reply delivery failed");
         }
     }
     Ok(())

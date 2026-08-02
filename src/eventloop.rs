@@ -736,7 +736,7 @@ pub async fn run(
                                 }
                             }
                             Err(e) => {
-                                warn!(fragment = %fragment, to = %env.to, error = %e, "plugin envelope: outbox open failed");
+                                debug!(fragment = %fragment, to = %env.to, error = %e, "plugin envelope: outbox open failed");
                                 dispatch_delivery_failed(
                                     &fragment,
                                     failed_envelope,

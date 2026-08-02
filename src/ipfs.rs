@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::Mutex;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use zeroize::Zeroizing;
 
 use crate::acl::{check_full, AclMap, GroupCache, CAP_IDENTITY_PUBLISH, CAP_IPFS};
@@ -591,7 +591,7 @@ async fn resolve_did_for_outbox(
                         match result {
                             Ok(doc) => return Ok(doc),
                             Err(error) => {
-                                warn!(
+                                debug!(
                                     to = %target_base,
                                     attempt = resolved_attempt,
                                     error = %error,
@@ -615,7 +615,7 @@ async fn resolve_did_for_outbox(
             match result {
                 Ok(doc) => return Ok(doc),
                 Err(error) => {
-                    warn!(
+                    debug!(
                         to = %target_base,
                         attempt = resolved_attempt,
                         error = %error,

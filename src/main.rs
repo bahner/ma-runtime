@@ -11,7 +11,6 @@ mod kubo;
 mod manifest;
 mod plugin;
 mod republish;
-mod resolver;
 mod routing;
 mod rpc;
 mod schedule;
@@ -741,10 +740,9 @@ async fn main() -> Result<()> {
         "{}", i18n::t("started")
     );
 
-    // ── Shared DID document resolver (native runtime: local Kubo RPC) ───────
-    let shared_resolver: Arc<dyn ma_core::DidDocumentResolver> = Arc::new(
-        resolver::KuboDidResolver::new(Arc::<str>::from(config.kubo_rpc_url.as_str())),
-    );
+    // ── Shared DID document resolver (local gateway first, public fallbacks) ──
+    let shared_resolver: Arc<dyn ma_core::DidDocumentResolver> =
+        Arc::new(config.ipfs_gateway_resolver());
 
     // ── Main event loop + graceful shutdown ─────────────────────────────────────
     eventloop::run(
