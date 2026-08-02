@@ -844,6 +844,12 @@ the filename stem and the entry in `BUNDLED_LANGS`.
 - **IPNS keys are zero-use.** The sender's IPNS private key carried in each
   `/ma/ipfs/0.0.1` request is used once for the Kubo publish call and
   immediately zeroized.
+- **DID document pinning keeps only the newest CID, best-effort.** Incoming
+  DID-document publish requests try to move the local pin from the old resolved
+  CID to the newly published CID, but pin cleanup failures do not fail the
+  publish. This is local-only; runtime remote pin configuration is not applied
+  to delegated DID documents. Generic IPFS store requests are not directly
+  pinned.
 - **Replay protection** via a 120-second sliding window on `/ma/ipfs/0.0.1`.
 - **Input validation** via `validate_ipfs_publish_request` (ma-core): checks
   content-type, DID document proof, sender identity match.

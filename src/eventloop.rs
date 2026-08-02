@@ -503,7 +503,7 @@ pub async fn run(
                                 signing_key: &signing_key,
                                 endpoint: Arc::clone(&endpoint),
                                 kubo_rpc_url: &kubo_url,
-                                publisher: &ipfs.publisher,
+                                publish_lifetime_hours: did_publish_lifetime_hours,
                                 resolver: Arc::clone(&shared_resolver),
                                 doc_cache: Arc::clone(&ipfs.doc_cache),
                                 group_cache: group_cache.clone(),

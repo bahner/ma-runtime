@@ -177,11 +177,6 @@ async fn ipfs_add_bytes_with_pin(kubo_url: &str, data: Vec<u8>, pin: bool) -> Re
     Ok(parsed.hash)
 }
 
-/// Add raw bytes to IPFS via Kubo, pin them directly, and return the CID.
-pub async fn ipfs_add_bytes(kubo_url: &str, data: Vec<u8>) -> Result<String> {
-    ipfs_add_bytes_with_pin(kubo_url, data, true).await
-}
-
 /// Add raw bytes to IPFS via Kubo without creating a direct local pin.
 ///
 /// Use this for runtime-owned state that is linked from the root manifest and
@@ -363,14 +358,4 @@ mod tests {
         assert_eq!(state.0.lock().await.as_slice(), &["false"]);
     }
 
-    #[tokio::test]
-    async fn explicit_add_uses_pinned_kubo_add() {
-        let state = AddState::default();
-        let url = start_add_server(state.clone()).await;
-
-        let cid = ipfs_add_bytes(&url, b"published".to_vec()).await.unwrap();
-
-        assert_eq!(cid, "bafyreibkhaddtestcid");
-        assert_eq!(state.0.lock().await.as_slice(), &["true"]);
-    }
 }

@@ -27,17 +27,15 @@ pub type DocCache = Arc<Mutex<HashMap<String, Document>>>;
 /// All state owned by the optional IPFS publisher service.
 pub struct IpfsServiceState {
     pub messages: Inbox<ma_core::Message>,
-    pub publisher: IpfsDidPublisher,
     pub replay_guard: ReplayGuard,
     /// Recently-seen sender documents — avoids IPNS lookups for reply delivery.
     pub doc_cache: DocCache,
 }
 
 impl IpfsServiceState {
-    pub fn new(messages: Inbox<ma_core::Message>, publisher: IpfsDidPublisher) -> Self {
+    pub fn new(messages: Inbox<ma_core::Message>) -> Self {
         Self {
             messages,
-            publisher,
             replay_guard: ReplayGuard::default(),
             doc_cache: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -50,7 +48,7 @@ pub struct IpfsHandlerCtx<'a> {
     /// Arc so reply-delivery tasks can be spawned without blocking the event loop.
     pub endpoint: Arc<dyn ma_core::MaEndpoint>,
     pub kubo_rpc_url: &'a str,
-    pub publisher: &'a IpfsDidPublisher,
+    pub publish_lifetime_hours: u64,
     pub resolver: Arc<dyn DidDocumentResolver>,
     /// Shared document cache — populated on `DidDocumentPublish`, read on Store.
     pub doc_cache: DocCache,
@@ -80,7 +78,7 @@ pub async fn do_publish_own_document(
     let key_name = ipns_key_name_for_parts(&["runtime", &runtime_slug], &document_did.ipns);
 
     ensure_kubo_ipns_key(&kubo_url, &key_name, &document_did.ipns, &ipns_secret_key).await?;
-    let cid = dag_put_cbor(&kubo_url, &doc_cbor).await?;
+    let cid = dag_put_cbor(&kubo_url, &doc_cbor, true).await?;
     name_publish(&kubo_url, &key_name, &cid, publish_lifetime_hours).await?;
     Ok(())
 }
@@ -179,7 +177,7 @@ struct KeyImportResponse {
     id_lower: String,
 }
 
-async fn dag_put_cbor(kubo_url: &str, data: &[u8]) -> Result<String> {
+async fn dag_put_cbor(kubo_url: &str, data: &[u8], pin: bool) -> Result<String> {
     let base = kubo_url.trim_end_matches('/');
     let url = format!("{base}/api/v0/dag/put");
 
@@ -193,7 +191,7 @@ async fn dag_put_cbor(kubo_url: &str, data: &[u8]) -> Result<String> {
         .query(&[
             ("store-codec", "dag-cbor"),
             ("input-codec", "dag-cbor"),
-            ("pin", "true"),
+            ("pin", if pin { "true" } else { "false" }),
         ])
         .multipart(form)
         .send()
@@ -679,12 +677,36 @@ async fn handle_did_document_publish(
         .insert(sender_for_cache.base_id(), document.clone());
 
     let key = Zeroizing::new(ipns_secret_key);
-    let cid = ctx
-        .publisher
-        .publish_document(&document_bytes, &key)
+    let key_name = ma_core::ipfs::ipns_key_name_for_document(&document);
+    ensure_kubo_ipns_key(ctx.kubo_rpc_url, &key_name, &document_did.ipns, &key).await?;
+    let old_cid = resolve_ipns_path(ctx.kubo_rpc_url, &document_did.ipns)
         .await
-        .context("kubo DID publish failed")?
-        .ok_or_else(|| anyhow!("publisher returned no CID"))?;
+        .ok()
+        .flatten();
+    let cid = dag_put_cbor(ctx.kubo_rpc_url, &document_bytes, false)
+        .await
+        .context("kubo DID document store failed")?;
+    name_publish(
+        ctx.kubo_rpc_url,
+        &key_name,
+        &cid,
+        ctx.publish_lifetime_hours,
+    )
+    .await
+    .context("kubo DID name publish failed")?;
+    let pin_result = match old_cid.as_deref() {
+        Some(old) if old != cid => crate::kubo::pin_update(ctx.kubo_rpc_url, old, &cid).await,
+        Some(_) | None => crate::kubo::pin_add(ctx.kubo_rpc_url, &cid).await,
+    };
+    if let Err(err) = pin_result {
+        warn!(
+            did = %document_did.id(),
+            old = old_cid.as_deref().unwrap_or(""),
+            new = %cid,
+            error = %err,
+            "DID document local pin replacement failed"
+        );
+    }
     info!(did = %document_did.id(), cid = %cid, "{}", i18n::t("document-published"));
 
     let reply_bytes = encode_ok_cid_reply(&cid)?;
@@ -754,7 +776,7 @@ async fn handle_ipfs_store(
             .await
             .context("dag put failed")?
     } else {
-        crate::kubo::ipfs_add_bytes(ctx.kubo_rpc_url, v.content.clone())
+        crate::kubo::ipfs_add_bytes_unpinned(ctx.kubo_rpc_url, v.content.clone())
             .await
             .context("ipfs add failed")?
     };

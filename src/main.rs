@@ -433,7 +433,7 @@ async fn main() -> Result<()> {
     let ipfs_state = if ipfs_publisher_enabled {
         let messages = ipfs_messages.expect("ipfs inbox exists when publisher is enabled");
         info!("IPFS publisher service enabled");
-        Some(ipfs::IpfsServiceState::new(messages, publisher))
+        Some(ipfs::IpfsServiceState::new(messages))
     } else {
         info!("IPFS publisher service disabled (set ipfs_publisher: true in config to enable)");
         None
