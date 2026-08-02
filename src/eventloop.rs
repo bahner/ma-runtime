@@ -627,8 +627,8 @@ pub async fn run(
                             stats: stats.clone(),
                             shared_config: Arc::clone(&shared_config),
                         };
-                        let Ok(permit) = local_plugin_dispatch_gate.clone().try_acquire_owned() else {
-                            debug!(fragment = %fragment, target = %target_fragment, limit = LOCAL_PLUGIN_DISPATCH_LIMIT, "plugin envelope: local dispatch limit reached; envelope dropped");
+                        let Ok(permit) = local_plugin_dispatch_gate.clone().acquire_owned().await else {
+                            warn!(fragment = %fragment, target = %target_fragment, "plugin envelope: local dispatch gate closed");
                             continue;
                         };
                         tokio::spawn(async move {

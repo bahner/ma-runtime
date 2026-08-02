@@ -13,7 +13,7 @@
 //! Extism) or which path the closure takes (for Native) — the Wasm export
 //! called is always `on_message`, regardless of statefulness.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::{collections::HashMap, sync::Arc};
 
 use anyhow::{anyhow, Context, Result};
@@ -36,6 +36,46 @@ use backend::{run_native_thread, run_wasm_thread, WasmThreadCfg};
 
 const ENTITY_MAILBOX_CAPACITY: usize = 64;
 const ENTITY_LOAD_BACKOFF_SECS: &[u64] = &[1, 1, 2, 3, 5];
+static ACTIVE_PLUGIN_DISPATCHES: AtomicUsize = AtomicUsize::new(0);
+static PLUGIN_DISPATCH_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+struct DispatchActivity<'a> {
+    active: &'a AtomicUsize,
+    generation: &'a AtomicU64,
+    started_alone: bool,
+    generation_at_start: u64,
+}
+
+impl DispatchActivity<'static> {
+    fn begin_global() -> Self {
+        Self::begin(&ACTIVE_PLUGIN_DISPATCHES, &PLUGIN_DISPATCH_GENERATION)
+    }
+}
+
+impl<'a> DispatchActivity<'a> {
+    fn begin(active: &'a AtomicUsize, generation: &'a AtomicU64) -> Self {
+        let generation_at_start = generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let started_alone = active.fetch_add(1, Ordering::SeqCst) == 0;
+        Self {
+            active,
+            generation,
+            started_alone,
+            generation_at_start,
+        }
+    }
+
+    fn is_isolated(&self) -> bool {
+        self.started_alone
+            && self.active.load(Ordering::SeqCst) == 1
+            && self.generation.load(Ordering::SeqCst) == self.generation_at_start
+    }
+}
+
+impl Drop for DispatchActivity<'_> {
+    fn drop(&mut self) {
+        self.active.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 pub fn enqueue_envelope(
     tx: &Sender<(String, SendEnvelope)>,
@@ -585,6 +625,7 @@ impl EntityPlugin {
     /// call automatically based on `self.kind` (stateful vs stateless) —
     /// callers never need to branch on kind themselves.
     pub async fn on_message(&self, input: &CastInput) -> Result<DispatchResult> {
+        let dispatch_activity = DispatchActivity::begin_global();
         let before_rss = current_rss_kib();
         let message_verb = plugin_message_verb(&input.msg.content);
         debug!(
@@ -627,7 +668,7 @@ impl EntityPlugin {
         if let (Some(before), Some(after)) = (before_rss, current_rss_kib()) {
             let delta = after.saturating_sub(before);
             let threshold = memory_growth_log_threshold_kib();
-            if delta >= threshold {
+            if delta >= threshold && dispatch_activity.is_isolated() {
                 warn!(
                     fragment = %self.fragment,
                     from = %input.msg.from,
@@ -911,6 +952,32 @@ fn current_rss_kib() -> Option<u64> {
         let value = line.strip_prefix("VmRSS:")?;
         value.split_whitespace().next()?.parse().ok()
     })
+}
+
+#[cfg(test)]
+mod dispatch_activity_tests {
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+    use super::DispatchActivity;
+
+    #[test]
+    fn overlapping_dispatch_invalidates_process_rss_attribution() {
+        let active = AtomicUsize::new(0);
+        let generation = AtomicU64::new(0);
+
+        let first = DispatchActivity::begin(&active, &generation);
+        assert!(first.is_isolated());
+
+        {
+            let second = DispatchActivity::begin(&active, &generation);
+            assert!(!first.is_isolated());
+            assert!(!second.is_isolated());
+        }
+
+        assert!(!first.is_isolated());
+        drop(first);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+    }
 }
 
 fn run_native_lifecycle(
