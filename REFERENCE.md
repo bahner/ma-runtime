@@ -118,7 +118,14 @@ zion (browser WASM) ──iroh QUIC──► /ma/rpc/0.0.1
 ```
 
 Entity Wasm plugins are loaded from IPFS at startup.  State is persisted back
-to IPFS on graceful shutdown.
+to IPFS on graceful shutdown and before a hot reload. Reload saves update the
+authoritative manifest state link before the replacement plugin is loaded, so
+unchanged actor state survives both the replacement and a later restart.
+
+Plugin `ma_send` and `ma_reply` envelopes cross a bounded, in-memory queue.
+They remain fire-and-forget: when the queue is full, the envelope is dropped
+and the runtime logs an `ERROR` containing the source fragment and configured
+capacity. The queue is not durable across process restarts.
 
 ---
 
@@ -789,6 +796,7 @@ persist across restarts because they live in IPFS.
 | `description` | string | Runtime description text, used by root RPC `:description` (default `A 間 runtime with a lazy owner.`). |
 | `i18n` | string | Active language BCP-47 tag (e.g. `nb`, `zh-Hans`). Setting via `:config.i18n: nb` reloads translations immediately. |
 | `i18n_cid` | string | IPFS CID of the compiled locale DAG-CBOR node (set by `make src/i18n.yaml`) |
+| `plugin_envelope_queue_capacity` | positive integer | Capacity of the global in-memory plugin envelope queue (default `1024`). Missing values are materialised in the manifest at startup. Changes take effect after restarting the runtime. |
 | other | any | Free-form runtime metadata |
 
 Runtime-owned IPNS keys use deterministic Kubo aliases with the local runtime

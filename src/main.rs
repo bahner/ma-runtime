@@ -34,7 +34,8 @@ use std::time::Duration;
 use tracing::{error, info, warn};
 
 use startup::{
-    get_bool_setting, get_u64_setting, load_secret_bundle, persist_root_cid_to_config,
+    get_bool_setting, get_u64_setting, load_secret_bundle,
+    materialise_plugin_envelope_queue_capacity, persist_root_cid_to_config,
     runtime_manifest_config, select_root_cid, should_generate_headless_config,
 };
 
@@ -421,6 +422,17 @@ async fn main() -> Result<()> {
         }
     }
 
+    let plugin_envelope_queue_capacity = if let Some(current_root) = root_cid.as_deref() {
+        let (materialised_root, capacity) =
+            materialise_plugin_envelope_queue_capacity(&config.kubo_rpc_url, current_root)
+                .await
+                .context("loading plugin envelope queue capacity")?;
+        root_cid = Some(materialised_root);
+        capacity
+    } else {
+        crud::config::DEFAULT_PLUGIN_ENVELOPE_QUEUE_CAPACITY
+    };
+
     // ── i18n: fetch lang via RuntimeManifest.i18n from IPFS ────────────
     // Priority: --i18n / MA_I18N > config.extra["i18n"] > manifest config.i18n (CID
     // reverse-lookup) > "nb". The active FTL is cached in memory here.
@@ -454,8 +466,9 @@ async fn main() -> Result<()> {
     // ── Load entity plugins from IPFS ──────────────────────────────────────────
     // Channel for envelopes produced by entity plugins via ma_send/ma_reply.
     // Plugins send fire-and-forget; the main event loop drains and delivers.
-    let (envelope_tx, envelope_rx) =
-        tokio::sync::mpsc::channel::<(String, entity::SendEnvelope)>(1024);
+    let (envelope_tx, envelope_rx) = tokio::sync::mpsc::channel::<(String, entity::SendEnvelope)>(
+        plugin_envelope_queue_capacity,
+    );
     let entity_registry = plugin::new_entity_registry();
     let kind_registry = entity::new_kind_registry();
     let startup_epoch = status::now_unix_secs();

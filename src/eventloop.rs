@@ -346,8 +346,9 @@ async fn dispatch_local_plugin_envelope(
                         );
                         buf
                     };
-                    let _ = side_effects.envelope_tx.try_send((
-                        req.parent.clone(),
+                    let _ = crate::plugin::enqueue_envelope(
+                        &side_effects.envelope_tx,
+                        &req.parent,
                         SendEnvelope {
                             to: format!("{}#{}", our_did, req.parent),
                             content_type: CONTENT_TYPE_TERM.to_string(),
@@ -355,7 +356,7 @@ async fn dispatch_local_plugin_envelope(
                             content: err_content,
                             reply_to: None,
                         },
-                    ));
+                    );
                 }
                 Err(e) => {
                     warn!(fragment = %req.fragment, kind = %req.kind_protocol,

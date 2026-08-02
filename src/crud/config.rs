@@ -46,6 +46,7 @@ const MANIFEST_CONFIG_KEYS: &[&str] = &[
     "ipns_publish_timeout_secs",
     "ipns_publish_resolve",
     "ipns_publish_allow_offline",
+    "plugin_envelope_queue_capacity",
 ];
 
 pub const DEFAULT_ZION_SOURCE: &str =
@@ -54,6 +55,25 @@ pub const DEFAULT_ZION_SOURCE: &str =
 pub const DEFAULT_RUNTIME_NAME: &str = "間trix";
 pub const DEFAULT_RUNTIME_DESCRIPTION: &str = "A 間 runtime with a lazy owner.";
 pub const DEFAULT_WASM_RELOAD_SHUTDOWN_TIMEOUT_MS: u64 = 250;
+pub const DEFAULT_PLUGIN_ENVELOPE_QUEUE_CAPACITY: usize = 1024;
+
+pub fn plugin_envelope_queue_capacity(value: Option<&serde_yaml::Value>) -> Result<usize> {
+    let Some(value) = value else {
+        return Ok(DEFAULT_PLUGIN_ENVELOPE_QUEUE_CAPACITY);
+    };
+    let capacity = value
+        .as_u64()
+        .ok_or_else(|| anyhow!("plugin_envelope_queue_capacity must be a positive integer"))?;
+    let capacity = usize::try_from(capacity).map_err(|_| {
+        anyhow!("plugin_envelope_queue_capacity exceeds this platform's usize range")
+    })?;
+    if capacity == 0 {
+        return Err(anyhow!(
+            "plugin_envelope_queue_capacity must be greater than zero"
+        ));
+    }
+    Ok(capacity)
+}
 
 pub fn wasm_reload_shutdown_timeout(cfg: &ma_core::Config) -> std::time::Duration {
     std::time::Duration::from_millis(
@@ -70,6 +90,9 @@ pub fn default_manifest_config_value(key: &str) -> Option<serde_yaml::Value> {
         "name" => Some(serde_yaml::Value::String(DEFAULT_RUNTIME_NAME.to_string())),
         "description" => Some(serde_yaml::Value::String(
             DEFAULT_RUNTIME_DESCRIPTION.to_string(),
+        )),
+        "plugin_envelope_queue_capacity" => Some(serde_yaml::Value::from(
+            DEFAULT_PLUGIN_ENVELOPE_QUEUE_CAPACITY as u64,
         )),
         _ => None,
     }
@@ -310,7 +333,12 @@ pub(super) async fn handle_config_ns(
             (None, []) => {
                 let manifest = load_manifest(ctx).await?;
                 let mut combined = manifest.config.clone();
-                for key in ["zion", "name", "description"] {
+                for key in [
+                    "zion",
+                    "name",
+                    "description",
+                    "plugin_envelope_queue_capacity",
+                ] {
                     if let Some(default_value) = default_manifest_config_value(key) {
                         combined.entry(key.to_string()).or_insert(default_value);
                     }
@@ -455,6 +483,9 @@ pub(super) async fn handle_config_ns(
                 )
                 .await;
             }
+            if key == "plugin_envelope_queue_capacity" {
+                plugin_envelope_queue_capacity(Some(&yaml_val))?;
+            }
             let link_cid = if let serde_yaml::Value::String(ref s) = yaml_val {
                 cidv1_ref(s)
             } else {
@@ -487,7 +518,8 @@ pub(super) async fn handle_config_ns(
 mod tests {
     use super::{
         cbor_to_yaml, default_manifest_config_value, is_protected_config_key_pub,
-        public_plugin_config, set_daemon_config_key_pub, wasm_reload_shutdown_timeout,
+        plugin_envelope_queue_capacity, public_plugin_config, set_daemon_config_key_pub,
+        wasm_reload_shutdown_timeout, DEFAULT_PLUGIN_ENVELOPE_QUEUE_CAPACITY,
         DEFAULT_RUNTIME_DESCRIPTION, DEFAULT_RUNTIME_NAME, DEFAULT_WASM_RELOAD_SHUTDOWN_TIMEOUT_MS,
     };
     use ciborium::Value as CborValue;
@@ -638,5 +670,25 @@ mod tests {
                 .and_then(|v| v.as_str().map(str::to_string)),
             Some(DEFAULT_RUNTIME_DESCRIPTION.to_string())
         );
+        assert_eq!(
+            default_manifest_config_value("plugin_envelope_queue_capacity")
+                .and_then(|v| v.as_u64()),
+            Some(DEFAULT_PLUGIN_ENVELOPE_QUEUE_CAPACITY as u64)
+        );
+    }
+
+    #[test]
+    fn plugin_envelope_queue_capacity_requires_positive_platform_integer() {
+        assert_eq!(
+            plugin_envelope_queue_capacity(None).unwrap(),
+            DEFAULT_PLUGIN_ENVELOPE_QUEUE_CAPACITY
+        );
+        assert_eq!(
+            plugin_envelope_queue_capacity(Some(&serde_yaml::Value::from(17))).unwrap(),
+            17
+        );
+        assert!(plugin_envelope_queue_capacity(Some(&serde_yaml::Value::from(0))).is_err());
+        assert!(plugin_envelope_queue_capacity(Some(&serde_yaml::Value::from("17"))).is_err());
+        assert!(plugin_envelope_queue_capacity(Some(&serde_yaml::Value::from(-1))).is_err());
     }
 }

@@ -8,6 +8,34 @@ use cid::Cid;
 use ma_core::config::{Config, SecretBundle};
 use std::path::Path;
 
+pub async fn materialise_plugin_envelope_queue_capacity(
+    kubo_url: &str,
+    root_cid: &str,
+) -> Result<(String, usize)> {
+    let mut manifest: crate::entity::RuntimeManifest = crate::kubo::dag_get(kubo_url, root_cid)
+        .await
+        .context("loading manifest for plugin envelope queue capacity")?;
+    let capacity = crate::crud::config::plugin_envelope_queue_capacity(
+        manifest.config.get("plugin_envelope_queue_capacity"),
+    )?;
+    if manifest
+        .config
+        .contains_key("plugin_envelope_queue_capacity")
+    {
+        return Ok((root_cid.to_string(), capacity));
+    }
+
+    manifest.config.insert(
+        "plugin_envelope_queue_capacity".to_string(),
+        serde_yaml::Value::from(capacity as u64),
+    );
+    let new_root_cid = crate::kubo::dag_put(kubo_url, &manifest).await?;
+    if let Err(error) = crate::kubo::pin_update(kubo_url, root_cid, &new_root_cid).await {
+        tracing::warn!(old = %root_cid, new = %new_root_cid, error = %error, "manifest pin_update failed");
+    }
+    Ok((new_root_cid, capacity))
+}
+
 pub fn load_secret_bundle(config: &Config) -> Result<SecretBundle> {
     let passphrase = config
         .secret_bundle_passphrase
@@ -109,6 +137,10 @@ pub fn runtime_manifest_config(
     out.insert(
         "description".to_string(),
         serde_yaml::Value::String(crate::crud::config::DEFAULT_RUNTIME_DESCRIPTION.to_string()),
+    );
+    out.insert(
+        "plugin_envelope_queue_capacity".to_string(),
+        serde_yaml::Value::from(crate::crud::config::DEFAULT_PLUGIN_ENVELOPE_QUEUE_CAPACITY as u64),
     );
 
     out.insert(
@@ -345,6 +377,63 @@ mod tests {
                 .get("did_resolve_attempt_timeout_secs")
                 .and_then(serde_yaml::Value::as_u64),
             Some(90)
+        );
+    }
+
+    #[tokio::test]
+    async fn materialises_default_plugin_envelope_queue_capacity() {
+        let kubo = crate::testkubo::MockKubo::start().await;
+        let manifest = crate::entity::RuntimeManifest::default();
+        let root_cid = crate::kubo::dag_put(kubo.url(), &manifest).await.unwrap();
+
+        let (new_root_cid, capacity) =
+            super::materialise_plugin_envelope_queue_capacity(kubo.url(), &root_cid)
+                .await
+                .unwrap();
+
+        assert_eq!(
+            capacity,
+            crate::crud::config::DEFAULT_PLUGIN_ENVELOPE_QUEUE_CAPACITY
+        );
+        assert_ne!(new_root_cid, root_cid);
+        let updated: crate::entity::RuntimeManifest =
+            crate::kubo::dag_get(kubo.url(), &new_root_cid)
+                .await
+                .unwrap();
+        assert_eq!(
+            updated
+                .config
+                .get("plugin_envelope_queue_capacity")
+                .and_then(serde_yaml::Value::as_u64),
+            Some(crate::crud::config::DEFAULT_PLUGIN_ENVELOPE_QUEUE_CAPACITY as u64)
+        );
+    }
+
+    #[tokio::test]
+    async fn honours_and_validates_manifest_plugin_envelope_queue_capacity() {
+        let kubo = crate::testkubo::MockKubo::start().await;
+        let mut manifest = crate::entity::RuntimeManifest::default();
+        manifest.config.insert(
+            "plugin_envelope_queue_capacity".to_string(),
+            serde_yaml::Value::from(7),
+        );
+        let root_cid = crate::kubo::dag_put(kubo.url(), &manifest).await.unwrap();
+        let (unchanged_root, capacity) =
+            super::materialise_plugin_envelope_queue_capacity(kubo.url(), &root_cid)
+                .await
+                .unwrap();
+        assert_eq!(unchanged_root, root_cid);
+        assert_eq!(capacity, 7);
+
+        manifest.config.insert(
+            "plugin_envelope_queue_capacity".to_string(),
+            serde_yaml::Value::from(0),
+        );
+        let invalid_root = crate::kubo::dag_put(kubo.url(), &manifest).await.unwrap();
+        assert!(
+            super::materialise_plugin_envelope_queue_capacity(kubo.url(), &invalid_root)
+                .await
+                .is_err()
         );
     }
 

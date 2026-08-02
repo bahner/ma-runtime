@@ -689,8 +689,9 @@ async fn handle_entity_plugin_message(
                     );
                     buf
                 };
-                let _ = ctx.envelope_tx.try_send((
-                    req.parent.clone(),
+                let _ = crate::plugin::enqueue_envelope(
+                    &ctx.envelope_tx,
+                    &req.parent,
                     crate::entity::SendEnvelope {
                         to: format!("{}#{}", ctx.our_did, req.parent),
                         content_type: ma_core::CONTENT_TYPE_TERM.to_string(),
@@ -698,7 +699,7 @@ async fn handle_entity_plugin_message(
                         content: err_content,
                         reply_to: None,
                     },
-                ));
+                );
             }
             Err(e) => {
                 warn!(fragment = %req.fragment, kind = %req.kind_protocol,

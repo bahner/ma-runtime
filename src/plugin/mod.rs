@@ -17,8 +17,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::{collections::HashMap, sync::Arc};
 
 use anyhow::{anyhow, Context, Result};
-use tokio::sync::{mpsc::Sender, oneshot, RwLock};
-use tracing::{debug, info, warn};
+use tokio::sync::{
+    mpsc::{error::TrySendError, Sender},
+    oneshot, RwLock,
+};
+use tracing::{debug, error, info, warn};
 
 use crate::kubo::cat_bytes;
 use crate::manifest::ManifestWriter;
@@ -33,6 +36,25 @@ use backend::{run_native_thread, run_wasm_thread, WasmThreadCfg};
 
 const ENTITY_MAILBOX_CAPACITY: usize = 64;
 const ENTITY_LOAD_BACKOFF_SECS: &[u64] = &[1, 1, 2, 3, 5];
+
+pub fn enqueue_envelope(
+    tx: &Sender<(String, SendEnvelope)>,
+    fragment: &str,
+    envelope: SendEnvelope,
+) -> Result<()> {
+    match tx.try_send((fragment.to_string(), envelope)) {
+        Ok(()) => Ok(()),
+        Err(TrySendError::Full(_)) => {
+            error!(
+                fragment,
+                capacity = tx.max_capacity(),
+                "plugin outbox full; fire-and-forget envelope dropped"
+            );
+            Ok(())
+        }
+        Err(TrySendError::Closed(_)) => Err(anyhow!("plugin outbox is closed")),
+    }
+}
 
 // ── Actor thread model ────────────────────────────────────────────────────────
 //

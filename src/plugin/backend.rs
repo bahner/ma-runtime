@@ -9,10 +9,10 @@
 use anyhow::{anyhow, Result};
 use extism::{host_fn, Function, Manifest, Plugin, PluginBuilder, UserData, Wasm, PTR};
 use tokio::sync::{
-    mpsc::{error::TrySendError, Receiver, Sender},
+    mpsc::{Receiver, Sender},
     oneshot,
 };
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use crate::entity::{
     CastInput, CreateEntityRequest, Lifecycle, ReplyRequest, SendEnvelope, SetBehaviourRequest,
@@ -37,7 +37,7 @@ fn generate_fragment() -> String {
 // Context captured by `ma_send` and `ma_reply` host functions.
 //
 // Sending is fire-and-forget: the envelope is forwarded to the main event
-// loop via an unbounded channel.  The scheduler (and any other dispatch
+// loop via a bounded channel.  The scheduler (and any other dispatch
 // path) has zero envelope-handling responsibility.
 struct OutboxCtx {
     tx: Sender<(String, SendEnvelope)>,
@@ -45,13 +45,43 @@ struct OutboxCtx {
 }
 
 fn enqueue_plugin_envelope(ctx: &OutboxCtx, envelope: SendEnvelope) -> Result<()> {
-    match ctx.tx.try_send((ctx.fragment.clone(), envelope)) {
-        Ok(()) => Ok(()),
-        Err(TrySendError::Full(_)) => {
-            debug!(fragment = %ctx.fragment, "plugin outbox full; fire-and-forget envelope dropped");
-            Ok(())
+    super::enqueue_envelope(&ctx.tx, &ctx.fragment, envelope)
+}
+
+#[cfg(test)]
+mod outbox_tests {
+    use tracing_test::traced_test;
+
+    use super::{enqueue_plugin_envelope, OutboxCtx};
+    use crate::entity::SendEnvelope;
+
+    fn envelope() -> SendEnvelope {
+        SendEnvelope {
+            to: "did:ma:test#room".to_string(),
+            content_type: "application/vnd.ma.term".to_string(),
+            message_type: None,
+            content: Vec::new(),
+            reply_to: None,
         }
-        Err(TrySendError::Closed(_)) => Err(anyhow!("plugin outbox is closed")),
+    }
+
+    #[test]
+    #[traced_test]
+    fn full_plugin_outbox_logs_error_and_remains_fire_and_forget() {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let ctx = OutboxCtx {
+            tx,
+            fragment: "sender".to_string(),
+        };
+
+        enqueue_plugin_envelope(&ctx, envelope()).unwrap();
+        enqueue_plugin_envelope(&ctx, envelope()).unwrap();
+
+        assert!(logs_contain("ERROR"));
+        assert!(logs_contain(
+            "plugin outbox full; fire-and-forget envelope dropped"
+        ));
+        assert!(logs_contain("capacity=1"));
     }
 }
 

@@ -455,7 +455,12 @@ pub(super) fn spawn_entity_reload(
                 .await
             {
                 Ok(Some(cid)) => {
-                    entity_node.state = Some(crate::entity::IpldLink::new(cid));
+                    if let Err(e) = manifest_writer.set_entity_state(&name, &cid).await {
+                        let reason = format!("failed to publish current state before reload: {e}");
+                        warn!(name = %name, cid = %cid, error = %e, "failed to update manifest with current state before reload; keeping current plugin");
+                        mark_entity_reload_failed(&manifest_writer, &name, &reason).await;
+                        return;
+                    }
                 }
                 Ok(None) => {}
                 Err(e) => {
@@ -465,6 +470,17 @@ pub(super) fn spawn_entity_reload(
                     return;
                 }
             }
+
+            entity_node = match manifest_writer.entity_node(&name).await {
+                Ok(node) => node,
+                Err(e) => {
+                    let reason =
+                        format!("failed to reload current entity node after saving state: {e}");
+                    warn!(name = %name, error = %e, "failed to load current entity node before reload; keeping current plugin");
+                    mark_entity_reload_failed(&manifest_writer, &name, &reason).await;
+                    return;
+                }
+            };
         }
 
         let init_payload = entity_node.init.as_ref().map(|s| s.as_bytes().to_vec());
@@ -494,11 +510,13 @@ pub(super) fn spawn_entity_reload(
                     mark_entity_reload_failed(&manifest_writer, &name, reason).await;
                     return;
                 }
-                let mut updated_node = entity_node.clone();
-                updated_node.reload_error = None;
-                if let Ok(Some(cid)) = ep.trigger_save(&kubo_rpc_url).await {
-                    updated_node.state = Some(crate::entity::IpldLink::new(cid));
-                }
+                let replacement_state_cid = match ep.trigger_save(&kubo_rpc_url).await {
+                    Ok(cid) => cid,
+                    Err(e) => {
+                        warn!(name = %name, error = %e, "failed to persist state produced during reload");
+                        None
+                    }
+                };
                 entity_registry
                     .write()
                     .await
@@ -507,43 +525,16 @@ pub(super) fn spawn_entity_reload(
                     current.terminate_worker();
                 }
                 info!(name = %name, lifecycle = %lifecycle, "{}", crate::i18n::t("entity-reloaded"));
-                // Persist lifecycle/state changes to IPFS, exactly like
-                // bootstrap::load_entities does at startup. Otherwise a later
-                // daemon restart re-reads stale state and/or `initialised`.
-                let state_changed = entity_node.state.as_ref().map(|l| l.cid.as_str())
-                    != updated_node.state.as_ref().map(|l| l.cid.as_str());
-                let reload_error_changed = entity_node.reload_error.is_some();
-                if lifecycle == crate::entity::Lifecycle::Running
-                    && (!entity_node.initialised || state_changed || reload_error_changed)
-                {
-                    let mut updated = updated_node;
-                    if !entity_node.initialised {
-                        updated.initialised = true;
-                    }
-                    match crate::kubo::dag_put(&kubo_rpc_url, &updated).await {
-                        Ok(new_cid) => {
-                            let name_for_mutation = name.clone();
-                            let new_cid_for_mutation = new_cid.clone();
-                            match manifest_writer
-                                .mutate(move |m| {
-                                    m.entities.insert(
-                                        name_for_mutation,
-                                        crate::entity::IpldLink::new(new_cid_for_mutation),
-                                    );
-                                    Ok(())
-                                })
-                                .await
-                            {
-                                Ok(root_cid) => {
-                                    info!(name = %name, cid = %new_cid, root_cid = %root_cid, "updated entity lifecycle in manifest");
-                                }
-                                Err(e) => {
-                                    warn!(name = %name, error = %e, "failed to update manifest with new entity lifecycle CID");
-                                }
-                            }
+                if lifecycle == crate::entity::Lifecycle::Running {
+                    match manifest_writer
+                        .complete_entity_reload(&name, replacement_state_cid.as_deref())
+                        .await
+                    {
+                        Ok(root_cid) => {
+                            info!(name = %name, root_cid = %root_cid, "updated reloaded entity in manifest");
                         }
                         Err(e) => {
-                            warn!(name = %name, error = %e, "failed to persist updated entity lifecycle to IPFS");
+                            warn!(name = %name, error = %e, "failed to update reloaded entity in manifest");
                         }
                     }
                 }
@@ -563,6 +554,170 @@ pub(super) fn spawn_entity_reload(
             }
         }
     });
+}
+
+#[cfg(test)]
+mod reload_tests {
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use tokio::sync::{RwLock, Semaphore};
+
+    use super::spawn_entity_reload;
+    use crate::entity::{EntityNode, Evaluator, IpldLink, KindNode, RuntimeManifest, SendEnvelope};
+    use crate::manifest::ManifestWriter;
+    use crate::plugin::{new_entity_registry, DispatchResult, EntityPlugin, NativeActor};
+    use crate::status::Stats;
+    use crate::testkubo::MockKubo;
+
+    const GOOD_WAT: &str = r#"
+        (module
+          (func $ok (result i32) (i32.const 0))
+          (export "on_signal" (func $ok))
+          (export "on_message" (func $ok)))
+    "#;
+
+    fn stateful_kind(protocol: &str, evaluator: Evaluator, wasm_cid: Option<&str>) -> KindNode {
+        let mut attributes = BTreeMap::new();
+        attributes.insert("stateful".to_string(), serde_json::Value::Bool(true));
+        attributes.insert("wasi".to_string(), serde_json::Value::Bool(false));
+        KindNode {
+            protocol: protocol.to_string(),
+            cid: wasm_cid.map(IpldLink::new),
+            kind_type: evaluator,
+            behaviour: None,
+            behaviour_chain: Vec::new(),
+            host_functions: Vec::new(),
+            attributes,
+            extends: None,
+        }
+    }
+
+    fn entity_node(kind: &str, state_cid: &str) -> EntityNode {
+        EntityNode {
+            kind: kind.to_string(),
+            behaviour: None,
+            acl: String::new(),
+            state: Some(IpldLink::new(state_cid)),
+            parent: None,
+            label: None,
+            attributes: BTreeMap::new(),
+            init: None,
+            initialised: true,
+            reload_error: None,
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn kind_reload_publishes_pre_reload_state_to_manifest() {
+        let kubo = MockKubo::start().await;
+        let wasm_cid = kubo.add_bytes(wat::parse_str(GOOD_WAT).unwrap()).await;
+        let protocol = "/ma/test/reload-state/0.0.1";
+        let replacement_kind = stateful_kind(protocol, Evaluator::Extism, Some(&wasm_cid));
+        let old_state_cid = kubo.add_bytes(b"old room state".to_vec()).await;
+        let node = entity_node(protocol, &old_state_cid);
+        let entity_cid = crate::kubo::dag_put(kubo.url(), &node).await.unwrap();
+        let mut manifest = RuntimeManifest::default();
+        manifest
+            .entities
+            .insert("room".to_string(), IpldLink::new(entity_cid));
+        let root_cid = crate::kubo::dag_put(kubo.url(), &manifest).await.unwrap();
+        let stats = Arc::new(RwLock::new(Stats {
+            root_cid: Some(root_cid.clone()),
+            ..Default::default()
+        }));
+        let manifest_writer =
+            ManifestWriter::new(root_cid, kubo.url().to_string(), stats.clone(), None, None);
+
+        let pending_state = Arc::new(Mutex::new(Some(
+            br#"{"children":{"did:ma:test#lamp":{"kind":"thing"}}}"#.to_vec(),
+        )));
+        let actor = NativeActor::new(|_| {
+            Ok(DispatchResult {
+                output: Vec::new(),
+                pending_state: None,
+                create_requests: Vec::new(),
+                delete_requests: Vec::new(),
+                behaviour_requests: Vec::new(),
+            })
+        })
+        .with_state_hooks(
+            {
+                let pending_state = Arc::clone(&pending_state);
+                move || pending_state.lock().unwrap().clone()
+            },
+            {
+                let pending_state = Arc::clone(&pending_state);
+                move |_| *pending_state.lock().unwrap() = None
+            },
+        );
+        let native_kind = stateful_kind(protocol, Evaluator::Native, None);
+        let (current, _) =
+            EntityPlugin::new_native("room", &node, &native_kind, actor, Vec::new(), None).unwrap();
+        let current = Arc::new(current);
+        let entity_registry = new_entity_registry();
+        entity_registry
+            .write()
+            .await
+            .insert("room".to_string(), current.clone());
+        let kind_registry = crate::entity::new_kind_registry();
+        kind_registry
+            .write()
+            .await
+            .insert(protocol.to_string(), Arc::new(replacement_kind));
+        let (envelope_tx, _envelope_rx) = tokio::sync::mpsc::channel::<(String, SendEnvelope)>(16);
+
+        spawn_entity_reload(
+            "room".to_string(),
+            node,
+            kind_registry,
+            stats.clone(),
+            Arc::from(kubo.url().to_string()),
+            Arc::from("did:ma:test"),
+            envelope_tx,
+            entity_registry.clone(),
+            manifest_writer,
+            BTreeMap::new(),
+            Duration::from_secs(1),
+            Arc::new(Semaphore::new(1)),
+        );
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let replacement = entity_registry.read().await.get("room").cloned();
+            if replacement.is_some_and(|replacement| !Arc::ptr_eq(&replacement, &current)) {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for replacement entity"
+            );
+            tokio::task::yield_now().await;
+        }
+
+        let latest_root = stats.read().await.root_cid.clone().unwrap();
+        let latest_manifest: RuntimeManifest = crate::kubo::dag_get(kubo.url(), &latest_root)
+            .await
+            .unwrap();
+        let latest_entity: EntityNode = crate::kubo::dag_get(
+            kubo.url(),
+            &latest_manifest.entities.get("room").unwrap().cid,
+        )
+        .await
+        .unwrap();
+        let saved_state = crate::kubo::cat_bytes(
+            kubo.url(),
+            &latest_entity.state.expect("state CID after reload").cid,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            saved_state,
+            br#"{"children":{"did:ma:test#lamp":{"kind":"thing"}}}"#
+        );
+    }
 }
 
 async fn update_stats_entities(ctx: &CrudHandlerCtx) {

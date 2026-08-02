@@ -38,6 +38,7 @@ wasmtime = "43"
 zeroize = "1"
 
 [dev-dependencies]
+tracing-test = "0.2"
 wat = "1"
 
 [profile.release]
