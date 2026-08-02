@@ -20,10 +20,10 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use ma_core::config::{Config, RemotePinConfig};
 use tokio::sync::{Mutex, MutexGuard, RwLock};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::entity::{EntityNode, IpldLink, RuntimeManifest};
 use crate::status::SharedStats;
@@ -47,17 +47,15 @@ struct Inner {
 }
 
 impl Inner {
-    async fn remote_pin_config(&self) -> Option<RemotePinConfig> {
-        let shared_config = self.shared_config.as_ref()?;
+    async fn remote_pin_config(&self) -> Result<Option<RemotePinConfig>> {
+        let Some(shared_config) = self.shared_config.as_ref() else {
+            return Ok(None);
+        };
         let config = shared_config.read().await;
         let default_name = crate::bootstrap::default_remote_root_pin_name(&config.slug);
-        match config.remote_pin_config_with_default_name(default_name) {
-            Ok(remote) => remote,
-            Err(err) => {
-                warn!(error = %err, "remote root pinning is misconfigured");
-                None
-            }
-        }
+        config
+            .remote_pin_config_with_default_name(default_name)
+            .context("remote root pinning is misconfigured")
     }
 }
 
@@ -106,10 +104,11 @@ impl ManifestWriter {
     ) -> Result<String> {
         let inner = &self.inner;
         let new_cid = crate::kubo::dag_put(&inner.kubo_url, manifest).await?;
+        self.replace_remote_root_pin(Some(&old_cid), &new_cid)
+            .await?;
         if let Err(e) = crate::kubo::pin_update(&inner.kubo_url, &old_cid, &new_cid).await {
             warn!(old = %old_cid, new = %new_cid, error = %e, "manifest pin_update failed");
         }
-        self.replace_remote_root_pin(Some(&old_cid), &new_cid).await;
 
         guard.clone_from(&new_cid);
         inner.stats.write().await.root_cid = Some(new_cid.clone());
@@ -117,10 +116,10 @@ impl ManifestWriter {
         Ok(new_cid)
     }
 
-    async fn replace_remote_root_pin(&self, old_cid: Option<&str>, new_cid: &str) {
+    async fn replace_remote_root_pin(&self, old_cid: Option<&str>, new_cid: &str) -> Result<()> {
         let inner = &self.inner;
-        let Some(remote) = inner.remote_pin_config().await else {
-            return;
+        let Some(remote) = inner.remote_pin_config().await? else {
+            return Ok(());
         };
         match ma_core::remote_pin_replace(&inner.kubo_url, &remote, old_cid, new_cid).await {
             Ok(outcome) => {
@@ -142,9 +141,10 @@ impl ManifestWriter {
                         "remote root pin replaced"
                     );
                 }
+                Ok(())
             }
             Err(err) => {
-                warn!(
+                error!(
                     old = old_cid.unwrap_or(""),
                     new = %new_cid,
                     service = %remote.service,
@@ -152,6 +152,7 @@ impl ManifestWriter {
                     error = %err,
                     "remote root pin replacement failed"
                 );
+                Err(err).context("remote root pin replacement failed")
             }
         }
     }
@@ -546,5 +547,51 @@ mod tests {
             Some(initial.as_str()),
             "a failed mutation must not advance the root CID"
         );
+    }
+
+    #[tokio::test]
+    async fn failed_remote_root_pin_does_not_advance_root() {
+        let kubo = MockKubo::start().await;
+        let (initial, stats) = seed(&kubo).await;
+        let config = ma_core::Config {
+            slug: "ma".to_string(),
+            log_level: "info".to_string(),
+            log_level_stdout: "info".to_string(),
+            did_resolver_positive_ttl_secs: 300,
+            did_resolver_negative_ttl_secs: 30,
+            log_file: None,
+            kubo_rpc_url: kubo.url().to_string(),
+            kubo_key_alias: "ma".to_string(),
+            secret_bundle: None,
+            secret_bundle_passphrase: None,
+            config_path: None,
+            pin_remote: true,
+            pin_remote_service: Some("pinata".to_string()),
+            pin_remote_name: Some("ma-runtime-ma-root-test".to_string()),
+            extra: serde_yaml::Mapping::new(),
+        };
+        let writer = ManifestWriter::new(
+            initial.clone(),
+            kubo.url().to_string(),
+            stats.clone(),
+            None,
+            Some(Arc::new(RwLock::new(config))),
+        );
+
+        let result = writer
+            .mutate(|m| {
+                m.entities.insert("room".to_string(), IpldLink::new("bafyx"));
+                Ok(())
+            })
+            .await;
+
+        assert!(result.is_err());
+        assert_eq!(
+            stats.read().await.root_cid.as_deref(),
+            Some(initial.as_str()),
+            "a failed remote root pin must not advance the root CID"
+        );
+        let manifest: RuntimeManifest = crate::kubo::dag_get(kubo.url(), &initial).await.unwrap();
+        assert!(manifest.entities.is_empty());
     }
 }

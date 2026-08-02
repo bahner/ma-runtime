@@ -50,9 +50,9 @@ async fn replace_remote_root_pin(
     remote_pin: Option<&RemotePinConfig>,
     old_cid: Option<&str>,
     new_cid: &str,
-) {
+) -> Result<()> {
     let Some(remote) = remote_pin else {
-        return;
+        return Ok(());
     };
     match ma_core::remote_pin_replace(kubo_url, remote, old_cid, new_cid).await {
         Ok(outcome) => {
@@ -74,9 +74,10 @@ async fn replace_remote_root_pin(
                     "remote root pin replaced"
                 );
             }
+            Ok(())
         }
         Err(err) => {
-            tracing::warn!(
+            tracing::error!(
                 old = old_cid.unwrap_or(""),
                 new = %new_cid,
                 service = %remote.service,
@@ -84,6 +85,7 @@ async fn replace_remote_root_pin(
                 error = %err,
                 "remote root pin replacement failed"
             );
+            Err(err).context("remote root pin replacement failed")
         }
     }
 }
@@ -276,10 +278,10 @@ pub async fn apply_kinds_overlay(
     let new_root_cid = kubo::dag_put(kubo_url, &manifest)
         .await
         .context("dag_put root manifest after kinds overlay")?;
+    replace_remote_root_pin(kubo_url, remote_pin, Some(root_cid), &new_root_cid).await?;
     if let Err(e) = kubo::pin_update(kubo_url, root_cid, &new_root_cid).await {
         tracing::warn!(old = %root_cid, new = %new_root_cid, error = %e, "pin/update failed after kinds overlay");
     }
-    replace_remote_root_pin(kubo_url, remote_pin, Some(root_cid), &new_root_cid).await;
     tracing::info!(root_cid = %new_root_cid, changed = changed_protocols.len(), "Published runtime manifest after kinds overlay");
     Ok(KindsOverlayResult {
         root_cid: new_root_cid,
@@ -359,6 +361,7 @@ pub async fn build_manifest(
         .context("dag_put root manifest")?;
     tracing::info!(root_cid = %root_cid, "Published runtime root manifest");
 
+    replace_remote_root_pin(kubo_url, remote_pin, old_root_cid, &root_cid).await?;
     if let Some(old) = old_root_cid {
         if let Err(e) = kubo::pin_update(kubo_url, old, &root_cid).await {
             tracing::warn!(old = %old, new = %root_cid, error = %e, "pin/update failed after bootstrap");
@@ -368,7 +371,6 @@ pub async fn build_manifest(
             .await
             .context("pinning new root manifest")?;
     }
-    replace_remote_root_pin(kubo_url, remote_pin, old_root_cid, &root_cid).await;
 
     Ok(BootstrapResult { root_cid })
 }
@@ -660,11 +662,21 @@ pub async fn load_entities(
     // Publish updated manifest and swap pin.
     match kubo::dag_put(kubo_url, &manifest).await {
         Ok(new_root) => {
+            let remote_pin = runtime_remote_pin_config(daemon_config);
+            if let Err(e) = replace_remote_root_pin(
+                kubo_url,
+                remote_pin.as_ref(),
+                Some(root_cid),
+                &new_root,
+            )
+            .await
+            {
+                tracing::error!(root_cid = %new_root, error = %e, "Failed to replace remote root pin after lifecycle transitions");
+                return (loaded, None);
+            }
             if let Err(e) = kubo::pin_update(kubo_url, root_cid, &new_root).await {
                 tracing::warn!(old = %root_cid, new = %new_root, error = %e, "pin/update failed after lifecycle persist");
             }
-            let remote_pin = runtime_remote_pin_config(daemon_config);
-            replace_remote_root_pin(kubo_url, remote_pin.as_ref(), Some(root_cid), &new_root).await;
             tracing::info!(root_cid = %new_root, "Published updated manifest after lifecycle transitions");
             (loaded, Some(new_root))
         }
