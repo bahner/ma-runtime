@@ -9,7 +9,7 @@
 use anyhow::{anyhow, Result};
 use extism::{host_fn, Function, Manifest, Plugin, PluginBuilder, UserData, Wasm, PTR};
 use tokio::sync::{
-    mpsc::{UnboundedReceiver, UnboundedSender},
+    mpsc::{Receiver, Sender},
     oneshot,
 };
 use tracing::{info, warn};
@@ -40,7 +40,7 @@ fn generate_fragment() -> String {
 // loop via an unbounded channel.  The scheduler (and any other dispatch
 // path) has zero envelope-handling responsibility.
 struct OutboxCtx {
-    tx: UnboundedSender<(String, SendEnvelope)>,
+    tx: Sender<(String, SendEnvelope)>,
     fragment: String,
 }
 
@@ -52,7 +52,9 @@ host_fn!(ma_send_fn(user_data: OutboxCtx; input: Vec<u8>) -> Vec<u8> {
     let envelope: SendEnvelope = from_cbor_bytes(&input)?;
     let arc = user_data.get()?;
     let ctx = arc.lock().unwrap();
-    let _ = ctx.tx.send((ctx.fragment.clone(), envelope));
+    ctx.tx
+        .try_send((ctx.fragment.clone(), envelope))
+        .map_err(|e| anyhow!("plugin outbox is full: {e}"))?;
     drop(ctx);
     Ok(Vec::new())
 });
@@ -75,7 +77,9 @@ host_fn!(ma_reply_fn(user_data: OutboxCtx; input: Vec<u8>) -> Vec<u8> {
     };
     let arc = user_data.get()?;
     let ctx = arc.lock().unwrap();
-    let _ = ctx.tx.send((ctx.fragment.clone(), envelope));
+    ctx.tx
+        .try_send((ctx.fragment.clone(), envelope))
+        .map_err(|e| anyhow!("plugin outbox is full: {e}"))?;
     drop(ctx);
     Ok(Vec::new())
 });
@@ -459,7 +463,7 @@ pub(super) struct WasmThreadCfg {
     /// assembled from kind-level and entity-level behaviour links.
     pub(super) behaviour_text: Option<Vec<u8>>,
     pub(super) node_kind: String,
-    pub(super) envelope_tx: UnboundedSender<(String, SendEnvelope)>,
+    pub(super) envelope_tx: Sender<(String, SendEnvelope)>,
     /// IPFS CID of the kind's shared Wasm binary (`KindNode.cid`).
     pub(super) wasm_cid: String,
     /// This entity's own behaviour source reference, if any (`EntityNode.behaviour`).
@@ -895,7 +899,7 @@ fn execute_dispatch(
 #[allow(clippy::needless_pass_by_value)] // cfg is moved into and owned by the thread
 pub(super) fn run_wasm_thread(
     cfg: WasmThreadCfg,
-    mut rx: UnboundedReceiver<EntityMsg>,
+    mut rx: Receiver<EntityMsg>,
     life_tx: oneshot::Sender<Result<Lifecycle>>,
 ) {
     info!(
@@ -980,7 +984,7 @@ pub(super) fn run_wasm_thread(
 pub(super) fn run_native_thread(
     actor: NativeActor,
     handle: tokio::runtime::Handle,
-    mut rx: UnboundedReceiver<EntityMsg>,
+    mut rx: Receiver<EntityMsg>,
 ) {
     while let Some(msg) = rx.blocking_recv() {
         match msg {

@@ -16,7 +16,7 @@ use ma_core::{
     MESSAGE_TYPE_IDENTITY_PUBLISH_REQUEST, MESSAGE_TYPE_IPFS_REQUEST, MESSAGE_TYPE_RPC,
     MESSAGE_TYPE_RPC_REPLY,
 };
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -33,10 +33,12 @@ use crate::routing::{local_actor_url, local_target_fragment};
 use crate::status::SharedStats;
 use crate::{bootstrap, crud, i18n, inbox, ipfs, rpc, status};
 
+const PLUGIN_OUTBOX_DRAIN_BUDGET: usize = 256;
+
 #[derive(Clone)]
 struct LocalSideEffectCtx {
     kind_registry: KindRegistry,
-    envelope_tx: UnboundedSender<(String, SendEnvelope)>,
+    envelope_tx: Sender<(String, SendEnvelope)>,
     stats: SharedStats,
     shared_config: Arc<RwLock<Config>>,
 }
@@ -355,7 +357,7 @@ async fn dispatch_local_plugin_envelope(
                         );
                         buf
                     };
-                    let _ = side_effects.envelope_tx.send((
+                    let _ = side_effects.envelope_tx.try_send((
                         req.parent.clone(),
                         SendEnvelope {
                             to: format!("{}#{}", our_did, req.parent),
@@ -387,8 +389,8 @@ pub async fn run(
     inbox_messages: Inbox<Message>,
     mut crud_messages: Option<Inbox<Message>>,
     mut ipfs_state: Option<IpfsServiceState>,
-    envelope_tx: UnboundedSender<(String, SendEnvelope)>,
-    mut envelope_rx: UnboundedReceiver<(String, SendEnvelope)>,
+    envelope_tx: Sender<(String, SendEnvelope)>,
+    mut envelope_rx: Receiver<(String, SendEnvelope)>,
     shared_config: Arc<RwLock<Config>>,
     shared_resolver: Arc<dyn DidDocumentResolver>,
     stats: SharedStats,
@@ -592,7 +594,14 @@ pub async fn run(
                 }
 
                 // Drain plugin outbox — envelopes sent fire-and-forget by ma_send/ma_reply.
-                while let Ok((fragment, env)) = envelope_rx.try_recv() {
+                // Keep this bounded so a plugin message loop cannot monopolise
+                // the event loop and starve CRUD/kinds/status processing.
+                let mut drained_plugin_envelopes = 0usize;
+                for _ in 0..PLUGIN_OUTBOX_DRAIN_BUDGET {
+                    let Ok((fragment, env)) = envelope_rx.try_recv() else {
+                        break;
+                    };
+                    drained_plugin_envelopes += 1;
                     let msg_type = if env.reply_to.is_some() {
                         MESSAGE_TYPE_RPC_REPLY.to_string()
                     } else {
@@ -727,6 +736,9 @@ pub async fn run(
                             }
                         }
                     });
+                }
+                if drained_plugin_envelopes == PLUGIN_OUTBOX_DRAIN_BUDGET {
+                    warn!(budget = PLUGIN_OUTBOX_DRAIN_BUDGET, "plugin outbox drain budget exhausted; deferring remaining envelopes");
                 }
             }
             signal = &mut ctrl_c => {

@@ -53,7 +53,7 @@ pub struct CrudHandlerCtx {
     /// Shared root transport ACL — owner may update at runtime via `:acl: <cid>`.
     pub root_acl: SharedAcl,
     /// Forwarding channel for envelopes produced by entity plugins via `ma_send`.
-    pub envelope_tx: tokio::sync::mpsc::UnboundedSender<(String, SendEnvelope)>,
+    pub envelope_tx: tokio::sync::mpsc::Sender<(String, SendEnvelope)>,
     /// Serialised manifest writer — all manifest mutations go through it.
     pub manifest_writer: crate::manifest::ManifestWriter,
 }

@@ -16,7 +16,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use anyhow::{anyhow, Context, Result};
-use tokio::sync::{mpsc::UnboundedSender, oneshot, RwLock};
+use tokio::sync::{mpsc::Sender, oneshot, RwLock};
 use tracing::{debug, info, warn};
 
 use crate::kubo::cat_bytes;
@@ -28,6 +28,8 @@ use crate::entity::{
 
 mod backend;
 use backend::{run_native_thread, run_wasm_thread, WasmThreadCfg};
+
+const ENTITY_MAILBOX_CAPACITY: usize = 64;
 
 // ── Actor thread model ────────────────────────────────────────────────────────
 //
@@ -192,7 +194,7 @@ pub struct EntityPlugin {
     /// `true` for compiled-in native entities (e.g. `#scheduler`).
     native: bool,
     /// Channel to the entity's dedicated worker thread.
-    tx: UnboundedSender<EntityMsg>,
+    tx: Sender<EntityMsg>,
 }
 
 impl EntityPlugin {
@@ -221,7 +223,7 @@ impl EntityPlugin {
         let is_genesis = !node.initialised;
         run_native_lifecycle(&fragment, &actor, is_genesis, init_state, init_payload)?;
 
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<EntityMsg>();
+        let (tx, rx) = tokio::sync::mpsc::channel::<EntityMsg>(ENTITY_MAILBOX_CAPACITY);
         let handle = tokio::runtime::Handle::current();
         let thread_name = format!("entity-{fragment}");
         std::thread::Builder::new()
@@ -273,7 +275,7 @@ impl EntityPlugin {
         kind_node: &KindNode,
         our_did: &str,
         kubo_url: &str,
-        envelope_tx: UnboundedSender<(String, SendEnvelope)>,
+        envelope_tx: Sender<(String, SendEnvelope)>,
         entity_registry: EntityRegistry,
         iroh_node_id: &str,
         started_at: u64,
@@ -429,7 +431,7 @@ impl EntityPlugin {
             entity_registry,
         };
 
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<EntityMsg>();
+        let (tx, rx) = tokio::sync::mpsc::channel::<EntityMsg>(ENTITY_MAILBOX_CAPACITY);
         let (life_tx, life_rx) = oneshot::channel::<Result<Lifecycle>>();
         let thread_name = format!("entity-{fragment}");
         std::thread::Builder::new()
@@ -545,12 +547,12 @@ impl EntityPlugin {
     async fn dispatch(&self, stateful: bool, input: &CastInput) -> Result<DispatchResult> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
-            .send(EntityMsg::Dispatch {
+            .try_send(EntityMsg::Dispatch {
                 stateful,
                 input: input.clone(),
                 reply: reply_tx,
             })
-            .map_err(|_| anyhow!("entity '{}' worker thread is gone", self.fragment))?;
+            .map_err(|e| anyhow!("entity '{}' worker queue unavailable: {e}", self.fragment))?;
         // 2× the Wasm cap: the dispatch may sit behind one already-running
         // call (≤ 1× cap) before its own execution starts (≤ 1× cap).
         let backstop = backend::wasm_call_timeout() * 2;
@@ -573,7 +575,7 @@ impl EntityPlugin {
     /// Record a successful IPFS persist: update the persisted snapshot and
     /// clear the dirty flag.
     pub fn mark_saved(&self, saved_bytes: Vec<u8>) {
-        let _ = self.tx.send(EntityMsg::MarkSaved(saved_bytes));
+        let _ = self.tx.try_send(EntityMsg::MarkSaved(saved_bytes));
     }
 
     /// Persist any state queued by `ma_set_state` during the last dispatch.
@@ -584,8 +586,8 @@ impl EntityPlugin {
     pub async fn trigger_save(&self, kubo_url: &str) -> Result<Option<String>> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
-            .send(EntityMsg::TakePending { reply: reply_tx })
-            .map_err(|_| anyhow!("entity '{}' worker thread is gone", self.fragment))?;
+            .try_send(EntityMsg::TakePending { reply: reply_tx })
+            .map_err(|e| anyhow!("entity '{}' worker queue unavailable: {e}", self.fragment))?;
         // Bounded: the TakePending may sit behind one wedged dispatch
         // (≤ 1× Wasm cap) — never wait forever (shutdown path uses this).
         let backstop = backend::wasm_call_timeout() * 2;
@@ -619,8 +621,8 @@ impl EntityPlugin {
     ) -> Result<Option<String>> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
-            .send(EntityMsg::Shutdown { reply: reply_tx })
-            .map_err(|_| anyhow!("entity '{}' worker thread is gone", self.fragment))?;
+            .try_send(EntityMsg::Shutdown { reply: reply_tx })
+            .map_err(|e| anyhow!("entity '{}' worker queue unavailable: {e}", self.fragment))?;
         let pending = match tokio::time::timeout(backstop, reply_rx).await {
             Ok(reply) => reply
                 .map_err(|_| anyhow!("entity '{}' dropped Shutdown reply", self.fragment))??,
@@ -657,7 +659,7 @@ impl EntityPlugin {
     /// Stop this entity's worker thread after it has been removed from the
     /// live registry or superseded by a replacement plugin.
     pub fn terminate_worker(&self) {
-        let _ = self.tx.send(EntityMsg::Terminate);
+        let _ = self.tx.try_send(EntityMsg::Terminate);
     }
 }
 
@@ -880,7 +882,7 @@ mod hostile {
         kubo_url: &str,
         fragment: &str,
         cid: &str,
-        envelope_tx: tokio::sync::mpsc::UnboundedSender<(String, SendEnvelope)>,
+        envelope_tx: tokio::sync::mpsc::Sender<(String, SendEnvelope)>,
         registry: super::EntityRegistry,
     ) -> anyhow::Result<(EntityPlugin, Lifecycle)> {
         EntityPlugin::load(
@@ -910,7 +912,7 @@ mod hostile {
 
         let kubo = MockKubo::start().await;
         let (envelope_tx, mut envelope_rx) =
-            tokio::sync::mpsc::unbounded_channel::<(String, SendEnvelope)>();
+            tokio::sync::mpsc::channel::<(String, SendEnvelope)>(16);
         let registry = new_entity_registry();
         let wasm = read_lambda_ma_fixture(&lambda_ma_dir, "scheme-actor/actor.wasm")?;
         let wasm_cid = kubo.add_bytes(wasm).await;
@@ -994,7 +996,7 @@ mod hostile {
         std::env::set_var("MA_WASM_CALL_TIMEOUT_SECS", "2");
         let kubo = MockKubo::start().await;
         let (envelope_tx, _envelope_rx) =
-            tokio::sync::mpsc::unbounded_channel::<(String, SendEnvelope)>();
+            tokio::sync::mpsc::channel::<(String, SendEnvelope)>(16);
         let registry = new_entity_registry();
 
         let evil_cid = kubo.add_bytes(wat::parse_str(EVIL_WAT).unwrap()).await;

@@ -443,7 +443,7 @@ async fn main() -> Result<()> {
     // Channel for envelopes produced by entity plugins via ma_send/ma_reply.
     // Plugins send fire-and-forget; the main event loop drains and delivers.
     let (envelope_tx, envelope_rx) =
-        tokio::sync::mpsc::unbounded_channel::<(String, entity::SendEnvelope)>();
+        tokio::sync::mpsc::channel::<(String, entity::SendEnvelope)>(1024);
     let entity_registry = plugin::new_entity_registry();
     let kind_registry = entity::new_kind_registry();
     let startup_epoch = status::now_unix_secs();

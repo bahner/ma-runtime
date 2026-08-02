@@ -601,7 +601,7 @@ pub async fn load_entities(
     registry: &plugin::EntityRegistry,
     kind_registry: &KindRegistry,
     native_factories: &plugin::NativeFactories,
-    envelope_tx: tokio::sync::mpsc::UnboundedSender<(String, crate::entity::SendEnvelope)>,
+    envelope_tx: tokio::sync::mpsc::Sender<(String, crate::entity::SendEnvelope)>,
     iroh_node_id: &str,
     started_at: u64,
 ) -> (usize, Option<String>) {
@@ -758,7 +758,7 @@ struct LoadEntityArgs<'a> {
     kind_node: &'a KindNode,
     our_did: &'a str,
     kubo_url: &'a str,
-    envelope_tx: tokio::sync::mpsc::UnboundedSender<(String, crate::entity::SendEnvelope)>,
+    envelope_tx: tokio::sync::mpsc::Sender<(String, crate::entity::SendEnvelope)>,
     registry: plugin::EntityRegistry,
     iroh_node_id: &'a str,
     started_at: u64,

@@ -31,7 +31,7 @@ pub struct RpcHandlerCtx {
     pub doc_cache: Option<crate::ipfs::DocCache>,
     pub entity_registry: EntityRegistry,
     pub kind_registry: crate::entity::KindRegistry,
-    pub envelope_tx: tokio::sync::mpsc::UnboundedSender<(String, SendEnvelope)>,
+    pub envelope_tx: tokio::sync::mpsc::Sender<(String, SendEnvelope)>,
     pub stats: SharedStats,
     pub acl_cache: AclCache,
     pub group_cache: GroupCache,
@@ -504,7 +504,7 @@ async fn handle_entity_plugin_message(
         );
         anyhow!("entity '{}' plugin execution failed", entity.fragment)
     })?;
-    info!(
+    debug!(
         fragment = %entity.fragment,
         from = %message.from,
         to = %message.to,
@@ -608,7 +608,7 @@ async fn handle_entity_plugin_message(
                     .write()
                     .await
                     .insert(req.fragment.clone(), Arc::new(ep));
-                info!(fragment = %req.fragment, kind = %req.kind_protocol,
+                debug!(fragment = %req.fragment, kind = %req.kind_protocol,
                     parent = %req.parent, "entity created via ma_create_entity");
                 // Persist the updated manifest in the background so the main
                 // event loop is not blocked by the IPFS dag_put.  The entity is
@@ -644,7 +644,7 @@ async fn handle_entity_plugin_message(
                     );
                     buf
                 };
-                let _ = ctx.envelope_tx.send((
+                let _ = ctx.envelope_tx.try_send((
                     req.parent.clone(),
                     crate::entity::SendEnvelope {
                         to: format!("{}#{}", ctx.our_did, req.parent),
@@ -694,7 +694,7 @@ async fn handle_entity_plugin_message(
         drop(reg_read);
 
         ctx.entity_registry.write().await.remove(&target_fragment);
-        info!(caller = %entity.fragment, target = %target_fragment, "entity deleted via ma_delete_entity");
+        debug!(caller = %entity.fragment, target = %target_fragment, "entity deleted via ma_delete_entity");
     }
 
     for req in result.behaviour_requests {
@@ -867,7 +867,7 @@ mod tests {
         let kind_registry = new_kind_registry();
         let entity_registry = new_entity_registry();
         let (envelope_tx, _envelope_rx) =
-            tokio::sync::mpsc::unbounded_channel::<(String, crate::entity::SendEnvelope)>();
+            tokio::sync::mpsc::channel::<(String, crate::entity::SendEnvelope)>(16);
 
         let runtime_did = ma_core::Did::new_url("k51qzi5uqu5runtime", None::<String>).unwrap();
         let runtime_signing = ma_core::SigningKey::generate(

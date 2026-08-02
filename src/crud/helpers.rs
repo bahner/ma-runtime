@@ -351,7 +351,7 @@ pub(super) fn spawn_entity_reload(
     stats: crate::status::SharedStats,
     kubo_rpc_url: Arc<str>,
     our_did: Arc<str>,
-    envelope_tx: tokio::sync::mpsc::UnboundedSender<(String, crate::entity::SendEnvelope)>,
+    envelope_tx: tokio::sync::mpsc::Sender<(String, crate::entity::SendEnvelope)>,
     entity_registry: crate::plugin::EntityRegistry,
     manifest_writer: crate::manifest::ManifestWriter,
     runtime_config: std::collections::BTreeMap<String, String>,
