@@ -129,21 +129,7 @@ async fn main() -> Result<()> {
     // headless config automatically so the daemon works out of the box without
     // manual configuration.
     let bundle_path = config.effective_secret_bundle()?;
-    let config = if !should_generate_headless_config(&config, &bundle_path) {
-        if !bundle_path.exists() {
-            let config_path = config
-                .config_path
-                .as_ref()
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|| "<unknown>".to_string());
-            return Err(anyhow!(
-                "secret bundle not found: {} (loaded config from {}; set secret_bundle in that config or pass --secret-bundle)",
-                bundle_path.display(),
-                config_path
-            ));
-        }
-        config
-    } else {
+    let config = if should_generate_headless_config(&config, &bundle_path) {
         warn!("No config found.");
         warn!("Initialising new runtime identity.");
         Config::gen_headless(&cli.ma, MA_DEFAULT_SLUG)?;
@@ -162,6 +148,19 @@ async fn main() -> Result<()> {
             .context("failed to re-save bundle with 'runtime_ipns' key")?;
         warn!("Generated headless config.");
         Config::from_args(&cli.ma, MA_DEFAULT_SLUG)?
+    } else {
+        if !bundle_path.exists() {
+            let config_path = config.config_path.as_ref().map_or_else(
+                || "<unknown>".to_string(),
+                |path| path.display().to_string(),
+            );
+            return Err(anyhow!(
+                "secret bundle not found: {} (loaded config from {}; set secret_bundle in that config or pass --secret-bundle)",
+                bundle_path.display(),
+                config_path
+            ));
+        }
+        config
     };
 
     // ── gen-root-cid: publish bootstrap tree + lang files to IPFS, print root CID, exit ──
@@ -174,12 +173,14 @@ async fn main() -> Result<()> {
             .context("kubo RPC is not reachable for bootstrap")?;
 
         let runtime_config = runtime_manifest_config(&config);
+        let remote_pin = bootstrap::runtime_remote_pin_config(&config);
         let result = bootstrap::run_bootstrap(
             yaml_path,
             &config.kubo_rpc_url,
             runtime_config,
             effective_lang_base.as_deref().unwrap_or("nb"),
             cli.root_cid.as_deref(),
+            remote_pin.as_ref(),
         )
         .await
         .context("bootstrap failed")?;
@@ -213,12 +214,14 @@ async fn main() -> Result<()> {
             .context("kubo RPC is not reachable for bootstrap")?;
 
         let runtime_config = runtime_manifest_config(&config);
+        let remote_pin = bootstrap::runtime_remote_pin_config(&config);
         let result = bootstrap::run_bootstrap(
             yaml_path,
             &config.kubo_rpc_url,
             runtime_config,
             effective_lang_base.as_deref().unwrap_or("nb"),
             cli.root_cid.as_deref(),
+            remote_pin.as_ref(),
         )
         .await
         .context("bootstrap failed")?;
@@ -389,9 +392,15 @@ async fn main() -> Result<()> {
     }
 
     if let (Some(rc), Some(kinds_cid)) = (root_cid.as_deref(), cli.kinds_cid.as_deref()) {
-        let result = bootstrap::apply_kinds_overlay(rc, kinds_cid, &config.kubo_rpc_url)
-            .await
-            .context("applying kinds CID overlay failed")?;
+        let remote_pin = bootstrap::runtime_remote_pin_config(&config);
+        let result = bootstrap::apply_kinds_overlay(
+            rc,
+            kinds_cid,
+            &config.kubo_rpc_url,
+            remote_pin.as_ref(),
+        )
+        .await
+        .context("applying kinds CID overlay failed")?;
         if result.root_cid == rc {
             info!(changed = 0, "Kinds overlay made no manifest changes");
         } else {

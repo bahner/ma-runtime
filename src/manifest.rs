@@ -3,7 +3,7 @@
 //! Every runtime-phase mutation of the IPFS [`RuntimeManifest`] goes through a
 //! single [`ManifestWriter`].  It owns the authoritative root CID behind an
 //! async mutex, so the read-modify-write cycle (`dag_get` → mutate → `dag_put` →
-//! `pin_update`) is serialised.
+//! local and optional remote pin replacement) is serialised.
 //!
 //! This eliminates the last-writer-wins race that occurred when concurrent CRUD
 //! sets and `ma_create_entity` calls each read the same old root CID and raced
@@ -21,9 +21,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use anyhow::Result;
-use ma_core::config::Config;
+use ma_core::config::{Config, RemotePinConfig};
 use tokio::sync::{Mutex, MutexGuard, RwLock};
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::entity::{EntityNode, IpldLink, RuntimeManifest};
 use crate::status::SharedStats;
@@ -44,6 +44,21 @@ struct Inner {
     stats: SharedStats,
     config_path: Option<PathBuf>,
     shared_config: Option<Arc<RwLock<Config>>>,
+}
+
+impl Inner {
+    async fn remote_pin_config(&self) -> Option<RemotePinConfig> {
+        let shared_config = self.shared_config.as_ref()?;
+        let config = shared_config.read().await;
+        let default_name = crate::bootstrap::default_remote_root_pin_name(&config.slug);
+        match config.remote_pin_config_with_default_name(default_name) {
+            Ok(remote) => remote,
+            Err(err) => {
+                warn!(error = %err, "remote root pinning is misconfigured");
+                None
+            }
+        }
+    }
 }
 
 impl ManifestWriter {
@@ -94,11 +109,51 @@ impl ManifestWriter {
         if let Err(e) = crate::kubo::pin_update(&inner.kubo_url, &old_cid, &new_cid).await {
             warn!(old = %old_cid, new = %new_cid, error = %e, "manifest pin_update failed");
         }
+        self.replace_remote_root_pin(Some(&old_cid), &new_cid).await;
 
         guard.clone_from(&new_cid);
         inner.stats.write().await.root_cid = Some(new_cid.clone());
         self.persist_root_cid(&new_cid).await;
         Ok(new_cid)
+    }
+
+    async fn replace_remote_root_pin(&self, old_cid: Option<&str>, new_cid: &str) {
+        let inner = &self.inner;
+        let Some(remote) = inner.remote_pin_config().await else {
+            return;
+        };
+        match ma_core::remote_pin_replace(&inner.kubo_url, &remote, old_cid, new_cid).await {
+            Ok(outcome) => {
+                if let Some(error) = outcome.previous_remove_error {
+                    warn!(
+                        old = old_cid.unwrap_or(""),
+                        new = %new_cid,
+                        service = %remote.service,
+                        name = %remote.name,
+                        error = %error,
+                        "remote root pin replacement left the previous pin in place"
+                    );
+                } else {
+                    info!(
+                        old = old_cid.unwrap_or(""),
+                        new = %new_cid,
+                        service = %remote.service,
+                        name = %remote.name,
+                        "remote root pin replaced"
+                    );
+                }
+            }
+            Err(err) => {
+                warn!(
+                    old = old_cid.unwrap_or(""),
+                    new = %new_cid,
+                    service = %remote.service,
+                    name = %remote.name,
+                    error = %err,
+                    "remote root pin replacement failed"
+                );
+            }
+        }
     }
 
     /// Apply `f` to the current manifest, publish it, swap the pin, and return
@@ -165,15 +220,8 @@ impl ManifestWriter {
             .entities
             .insert(fragment.to_string(), IpldLink::new(&entity_cid));
 
-        let new_cid = crate::kubo::dag_put(&inner.kubo_url, &manifest).await?;
-        if let Err(e) = crate::kubo::pin_update(&inner.kubo_url, &old_cid, &new_cid).await {
-            warn!(old = %old_cid, new = %new_cid, error = %e, "manifest pin_update failed");
-        }
-
-        guard.clone_from(&new_cid);
-        inner.stats.write().await.root_cid = Some(new_cid.clone());
-        self.persist_root_cid(&new_cid).await;
-        Ok(new_cid)
+        self.publish_manifest_update(&mut guard, old_cid, &manifest)
+            .await
     }
 
     /// Publish an updated entity node with a new per-entity behaviour link,
@@ -203,15 +251,8 @@ impl ManifestWriter {
             .entities
             .insert(fragment.to_string(), IpldLink::new(&entity_cid));
 
-        let new_cid = crate::kubo::dag_put(&inner.kubo_url, &manifest).await?;
-        if let Err(e) = crate::kubo::pin_update(&inner.kubo_url, &old_cid, &new_cid).await {
-            warn!(old = %old_cid, new = %new_cid, error = %e, "manifest pin_update failed");
-        }
-
-        guard.clone_from(&new_cid);
-        inner.stats.write().await.root_cid = Some(new_cid.clone());
-        self.persist_root_cid(&new_cid).await;
-        Ok(new_cid)
+        self.publish_manifest_update(&mut guard, old_cid, &manifest)
+            .await
     }
 
     /// Publish an updated entity node carrying the latest recoverable reload
@@ -245,15 +286,8 @@ impl ManifestWriter {
             .entities
             .insert(fragment.to_string(), IpldLink::new(&entity_cid));
 
-        let new_cid = crate::kubo::dag_put(&inner.kubo_url, &manifest).await?;
-        if let Err(e) = crate::kubo::pin_update(&inner.kubo_url, &old_cid, &new_cid).await {
-            warn!(old = %old_cid, new = %new_cid, error = %e, "manifest pin_update failed");
-        }
-
-        guard.clone_from(&new_cid);
-        inner.stats.write().await.root_cid = Some(new_cid.clone());
-        self.persist_root_cid(&new_cid).await;
-        Ok(new_cid)
+        self.publish_manifest_update(&mut guard, old_cid, &manifest)
+            .await
     }
 }
 

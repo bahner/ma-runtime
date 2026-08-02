@@ -15,7 +15,7 @@ const KUBO_PERMIT_TIMEOUT: Duration = Duration::from_secs(5);
 /// HTTP client with hard timeouts.  `dag/get` on a CID that is not in the
 /// local store makes Kubo search the network — without a client-side bound
 /// that request (and whatever task awaits it) would hang indefinitely.
-pub(crate) fn client() -> &'static reqwest::Client {
+pub fn client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
     CLIENT.get_or_init(|| {

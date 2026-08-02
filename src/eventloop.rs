@@ -737,6 +737,10 @@ pub async fn run(
                 eprintln!("{}", i18n::t("shutdown-requested"));
                 info!("{}", i18n::t("shutdown-requested"));
                 let kubo_url = shared_config.read().await.kubo_rpc_url.clone();
+                let remote_pin = {
+                    let config = shared_config.read().await;
+                    bootstrap::runtime_remote_pin_config(&config)
+                };
 
                 // ── Persist entity states before exit ─────────────────────────
                 let active_root_cid = stats.read().await.root_cid.clone();
@@ -748,6 +752,7 @@ pub async fn run(
                             rc,
                             &kubo_url,
                             &entity_registry,
+                            remote_pin.as_ref(),
                         )
                         .await
                         {

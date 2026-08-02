@@ -812,9 +812,9 @@ mod hostile {
         }
     }
 
-    fn cast_input_with_content(id: &str, content_value: ciborium::Value) -> CastInput {
+    fn cast_input_with_content(id: &str, content_value: &ciborium::Value) -> CastInput {
         let mut content = Vec::new();
-        ciborium::ser::into_writer(&content_value, &mut content).unwrap();
+        ciborium::ser::into_writer(content_value, &mut content).unwrap();
         CastInput {
             msg: PluginMsg {
                 id: id.to_string(),
@@ -948,7 +948,7 @@ mod hostile {
 
         let input = cast_input_with_content(
             "report-parent-1",
-            ciborium::Value::Array(vec![
+            &ciborium::Value::Array(vec![
                 ciborium::Value::Text(":report-parent".into()),
                 ciborium::Value::Text("did:ma:testrunner#construct".into()),
                 ciborium::Value::Text("tick-1".into()),

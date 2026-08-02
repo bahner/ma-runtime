@@ -30,6 +30,7 @@ rand = "0.8"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "sync"] }
 tokio-cron-scheduler = { version = "0.15", features = ["english"] }
 tower-http = { version = "0.5", features = ["cors"] }
+time = { version = "0.3", features = ["std"] }
 uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
 unic-langid = "0.9"

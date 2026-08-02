@@ -13,6 +13,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Context, Result};
+use ma_core::config::RemotePinConfig;
 use serde::{Deserialize, Serialize};
 
 use crate::acl::AclMap;
@@ -22,6 +23,70 @@ use crate::entity::{
 };
 use crate::kubo;
 use crate::plugin;
+
+pub fn default_remote_root_pin_name(slug: &str) -> String {
+    let now = time::OffsetDateTime::now_utc();
+    format!(
+        "ma-runtime-{slug}-root-{:04}-{:02}-{:02}",
+        now.year(),
+        u8::from(now.month()),
+        now.day()
+    )
+}
+
+pub fn runtime_remote_pin_config(config: &ma_core::Config) -> Option<RemotePinConfig> {
+    let default_name = default_remote_root_pin_name(&config.slug);
+    match config.remote_pin_config_with_default_name(default_name) {
+        Ok(remote) => remote,
+        Err(err) => {
+            tracing::warn!(error = %err, "remote root pinning is misconfigured");
+            None
+        }
+    }
+}
+
+async fn replace_remote_root_pin(
+    kubo_url: &str,
+    remote_pin: Option<&RemotePinConfig>,
+    old_cid: Option<&str>,
+    new_cid: &str,
+) {
+    let Some(remote) = remote_pin else {
+        return;
+    };
+    match ma_core::remote_pin_replace(kubo_url, remote, old_cid, new_cid).await {
+        Ok(outcome) => {
+            if let Some(error) = outcome.previous_remove_error {
+                tracing::warn!(
+                    old = old_cid.unwrap_or(""),
+                    new = %new_cid,
+                    service = %remote.service,
+                    name = %remote.name,
+                    error = %error,
+                    "remote root pin replacement left the previous pin in place"
+                );
+            } else {
+                tracing::info!(
+                    old = old_cid.unwrap_or(""),
+                    new = %new_cid,
+                    service = %remote.service,
+                    name = %remote.name,
+                    "remote root pin replaced"
+                );
+            }
+        }
+        Err(err) => {
+            tracing::warn!(
+                old = old_cid.unwrap_or(""),
+                new = %new_cid,
+                service = %remote.service,
+                name = %remote.name,
+                error = %err,
+                "remote root pin replacement failed"
+            );
+        }
+    }
+}
 
 // ── YAML bootstrap schema ─────────────────────────────────────────────────────
 
@@ -150,6 +215,7 @@ pub async fn run_bootstrap(
     runtime_config: BTreeMap<String, serde_yaml::Value>,
     active_lang: &str,
     old_root_cid: Option<&str>,
+    remote_pin: Option<&RemotePinConfig>,
 ) -> Result<BootstrapResult> {
     let raw = std::fs::read_to_string(yaml_path)
         .with_context(|| format!("reading bootstrap file: {}", yaml_path.display()))?;
@@ -161,6 +227,7 @@ pub async fn run_bootstrap(
         runtime_config,
         active_lang,
         old_root_cid,
+        remote_pin,
     )
     .await
 }
@@ -190,6 +257,7 @@ pub async fn apply_kinds_overlay(
     root_cid: &str,
     kinds_cid: &str,
     kubo_url: &str,
+    remote_pin: Option<&RemotePinConfig>,
 ) -> Result<KindsOverlayResult> {
     let mut manifest: RuntimeManifest = kubo::dag_get(kubo_url, root_cid)
         .await
@@ -211,6 +279,7 @@ pub async fn apply_kinds_overlay(
     if let Err(e) = kubo::pin_update(kubo_url, root_cid, &new_root_cid).await {
         tracing::warn!(old = %root_cid, new = %new_root_cid, error = %e, "pin/update failed after kinds overlay");
     }
+    replace_remote_root_pin(kubo_url, remote_pin, Some(root_cid), &new_root_cid).await;
     tracing::info!(root_cid = %new_root_cid, changed = changed_protocols.len(), "Published runtime manifest after kinds overlay");
     Ok(KindsOverlayResult {
         root_cid: new_root_cid,
@@ -260,6 +329,7 @@ pub async fn build_manifest(
     mut runtime_config: BTreeMap<String, serde_yaml::Value>,
     active_lang: &str,
     old_root_cid: Option<&str>,
+    remote_pin: Option<&RemotePinConfig>,
 ) -> Result<BootstrapResult> {
     let kinds = publish_kinds(cfg, kubo_url).await?;
     let entities_map = publish_entities(cfg, kubo_url).await?;
@@ -298,6 +368,7 @@ pub async fn build_manifest(
             .await
             .context("pinning new root manifest")?;
     }
+    replace_remote_root_pin(kubo_url, remote_pin, old_root_cid, &root_cid).await;
 
     Ok(BootstrapResult { root_cid })
 }
@@ -592,6 +663,8 @@ pub async fn load_entities(
             if let Err(e) = kubo::pin_update(kubo_url, root_cid, &new_root).await {
                 tracing::warn!(old = %root_cid, new = %new_root, error = %e, "pin/update failed after lifecycle persist");
             }
+            let remote_pin = runtime_remote_pin_config(daemon_config);
+            replace_remote_root_pin(kubo_url, remote_pin.as_ref(), Some(root_cid), &new_root).await;
             tracing::info!(root_cid = %new_root, "Published updated manifest after lifecycle transitions");
             (loaded, Some(new_root))
         }
@@ -827,6 +900,7 @@ pub async fn save_all_entity_states(
     root_cid: &str,
     kubo_url: &str,
     registry: &plugin::EntityRegistry,
+    remote_pin: Option<&RemotePinConfig>,
 ) -> Result<String> {
     // Phase 1: fetch current manifest.
     tracing::info!(root_cid = %root_cid, "Fetching current runtime manifest");
@@ -906,6 +980,7 @@ pub async fn save_all_entity_states(
     if let Err(e) = kubo::pin_update(kubo_url, root_cid, &new_root_cid).await {
         tracing::warn!(old = %root_cid, new = %new_root_cid, error = %e, "pin/update failed after state save");
     }
+    replace_remote_root_pin(kubo_url, remote_pin, Some(root_cid), &new_root_cid).await;
 
     Ok(new_root_cid)
 }
@@ -995,7 +1070,7 @@ mod tests {
         overlay.insert_protocol("/ma/test/0.0.1", IpldLink::new(&new_kind_cid));
         let kinds_cid = crate::kubo::dag_put(kubo.url(), &overlay).await.unwrap();
 
-        let result = apply_kinds_overlay(&root_cid, &kinds_cid, kubo.url())
+        let result = apply_kinds_overlay(&root_cid, &kinds_cid, kubo.url(), None)
             .await
             .unwrap();
         assert_eq!(result.changed_protocols, vec!["/ma/test/0.0.1"]);

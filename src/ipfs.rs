@@ -508,11 +508,11 @@ async fn resolve_did_for_outbox(
         Duration::from_secs(3),
         Duration::from_secs(5),
     ];
-    let mut resolves = tokio::task::JoinSet::new();
+    let mut resolve_tasks = tokio::task::JoinSet::new();
     let mut last_error = None;
     let mut attempt = 1;
 
-    spawn_did_resolve_attempt(&mut resolves, resolver, target_base, attempt);
+    spawn_did_resolve_attempt(&mut resolve_tasks, resolver, target_base, attempt);
 
     for delay in START_DELAYS {
         let next_start = tokio::time::sleep(delay);
@@ -520,7 +520,7 @@ async fn resolve_did_for_outbox(
 
         loop {
             tokio::select! {
-                result = resolves.join_next(), if !resolves.is_empty() => {
+                result = resolve_tasks.join_next(), if !resolve_tasks.is_empty() => {
                     if let Some((resolved_attempt, result)) = flatten_resolve_join(target_base, result) {
                         match result {
                             Ok(doc) => return Ok(doc),
@@ -541,10 +541,10 @@ async fn resolve_did_for_outbox(
         }
 
         attempt += 1;
-        spawn_did_resolve_attempt(&mut resolves, resolver, target_base, attempt);
+        spawn_did_resolve_attempt(&mut resolve_tasks, resolver, target_base, attempt);
     }
 
-    while let Some(result) = resolves.join_next().await {
+    while let Some(result) = resolve_tasks.join_next().await {
         if let Some((resolved_attempt, result)) = flatten_resolve_join(target_base, Some(result)) {
             match result {
                 Ok(doc) => return Ok(doc),
@@ -566,16 +566,16 @@ async fn resolve_did_for_outbox(
 }
 
 fn spawn_did_resolve_attempt(
-    resolves: &mut tokio::task::JoinSet<(usize, Result<Document>)>,
-    resolver: &Arc<dyn DidDocumentResolver>,
+    resolve_tasks: &mut tokio::task::JoinSet<(usize, Result<Document>)>,
+    did_resolver: &Arc<dyn DidDocumentResolver>,
     target_base: &str,
     attempt: usize,
 ) {
-    let resolver = Arc::clone(resolver);
+    let did_resolver = Arc::clone(did_resolver);
     let target_base = target_base.to_string();
-    resolves.spawn(async move {
+    resolve_tasks.spawn(async move {
         let result =
-            match tokio::time::timeout(Duration::from_secs(10), resolver.resolve(&target_base))
+            match tokio::time::timeout(Duration::from_secs(10), did_resolver.resolve(&target_base))
                 .await
             {
                 Ok(result) => result.map_err(anyhow::Error::from),
