@@ -96,6 +96,7 @@ pub fn persist_root_cid_to_config(path: &Path, root_cid: &str) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn runtime_manifest_config(
     config: &Config,
 ) -> std::collections::BTreeMap<String, serde_yaml::Value> {

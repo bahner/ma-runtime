@@ -524,7 +524,8 @@ mod tests {
 
         let result = writer
             .mutate(|m| {
-                m.entities.insert("room".to_string(), IpldLink::new("bafyx"));
+                m.entities
+                    .insert("room".to_string(), IpldLink::new("bafyx"));
                 Ok(())
             })
             .await;

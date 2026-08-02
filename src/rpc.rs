@@ -581,25 +581,9 @@ async fn handle_entity_plugin_message(
     // If the plugin called `ma_set_state` during this dispatch, persist to IPFS.
     // Spawned so the main event loop is not blocked by the IPFS round-trip.
     if let Some(state_bytes) = result.pending_state {
-        let entity_arc = Arc::clone(&entity);
         let kubo_url = ctx.kubo_rpc_url.to_string();
         let writer = ctx.manifest_writer.clone();
-        tokio::spawn(async move {
-            match crate::kubo::ipfs_add_bytes_unpinned(&kubo_url, state_bytes.clone()).await {
-                Ok(cid) => match writer.set_entity_state(&entity_arc.fragment, &cid).await {
-                    Ok(root_cid) => {
-                        debug!(fragment = %entity_arc.fragment, %cid, %root_cid, "plugin state saved via ma_set_state");
-                        entity_arc.mark_saved(state_bytes);
-                    }
-                    Err(e) => {
-                        warn!(fragment = %entity_arc.fragment, cid = %cid, error = %e, "failed to update manifest with plugin state");
-                    }
-                },
-                Err(e) => {
-                    warn!(fragment = %entity_arc.fragment, error = %e, "failed to persist plugin state");
-                }
-            }
-        });
+        entity.spawn_state_persist(kubo_url, writer, state_bytes, "rpc");
     }
 
     // Process entity creation requests queued by `ma_create_entity` host function.

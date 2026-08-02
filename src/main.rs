@@ -349,7 +349,8 @@ async fn main() -> Result<()> {
         ),
     };
     let did_resolve = ipfs::DidResolveSettings {
-        attempts: get_u64_setting(&config, "did_resolve_attempts", 5) as usize,
+        attempts: usize::try_from(get_u64_setting(&config, "did_resolve_attempts", 5))
+            .unwrap_or(usize::MAX),
         attempt_timeout_secs: get_u64_setting(&config, "did_resolve_attempt_timeout_secs", 60),
     };
 
@@ -410,13 +411,9 @@ async fn main() -> Result<()> {
     }
 
     if let (Some(rc), Some(kinds_cid)) = (root_cid.as_deref(), cli.kinds_cid.as_deref()) {
-        let result = bootstrap::apply_kinds_overlay(
-            rc,
-            kinds_cid,
-            &config.kubo_rpc_url,
-        )
-        .await
-        .context("applying kinds CID overlay failed")?;
+        let result = bootstrap::apply_kinds_overlay(rc, kinds_cid, &config.kubo_rpc_url)
+            .await
+            .context("applying kinds CID overlay failed")?;
         if result.root_cid == rc {
             info!(changed = 0, "Kinds overlay made no manifest changes");
         } else {

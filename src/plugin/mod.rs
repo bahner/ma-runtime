@@ -476,6 +476,7 @@ impl EntityPlugin {
             acl: node.acl.clone(),
             parent: node.parent.clone(),
             native: false,
+            state_persist_in_flight: AtomicBool::new(false),
             tx,
         };
         Ok((ep, lifecycle))
@@ -660,6 +661,104 @@ impl EntityPlugin {
     /// clear the dirty flag.
     pub fn mark_saved(&self, saved_bytes: Vec<u8>) {
         let _ = self.tx.try_send(EntityMsg::MarkSaved(saved_bytes));
+    }
+
+    async fn pending_state_snapshot(&self) -> Result<Option<Vec<u8>>> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .try_send(EntityMsg::TakePending { reply: reply_tx })
+            .map_err(|e| anyhow!("entity '{}' worker queue unavailable: {e}", self.fragment))?;
+        let backstop = backend::wasm_call_timeout() * 2;
+        tokio::time::timeout(backstop, reply_rx).await.map_or_else(
+            |_| {
+                Err(anyhow!(
+                    "entity '{}' TakePending timed out after {}s (worker wedged?)",
+                    self.fragment,
+                    backstop.as_secs()
+                ))
+            },
+            |reply| {
+                reply.map_err(|_| anyhow!("entity '{}' dropped TakePending reply", self.fragment))
+            },
+        )
+    }
+
+    /// Start a bounded background state persist loop if this entity does not
+    /// already have one. The loop keeps ownership of retries and drains newer
+    /// pending state before it exits, preventing a Kubo outage from spawning an
+    /// unbounded `add` storm.
+    pub fn spawn_state_persist(
+        self: &Arc<Self>,
+        kubo_url: impl Into<String>,
+        manifest_writer: ManifestWriter,
+        state_bytes: Vec<u8>,
+        source: &'static str,
+    ) {
+        if self.state_persist_in_flight.swap(true, Ordering::AcqRel) {
+            debug!(fragment = %self.fragment, source, "entity state persist already in flight");
+            return;
+        }
+
+        let entity = Arc::clone(self);
+        let kubo_url = kubo_url.into();
+        tokio::spawn(async move {
+            entity
+                .run_state_persist_loop(kubo_url, manifest_writer, state_bytes, source)
+                .await;
+        });
+    }
+
+    async fn run_state_persist_loop(
+        self: Arc<Self>,
+        kubo_url: String,
+        manifest_writer: ManifestWriter,
+        mut state_bytes: Vec<u8>,
+        source: &'static str,
+    ) {
+        let mut backoff = std::time::Duration::from_secs(1);
+        loop {
+            match crate::kubo::ipfs_add_bytes_unpinned(&kubo_url, state_bytes.clone()).await {
+                Ok(cid) => match manifest_writer.set_entity_state(&self.fragment, &cid).await {
+                    Ok(root_cid) => {
+                        self.mark_saved(state_bytes);
+                        debug!(fragment = %self.fragment, cid = %cid, %root_cid, source, "entity state persisted");
+                        backoff = std::time::Duration::from_secs(1);
+                    }
+                    Err(error) => {
+                        warn!(fragment = %self.fragment, cid = %cid, error = %error, source, "failed to update manifest with entity state");
+                        tokio::time::sleep(backoff).await;
+                        backoff = (backoff * 2).min(std::time::Duration::from_secs(30));
+                    }
+                },
+                Err(error) => {
+                    warn!(fragment = %self.fragment, error = %error, source, retry_after_secs = backoff.as_secs(), "failed to persist entity state");
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(std::time::Duration::from_secs(30));
+                }
+            }
+
+            match self.pending_state_snapshot().await {
+                Ok(Some(next_state_bytes)) => {
+                    state_bytes = next_state_bytes;
+                }
+                Ok(None) => break,
+                Err(error) => {
+                    warn!(fragment = %self.fragment, error = %error, source, "failed to inspect pending entity state after persist attempt");
+                    break;
+                }
+            }
+        }
+
+        self.state_persist_in_flight.store(false, Ordering::Release);
+        match self.pending_state_snapshot().await {
+            Ok(Some(next_state_bytes)) => {
+                self.spawn_state_persist(kubo_url, manifest_writer, next_state_bytes, source);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                warn!(fragment = %self.fragment, error = %error, source, "failed to inspect pending entity state after persist loop finished");
+            }
+        }
     }
 
     /// Persist any state queued by `ma_set_state` during the last dispatch.

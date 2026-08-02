@@ -418,36 +418,20 @@ pub async fn dispatch_scheduled(
 
     // Persist state if changed.
     if let Some(state_bytes) = result.pending_state {
-        match crate::kubo::ipfs_add_bytes_unpinned(&ctx.kubo_rpc_url, state_bytes.clone()).await {
-            Ok(cid) => {
-                let writer = ctx.manifest_writer.read().await.clone();
-                let Some(writer) = writer else {
-                    warn!(
-                        fragment = %fragment,
-                        cid = %cid,
-                        "scheduled dispatch: state saved to IPFS but manifest writer is not ready"
-                    );
-                    return;
-                };
-                match writer.set_entity_state(fragment, &cid).await {
-                    Ok(root_cid) => {
-                        plugin.mark_saved(state_bytes);
-                        trace!(fragment = %fragment, cid = %cid, %root_cid, "scheduled dispatch: entity state persisted");
-                    }
-                    Err(e) => warn!(
-                        fragment = %fragment,
-                        cid = %cid,
-                        error = %e,
-                        "scheduled dispatch: failed to update manifest with entity state"
-                    ),
-                }
-            }
-            Err(e) => warn!(
+        let writer = ctx.manifest_writer.read().await.clone();
+        let Some(writer) = writer else {
+            warn!(
                 fragment = %fragment,
-                error = %e,
-                "scheduled dispatch: state save failed"
-            ),
-        }
+                "scheduled dispatch: manifest writer is not ready; entity state remains pending"
+            );
+            return;
+        };
+        plugin.spawn_state_persist(
+            ctx.kubo_rpc_url.clone(),
+            writer,
+            state_bytes,
+            "scheduled dispatch",
+        );
     }
 }
 

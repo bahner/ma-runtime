@@ -235,25 +235,12 @@ async fn dispatch_local_plugin_envelope(
     };
 
     if let Some(state_bytes) = result.pending_state {
-        let entity_arc = Arc::clone(&entity);
-        let writer = manifest_writer.clone();
-        let kubo_url = kubo_url.to_string();
-        tokio::spawn(async move {
-            match crate::kubo::ipfs_add_bytes_unpinned(&kubo_url, state_bytes.clone()).await {
-                Ok(cid) => match writer.set_entity_state(&entity_arc.fragment, &cid).await {
-                    Ok(root_cid) => {
-                        entity_arc.mark_saved(state_bytes);
-                        debug!(fragment = %entity_arc.fragment, cid = %cid, %root_cid, "plugin envelope: local entity state persisted");
-                    }
-                    Err(err) => {
-                        warn!(fragment = %entity_arc.fragment, cid = %cid, error = %err, "plugin envelope: failed to update manifest with local entity state");
-                    }
-                },
-                Err(err) => {
-                    warn!(fragment = %entity_arc.fragment, error = %err, "plugin envelope: failed to persist local entity state");
-                }
-            }
-        });
+        entity.spawn_state_persist(
+            kubo_url.to_string(),
+            manifest_writer.clone(),
+            state_bytes,
+            "plugin envelope",
+        );
     }
 
     if let Some(side_effects) = side_effects {
