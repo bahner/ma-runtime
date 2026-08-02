@@ -9,7 +9,7 @@ use ma_core::{
 use reqwest::multipart;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
@@ -48,7 +48,8 @@ pub struct IpfsHandlerCtx<'a> {
     /// Arc so reply-delivery tasks can be spawned without blocking the event loop.
     pub endpoint: Arc<dyn ma_core::MaEndpoint>,
     pub kubo_rpc_url: &'a str,
-    pub publish_lifetime_hours: u64,
+    pub ipns_publish: IpnsPublishSettings,
+    pub did_resolve: DidResolveSettings,
     pub resolver: Arc<dyn DidDocumentResolver>,
     /// Shared document cache — populated on `DidDocumentPublish`, read on Store.
     pub doc_cache: DocCache,
@@ -56,12 +57,46 @@ pub struct IpfsHandlerCtx<'a> {
     pub group_cache: GroupCache,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IpnsPublishSettings {
+    pub lifetime_hours: u64,
+    pub allow_offline: bool,
+    pub resolve: bool,
+    pub timeout_secs: u64,
+}
+
+impl Default for IpnsPublishSettings {
+    fn default() -> Self {
+        Self {
+            lifetime_hours: 8760,
+            allow_offline: true,
+            resolve: false,
+            timeout_secs: 120,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DidResolveSettings {
+    pub attempts: usize,
+    pub attempt_timeout_secs: u64,
+}
+
+impl Default for DidResolveSettings {
+    fn default() -> Self {
+        Self {
+            attempts: 5,
+            attempt_timeout_secs: 60,
+        }
+    }
+}
+
 pub async fn do_publish_own_document(
     kubo_url: String,
     runtime_slug: String,
     doc_cbor: Vec<u8>,
     ipns_secret_key: Vec<u8>,
-    publish_lifetime_hours: u64,
+    ipns_publish: IpnsPublishSettings,
 ) -> Result<()> {
     // Wrap in Zeroizing so the key bytes are cleared on return *and* on
     // async cancellation (e.g. if the 2-minute timeout fires and drops
@@ -79,7 +114,7 @@ pub async fn do_publish_own_document(
 
     ensure_kubo_ipns_key(&kubo_url, &key_name, &document_did.ipns, &ipns_secret_key).await?;
     let cid = dag_put_cbor(&kubo_url, &doc_cbor, true).await?;
-    name_publish(&kubo_url, &key_name, &cid, publish_lifetime_hours).await?;
+    name_publish(&kubo_url, &key_name, &cid, ipns_publish).await?;
     Ok(())
 }
 
@@ -112,13 +147,13 @@ pub async fn publish_runtime_root_cid(
     runtime_slug: &str,
     runtime_ipns_key: &[u8; 32],
     root_cid: &str,
-    publish_lifetime_hours: u64,
+    ipns_publish: IpnsPublishSettings,
 ) -> Result<String> {
     let runtime_ipns_id =
         ipns_from_secret(*runtime_ipns_key).context("failed to derive runtime IPNS id")?;
     let key_name = ipns_key_name_for_parts(&["runtime", runtime_slug, "runtime"], &runtime_ipns_id);
     ensure_kubo_ipns_key(kubo_url, &key_name, &runtime_ipns_id, runtime_ipns_key).await?;
-    name_publish(kubo_url, &key_name, root_cid, publish_lifetime_hours).await
+    name_publish(kubo_url, &key_name, root_cid, ipns_publish).await
 }
 
 #[derive(Debug, Deserialize)]
@@ -213,7 +248,7 @@ async fn name_publish(
     kubo_url: &str,
     key_name: &str,
     cid: &str,
-    publish_lifetime_hours: u64,
+    settings: IpnsPublishSettings,
 ) -> Result<String> {
     let base = kubo_url.trim_end_matches('/');
     let url = format!("{base}/api/v0/name/publish");
@@ -222,15 +257,22 @@ async fn name_publish(
         cid.trim_start_matches('/').trim_start_matches("ipfs/")
     );
 
-    let lifetime = format!("{publish_lifetime_hours}h");
-    let body = crate::kubo::client()
+    let lifetime = format!("{}h", settings.lifetime_hours);
+    let allow_offline = if settings.allow_offline {
+        "true"
+    } else {
+        "false"
+    };
+    let resolve = if settings.resolve { "true" } else { "false" };
+    let client = ipns_publish_client(settings.timeout_secs);
+    let body = client
         .post(url)
         .query(&[
             ("arg", arg.as_str()),
             ("key", key_name),
-            ("allow-offline", "true"),
+            ("allow-offline", allow_offline),
             ("lifetime", lifetime.as_str()),
-            ("resolve", "false"),
+            ("resolve", resolve),
             ("quieter", "true"),
         ])
         .send()
@@ -250,6 +292,29 @@ async fn name_publish(
         return Err(anyhow!("missing value in name/publish response: {body}"));
     }
     Ok(value)
+}
+
+fn ipns_publish_client(timeout_secs: u64) -> reqwest::Client {
+    static CLIENT: OnceLock<(u64, reqwest::Client)> = OnceLock::new();
+
+    let timeout_secs = timeout_secs.max(1);
+    let (configured_timeout, client) = CLIENT.get_or_init(|| {
+        let client = build_ipns_publish_client(timeout_secs);
+        (timeout_secs, client)
+    });
+    if *configured_timeout == timeout_secs {
+        client.clone()
+    } else {
+        build_ipns_publish_client(timeout_secs)
+    }
+}
+
+fn build_ipns_publish_client(timeout_secs: u64) -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(timeout_secs))
+        .build()
+        .unwrap_or_else(|_| crate::kubo::client().clone())
 }
 
 async fn resolve_ipns_path(kubo_url: &str, key_id: &str) -> Result<Option<String>> {
@@ -458,6 +523,7 @@ pub async fn open_outbox_for_did(
     doc_cache: &DocCache,
     target: &Did,
     protocol: &str,
+    did_resolve: DidResolveSettings,
 ) -> Result<ma_core::Outbox> {
     let target_base = target.base_id();
     let cached_doc = doc_cache.lock().await.get(&target_base).cloned();
@@ -483,7 +549,7 @@ pub async fn open_outbox_for_did(
         }
     }
 
-    let doc = resolve_did_for_outbox(resolver, &target_base).await?;
+    let doc = resolve_did_for_outbox(resolver, &target_base, did_resolve).await?;
     let eid = endpoint_for_protocol_from_doc(&doc, protocol)
         .ok_or_else(|| anyhow::anyhow!("{target_base} has no service for {protocol}"))?;
 
@@ -499,6 +565,7 @@ pub async fn open_outbox_for_did(
 async fn resolve_did_for_outbox(
     resolver: &Arc<dyn DidDocumentResolver>,
     target_base: &str,
+    settings: DidResolveSettings,
 ) -> Result<Document> {
     const START_DELAYS: [Duration; 4] = [
         Duration::from_secs(1),
@@ -506,13 +573,14 @@ async fn resolve_did_for_outbox(
         Duration::from_secs(3),
         Duration::from_secs(5),
     ];
+    let attempts = settings.attempts.clamp(1, START_DELAYS.len() + 1);
     let mut resolve_tasks = tokio::task::JoinSet::new();
     let mut last_error = None;
     let mut attempt = 1;
 
-    spawn_did_resolve_attempt(&mut resolve_tasks, resolver, target_base, attempt);
+    spawn_did_resolve_attempt(&mut resolve_tasks, resolver, target_base, attempt, settings);
 
-    for delay in START_DELAYS {
+    for delay in START_DELAYS.into_iter().take(attempts.saturating_sub(1)) {
         let next_start = tokio::time::sleep(delay);
         tokio::pin!(next_start);
 
@@ -539,7 +607,7 @@ async fn resolve_did_for_outbox(
         }
 
         attempt += 1;
-        spawn_did_resolve_attempt(&mut resolve_tasks, resolver, target_base, attempt);
+        spawn_did_resolve_attempt(&mut resolve_tasks, resolver, target_base, attempt, settings);
     }
 
     while let Some(result) = resolve_tasks.join_next().await {
@@ -568,19 +636,22 @@ fn spawn_did_resolve_attempt(
     did_resolver: &Arc<dyn DidDocumentResolver>,
     target_base: &str,
     attempt: usize,
+    settings: DidResolveSettings,
 ) {
     let did_resolver = Arc::clone(did_resolver);
     let target_base = target_base.to_string();
     resolve_tasks.spawn(async move {
-        let result =
-            match tokio::time::timeout(Duration::from_secs(10), did_resolver.resolve(&target_base))
-                .await
-            {
-                Ok(result) => result.map_err(anyhow::Error::from),
-                Err(_elapsed) => Err(anyhow::anyhow!(
-                    "DID document resolve timed out for {target_base}"
-                )),
-            };
+        let result = match tokio::time::timeout(
+            Duration::from_secs(settings.attempt_timeout_secs),
+            did_resolver.resolve(&target_base),
+        )
+        .await
+        {
+            Ok(result) => result.map_err(anyhow::Error::from),
+            Err(_elapsed) => Err(anyhow::anyhow!(
+                "DID document resolve timed out for {target_base}"
+            )),
+        };
         (attempt, result)
     });
 }
@@ -686,14 +757,9 @@ async fn handle_did_document_publish(
     let cid = dag_put_cbor(ctx.kubo_rpc_url, &document_bytes, false)
         .await
         .context("kubo DID document store failed")?;
-    name_publish(
-        ctx.kubo_rpc_url,
-        &key_name,
-        &cid,
-        ctx.publish_lifetime_hours,
-    )
-    .await
-    .context("kubo DID name publish failed")?;
+    name_publish(ctx.kubo_rpc_url, &key_name, &cid, ctx.ipns_publish)
+        .await
+        .context("kubo DID name publish failed")?;
     let pin_result = match old_cid.as_deref() {
         Some(old) if old != cid => crate::kubo::pin_update(ctx.kubo_rpc_url, old, &cid).await,
         Some(_) | None => crate::kubo::pin_add(ctx.kubo_rpc_url, &cid).await,
@@ -792,8 +858,17 @@ async fn handle_ipfs_store(
     let endpoint = Arc::clone(&ctx.endpoint);
     let resolver = Arc::clone(&ctx.resolver);
     let doc_cache = Arc::clone(&ctx.doc_cache);
+    let did_resolve = ctx.did_resolve;
     tokio::spawn(async move {
-        match open_outbox_for_did(&endpoint, &resolver, &doc_cache, &sender, RPC_PROTOCOL_ID).await
+        match open_outbox_for_did(
+            &endpoint,
+            &resolver,
+            &doc_cache,
+            &sender,
+            RPC_PROTOCOL_ID,
+            did_resolve,
+        )
+        .await
         {
             Ok(mut outbox) => {
                 match tokio::time::timeout(Duration::from_secs(15), outbox.send(&reply)).await {

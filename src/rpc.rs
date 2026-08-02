@@ -29,6 +29,7 @@ pub struct RpcHandlerCtx {
     pub kubo_rpc_url: Arc<str>,
     pub resolver: Arc<dyn DidDocumentResolver>,
     pub doc_cache: Option<crate::ipfs::DocCache>,
+    pub did_resolve: crate::ipfs::DidResolveSettings,
     pub entity_registry: EntityRegistry,
     pub kind_registry: crate::entity::KindRegistry,
     pub envelope_tx: tokio::sync::mpsc::Sender<(String, SendEnvelope)>,
@@ -736,6 +737,7 @@ fn send_rpc_reply_typed(
     let endpoint = Arc::clone(&ctx.endpoint);
     let resolver = Arc::clone(&ctx.resolver);
     let doc_cache = ctx.doc_cache.as_ref().map(Arc::clone);
+    let did_resolve = ctx.did_resolve;
     let from = incoming.from.clone();
     let msg_id = incoming.id.clone();
     tokio::spawn(async move {
@@ -746,6 +748,7 @@ fn send_rpc_reply_typed(
                 &doc_cache,
                 &sender,
                 RPC_PROTOCOL_ID,
+                did_resolve,
             )
             .await
         } else {
@@ -947,6 +950,7 @@ mod tests {
             kubo_rpc_url: Arc::from(kubo.url().to_string()),
             resolver: Arc::new(ma_core::IpfsGatewayResolver::new("http://127.0.0.1:9")),
             doc_cache: None,
+            did_resolve: crate::ipfs::DidResolveSettings::default(),
             entity_registry: entity_registry.clone(),
             kind_registry,
             envelope_tx,

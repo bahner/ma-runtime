@@ -35,8 +35,8 @@ use std::time::Duration;
 use tracing::{error, info, warn};
 
 use startup::{
-    get_u64_setting, load_secret_bundle, persist_root_cid_to_config, runtime_manifest_config,
-    select_root_cid, should_generate_headless_config,
+    get_bool_setting, get_u64_setting, load_secret_bundle, persist_root_cid_to_config,
+    runtime_manifest_config, select_root_cid, should_generate_headless_config,
 };
 
 const MA_DEFAULT_SLUG: &str = "ma";
@@ -334,6 +334,24 @@ async fn main() -> Result<()> {
         get_u64_setting(&config, "did_document_publishing_lifetime_hours", 8760);
     let did_publish_interval_secs =
         get_u64_setting(&config, "did_document_publishing_interval_secs", 300);
+    let ipns_publish = ipfs::IpnsPublishSettings {
+        lifetime_hours: get_u64_setting(
+            &config,
+            "ipns_publish_lifetime_hours",
+            did_publish_lifetime_hours,
+        ),
+        allow_offline: get_bool_setting(&config, "ipns_publish_allow_offline", true),
+        resolve: get_bool_setting(&config, "ipns_publish_resolve", false),
+        timeout_secs: get_u64_setting(
+            &config,
+            "ipns_publish_timeout_secs",
+            did_publish_timeout_secs,
+        ),
+    };
+    let did_resolve = ipfs::DidResolveSettings {
+        attempts: get_u64_setting(&config, "did_resolve_attempts", 5) as usize,
+        attempt_timeout_secs: get_u64_setting(&config, "did_resolve_attempt_timeout_secs", 60),
+    };
 
     let doc_cbor = our_document
         .encode()
@@ -351,7 +369,7 @@ async fn main() -> Result<()> {
                 runtime_slug,
                 doc_cbor,
                 ipns_key,
-                did_publish_lifetime_hours,
+                ipns_publish,
             ),
         )
         .await;
@@ -715,7 +733,7 @@ async fn main() -> Result<()> {
         did_publish_interval_secs,
         did_publish_cache_warm_secs,
         did_publish_timeout_secs,
-        did_publish_lifetime_hours,
+        ipns_publish,
     );
 
     info!(
@@ -754,7 +772,8 @@ async fn main() -> Result<()> {
         runtime_ipns_key,
         config.slug.clone(),
         did_publish_timeout_secs,
-        did_publish_lifetime_hours,
+        ipns_publish,
+        did_resolve,
         cli.poll_ms,
     )
     .await

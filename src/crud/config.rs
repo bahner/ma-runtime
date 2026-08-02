@@ -36,10 +36,13 @@ const MANIFEST_CONFIG_KEYS: &[&str] = &[
     "name",
     "description",
     "i18n",
+    "did_resolve_attempts",
+    "did_resolve_attempt_timeout_secs",
     "did_document_publishing_interval_secs",
     "did_document_publishing_timeout_secs",
     "did_document_publishing_lifetime_hours",
     "ipns_publish_lifetime_hours",
+    "ipns_publish_timeout_secs",
     "ipns_publish_resolve",
     "ipns_publish_allow_offline",
 ];

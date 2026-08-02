@@ -40,6 +40,7 @@ pub struct CrudHandlerCtx {
     pub kubo_rpc_url: Arc<str>,
     pub resolver: Arc<dyn DidDocumentResolver>,
     pub doc_cache: Option<crate::ipfs::DocCache>,
+    pub did_resolve: crate::ipfs::DidResolveSettings,
     pub stats: SharedStats,
     pub entity_registry: EntityRegistry,
     pub kind_registry: KindRegistry,

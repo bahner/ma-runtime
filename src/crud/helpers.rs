@@ -799,6 +799,7 @@ async fn send_crud_reply_raw(
             doc_cache,
             &sender,
             ma_core::CRUD_PROTOCOL_ID,
+            ctx.did_resolve,
         )
         .await
     } else {

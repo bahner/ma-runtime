@@ -27,7 +27,7 @@ struct PeriodicDidPublishContext {
     interval: Duration,
     cache_warm: Duration,
     timeout: Duration,
-    lifetime_hours: u64,
+    ipns_publish: ipfs::IpnsPublishSettings,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -42,7 +42,7 @@ pub fn spawn_periodic_did_publish(
     did_publish_interval_secs: u64,
     did_publish_cache_warm_secs: u64,
     did_publish_timeout_secs: u64,
-    did_publish_lifetime_hours: u64,
+    ipns_publish: ipfs::IpnsPublishSettings,
 ) {
     tokio::spawn(async move {
         let context = PeriodicDidPublishContext {
@@ -56,7 +56,7 @@ pub fn spawn_periodic_did_publish(
             interval: Duration::from_secs(did_publish_interval_secs),
             cache_warm: Duration::from_secs(did_publish_cache_warm_secs),
             timeout: Duration::from_secs(did_publish_timeout_secs),
-            lifetime_hours: did_publish_lifetime_hours,
+            ipns_publish,
         };
         let mut ticker = tokio::time::interval(context.interval);
         let mut last_published_cid: Option<String> = None;
@@ -151,7 +151,7 @@ async fn publish_did_document(
             context.runtime_slug.clone(),
             doc_cbor,
             ipns_key,
-            context.lifetime_hours,
+            context.ipns_publish,
         ),
     )
     .await;
@@ -183,7 +183,7 @@ async fn publish_runtime_ipns(
             &context.runtime_slug,
             &context.runtime_ipns_key,
             latest_root_cid,
-            context.lifetime_hours,
+            context.ipns_publish,
         ),
     )
     .await

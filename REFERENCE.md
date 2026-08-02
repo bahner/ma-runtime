@@ -699,6 +699,8 @@ the runtime manifest `config` node.
 ```yaml
 did_resolver_positive_ttl_secs: 60
 did_resolver_negative_ttl_secs: 10
+did_resolve_attempts: 5
+did_resolve_attempt_timeout_secs: 60
 wasm_reload_shutdown_timeout_ms: 250
 
 did_document_publishing_interval_secs: 300
@@ -706,6 +708,7 @@ did_document_publishing_timeout_secs: 120
 did_document_publishing_lifetime_hours: 8760
 
 ipns_publish_lifetime_hours: 8760
+ipns_publish_timeout_secs: 120
 ipns_publish_allow_offline: true
 ipns_publish_resolve: false
 
@@ -720,8 +723,11 @@ status_cors_allowed_origins:
 - Keep `ipns_secret_key` private and encrypted in `SecretBundle`.
 - Prefer `ipns_publish_resolve: false` and explicit republish intervals to
   reduce publish-time dependency on network resolution.
-- Use bounded timeouts for publish operations
-  (`did_document_publishing_timeout_secs`).
+- Use bounded timeouts for publish operations. `did_document_publishing_timeout_secs`
+  is the outer task budget; `ipns_publish_timeout_secs` is the Kubo
+  `name/publish` request budget used by the shared IPNS publish helper.
+- DID outbox resolution uses `did_resolve_attempts` raced attempts. Each
+  attempt has its own `did_resolve_attempt_timeout_secs` budget.
 
 ---
 

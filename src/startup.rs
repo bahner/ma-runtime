@@ -38,6 +38,14 @@ pub fn get_u64_setting(config: &Config, key: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
+pub fn get_bool_setting(config: &Config, key: &str, default: bool) -> bool {
+    config
+        .extra
+        .get(key)
+        .and_then(serde_yaml::Value::as_bool)
+        .unwrap_or(default)
+}
+
 pub fn root_cid_setting(config: &Config) -> Option<String> {
     config
         .extra
@@ -119,6 +127,18 @@ pub fn runtime_manifest_config(
         )),
     );
     out.insert(
+        "did_resolve_attempts".to_string(),
+        serde_yaml::Value::from(get_u64_setting(config, "did_resolve_attempts", 5)),
+    );
+    out.insert(
+        "did_resolve_attempt_timeout_secs".to_string(),
+        serde_yaml::Value::from(get_u64_setting(
+            config,
+            "did_resolve_attempt_timeout_secs",
+            60,
+        )),
+    );
+    out.insert(
         "wasm_reload_shutdown_timeout_ms".to_string(),
         serde_yaml::Value::from(get_u64_setting(
             config,
@@ -155,6 +175,14 @@ pub fn runtime_manifest_config(
         serde_yaml::Value::from(get_u64_setting(config, "ipns_publish_lifetime_hours", 8760)),
     );
     out.insert(
+        "ipns_publish_timeout_secs".to_string(),
+        serde_yaml::Value::from(get_u64_setting(
+            config,
+            "ipns_publish_timeout_secs",
+            get_u64_setting(config, "did_document_publishing_timeout_secs", 120),
+        )),
+    );
+    out.insert(
         "ipns_publish_resolve".to_string(),
         serde_yaml::Value::from(
             config
@@ -180,7 +208,7 @@ pub fn runtime_manifest_config(
 #[cfg(test)]
 mod tests {
     use super::{
-        persist_root_cid_to_config, root_cid_setting, select_root_cid,
+        persist_root_cid_to_config, root_cid_setting, runtime_manifest_config, select_root_cid,
         should_generate_headless_config,
     };
 
@@ -267,5 +295,67 @@ mod tests {
         config.config_path = Some(config_path);
 
         assert!(should_generate_headless_config(&config, &bundle_path));
+    }
+
+    #[test]
+    fn runtime_manifest_config_includes_ipns_publish_timeout() {
+        let config = ma_core::config::Config::from_yaml_str(
+            "did_document_publishing_timeout_secs: 240\n\
+             ipns_publish_timeout_secs: 180\n\
+             did_resolve_attempts: 3\n\
+             did_resolve_attempt_timeout_secs: 90\n\
+             ipns_publish_allow_offline: false\n\
+             ipns_publish_resolve: true\n",
+        )
+        .unwrap();
+
+        let manifest_config = runtime_manifest_config(&config);
+
+        assert_eq!(
+            manifest_config
+                .get("ipns_publish_timeout_secs")
+                .and_then(serde_yaml::Value::as_u64),
+            Some(180)
+        );
+        assert_eq!(
+            manifest_config
+                .get("ipns_publish_allow_offline")
+                .and_then(serde_yaml::Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            manifest_config
+                .get("ipns_publish_resolve")
+                .and_then(serde_yaml::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            manifest_config
+                .get("did_resolve_attempts")
+                .and_then(serde_yaml::Value::as_u64),
+            Some(3)
+        );
+        assert_eq!(
+            manifest_config
+                .get("did_resolve_attempt_timeout_secs")
+                .and_then(serde_yaml::Value::as_u64),
+            Some(90)
+        );
+    }
+
+    #[test]
+    fn ipns_publish_timeout_defaults_to_outer_publish_timeout() {
+        let config =
+            ma_core::config::Config::from_yaml_str("did_document_publishing_timeout_secs: 240\n")
+                .unwrap();
+
+        let manifest_config = runtime_manifest_config(&config);
+
+        assert_eq!(
+            manifest_config
+                .get("ipns_publish_timeout_secs")
+                .and_then(serde_yaml::Value::as_u64),
+            Some(240)
+        );
     }
 }

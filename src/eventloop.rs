@@ -407,7 +407,8 @@ pub async fn run(
     runtime_ipns_key: [u8; 32],
     runtime_slug: String,
     did_publish_timeout_secs: u64,
-    did_publish_lifetime_hours: u64,
+    ipns_publish: ipfs::IpnsPublishSettings,
+    did_resolve: ipfs::DidResolveSettings,
     poll_ms: u64,
 ) -> Result<()> {
     let mut ticker = tokio::time::interval(Duration::from_millis(poll_ms));
@@ -448,6 +449,7 @@ pub async fn run(
                         kubo_rpc_url: Arc::from(kubo_url.as_str()),
                         resolver: Arc::clone(&shared_resolver),
                         doc_cache: shared_doc_cache.as_ref().map(Arc::clone),
+                        did_resolve,
                         entity_registry: entity_registry.clone(),
                         kind_registry: kind_registry.clone(),
                         envelope_tx: envelope_tx.clone(),
@@ -503,7 +505,8 @@ pub async fn run(
                                 signing_key: &signing_key,
                                 endpoint: Arc::clone(&endpoint),
                                 kubo_rpc_url: &kubo_url,
-                                publish_lifetime_hours: did_publish_lifetime_hours,
+                                ipns_publish,
+                                did_resolve,
                                 resolver: Arc::clone(&shared_resolver),
                                 doc_cache: Arc::clone(&ipfs.doc_cache),
                                 group_cache: group_cache.clone(),
@@ -542,6 +545,7 @@ pub async fn run(
                             kubo_rpc_url: Arc::from(kubo_url.as_str()),
                             resolver: Arc::clone(&shared_resolver),
                             doc_cache: shared_doc_cache.as_ref().map(Arc::clone),
+                            did_resolve,
                             stats: stats.clone(),
                             entity_registry: entity_registry.clone(),
                             kind_registry: kind_registry.clone(),
@@ -702,7 +706,14 @@ pub async fn run(
                     tokio::spawn(async move {
                         let _permit = permit;
                         let outbox_result = if let Some(doc_cache) = doc_cache {
-                            ipfs::open_outbox_for_did(&ep, &res, &doc_cache, &recipient, protocol)
+                            ipfs::open_outbox_for_did(
+                                &ep,
+                                &res,
+                                &doc_cache,
+                                &recipient,
+                                protocol,
+                                did_resolve,
+                            )
                                 .await
                         } else {
                             match tokio::time::timeout(
@@ -801,7 +812,7 @@ pub async fn run(
                             &runtime_slug,
                             &runtime_ipns_key,
                             &latest_root_cid,
-                            did_publish_lifetime_hours,
+                            ipns_publish,
                         ),
                     )
                     .await
