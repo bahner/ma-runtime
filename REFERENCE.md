@@ -703,7 +703,8 @@ did_resolve_attempts: 5
 did_resolve_attempt_timeout_secs: 60
 wasm_reload_shutdown_timeout_ms: 250
 
-did_document_publishing_interval_secs: 300
+did_document_publishing_interval_secs: 3600
+did_publish_cache_warm_secs: 3600
 did_document_publishing_timeout_secs: 120
 did_document_publishing_lifetime_hours: 8760
 
@@ -728,6 +729,8 @@ status_cors_allowed_origins:
   `name/publish` request budget used by the shared IPNS publish helper.
 - DID outbox resolution uses `did_resolve_attempts` raced attempts. Each
   attempt has its own `did_resolve_attempt_timeout_secs` budget.
+- The runtime root manifest is published on startup, on clean shutdown, on the
+  periodic interval above, and when an owner sends `:publish` to `#root`.
 
 ---
 

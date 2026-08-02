@@ -39,6 +39,7 @@ const MANIFEST_CONFIG_KEYS: &[&str] = &[
     "did_resolve_attempts",
     "did_resolve_attempt_timeout_secs",
     "did_document_publishing_interval_secs",
+    "did_publish_cache_warm_secs",
     "did_document_publishing_timeout_secs",
     "did_document_publishing_lifetime_hours",
     "ipns_publish_lifetime_hours",

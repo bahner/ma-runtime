@@ -458,6 +458,10 @@ pub async fn run(
                         group_cache: group_cache.clone(),
                         manifest_writer: manifest_writer.clone(),
                         shared_config: Arc::clone(&shared_config),
+                        runtime_slug: Arc::from(runtime_slug.as_str()),
+                        runtime_ipns_key,
+                        ipns_publish,
+                        did_publish_timeout_secs,
                     };
                     tokio::spawn(async move {
                         if let Err(err) = tokio::time::timeout(
@@ -772,11 +776,6 @@ pub async fn run(
                 eprintln!("{}", i18n::t("shutdown-requested"));
                 info!("{}", i18n::t("shutdown-requested"));
                 let kubo_url = shared_config.read().await.kubo_rpc_url.clone();
-                let remote_pin = {
-                    let config = shared_config.read().await;
-                    bootstrap::runtime_remote_pin_config(&config)
-                };
-
                 // ── Persist entity states before exit ─────────────────────────
                 let active_root_cid = stats.read().await.root_cid.clone();
                 if let Some(ref rc) = active_root_cid {
@@ -784,10 +783,9 @@ pub async fn run(
                     if count > 0 {
                         info!(count = %count, "{}", i18n::t("entity-states-saving"));
                         match bootstrap::save_all_entity_states(
-                            rc,
+                            &manifest_writer,
                             &kubo_url,
                             &entity_registry,
-                            remote_pin.as_ref(),
                         )
                         .await
                         {

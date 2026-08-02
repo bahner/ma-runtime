@@ -63,6 +63,7 @@ enum EntityMsg {
     MarkSaved(Vec<u8>),
     /// Deliver `:shutdown` and return any pending state bytes.
     Shutdown {
+        require_signal_success: bool,
         reply: oneshot::Sender<Result<Option<Vec<u8>>>>,
     },
     /// Stop the worker thread and drop the owned plugin/native actor.
@@ -696,10 +697,14 @@ impl EntityPlugin {
         &self,
         kubo_url: &str,
         backstop: std::time::Duration,
+        require_signal_success: bool,
     ) -> Result<Option<String>> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
-            .try_send(EntityMsg::Shutdown { reply: reply_tx })
+            .try_send(EntityMsg::Shutdown {
+                require_signal_success,
+                reply: reply_tx,
+            })
             .map_err(|e| anyhow!("entity '{}' worker queue unavailable: {e}", self.fragment))?;
         let pending = match tokio::time::timeout(backstop, reply_rx).await {
             Ok(reply) => reply
@@ -731,7 +736,22 @@ impl EntityPlugin {
         kubo_url: &str,
         backstop: std::time::Duration,
     ) -> Result<Option<String>> {
-        self.shutdown_signal_save(kubo_url, backstop).await
+        self.shutdown_signal_save(kubo_url, backstop, true).await
+    }
+
+    /// Best-effort graceful daemon shutdown save.
+    ///
+    /// Unlike hot reload, process shutdown must not keep a poisoned/OOM entity
+    /// alive forever just because its `:shutdown` hook cannot run. The worker
+    /// still returns any state bytes already queued via `ma_set_state`; state
+    /// mutated only in guest memory after the last successful save cannot be
+    /// recovered if the guest can no longer execute.
+    pub async fn graceful_shutdown_save(
+        &self,
+        kubo_url: &str,
+        backstop: std::time::Duration,
+    ) -> Result<Option<String>> {
+        self.shutdown_signal_save(kubo_url, backstop, false).await
     }
 
     /// Stop this entity's worker thread after it has been removed from the
@@ -798,6 +818,7 @@ mod hostile {
 
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
+    use std::sync::{mpsc, Arc, Mutex};
     use std::time::{Duration, Instant};
 
     use anyhow::{bail, Context as _};
@@ -1073,8 +1094,7 @@ mod hostile {
     async fn hostile_wasm_never_blocks_anything_else() {
         std::env::set_var("MA_WASM_CALL_TIMEOUT_SECS", "2");
         let kubo = MockKubo::start().await;
-        let (envelope_tx, _envelope_rx) =
-            tokio::sync::mpsc::channel::<(String, SendEnvelope)>(16);
+        let (envelope_tx, _envelope_rx) = tokio::sync::mpsc::channel::<(String, SendEnvelope)>(16);
         let registry = new_entity_registry();
 
         let evil_cid = kubo.add_bytes(wat::parse_str(EVIL_WAT).unwrap()).await;
@@ -1251,5 +1271,70 @@ mod hostile {
             started.elapsed()
         );
         assert!(err.to_string().contains("Shutdown timed out"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn graceful_shutdown_save_continues_after_shutdown_signal_error() {
+        let kubo = MockKubo::start().await;
+        let pending = Arc::new(Mutex::new(Some(vec![1, 2, 3, 4])));
+        let (saved_tx, saved_rx) = mpsc::channel();
+
+        let actor = NativeActor::new(|_| {
+            Ok(DispatchResult {
+                output: Vec::new(),
+                pending_state: None,
+                create_requests: Vec::new(),
+                delete_requests: Vec::new(),
+                behaviour_requests: Vec::new(),
+            })
+        })
+        .with_signal(|signal| {
+            if matches!(signal, NativeSignal::Shutdown) {
+                bail!("simulated shutdown failure");
+            }
+            Ok(())
+        })
+        .with_state_hooks(
+            {
+                let pending = Arc::clone(&pending);
+                move || pending.lock().unwrap().clone()
+            },
+            {
+                move |bytes| {
+                    let _ = saved_tx.send(bytes);
+                }
+            },
+        );
+
+        let (plugin, lifecycle) = EntityPlugin::new_native(
+            "shutdown-fails",
+            &entity_node(),
+            &native_kind_node(),
+            actor,
+            Vec::new(),
+            None,
+        )
+        .expect("native plugin should load");
+        assert_eq!(lifecycle, Lifecycle::Running);
+
+        let strict_err = plugin
+            .prepare_reload_save(kubo.url(), Duration::from_secs(1))
+            .await
+            .expect_err("reload save must stay strict on shutdown signal failure");
+        assert!(strict_err
+            .to_string()
+            .contains("native on_signal(:shutdown) failed"));
+
+        let cid = plugin
+            .graceful_shutdown_save(kubo.url(), Duration::from_secs(1))
+            .await
+            .expect("graceful shutdown save should continue with pending state")
+            .expect("pending state should be persisted");
+
+        assert!(!cid.is_empty());
+        assert_eq!(
+            saved_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            vec![1, 2, 3, 4]
+        );
     }
 }

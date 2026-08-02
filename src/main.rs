@@ -333,7 +333,7 @@ async fn main() -> Result<()> {
     let did_publish_lifetime_hours =
         get_u64_setting(&config, "did_document_publishing_lifetime_hours", 8760);
     let did_publish_interval_secs =
-        get_u64_setting(&config, "did_document_publishing_interval_secs", 300);
+        get_u64_setting(&config, "did_document_publishing_interval_secs", 3600);
     let ipns_publish = ipfs::IpnsPublishSettings {
         lifetime_hours: get_u64_setting(
             &config,
@@ -474,9 +474,11 @@ async fn main() -> Result<()> {
             .context("creating job scheduler")?,
     );
     sched.start().await.context("starting job scheduler")?;
+    let scheduler_manifest_writer = Arc::new(tokio::sync::RwLock::new(None));
 
     let sched_ctx = schedule::SchedulerCtx {
         entity_registry: entity_registry.clone(),
+        manifest_writer: Arc::clone(&scheduler_manifest_writer),
         kubo_rpc_url: config.kubo_rpc_url.clone(),
         our_did: our_did.clone(),
     };
@@ -668,6 +670,7 @@ async fn main() -> Result<()> {
         config.config_path.clone(),
         Some(Arc::clone(&shared_config)),
     );
+    *scheduler_manifest_writer.write().await = Some(manifest_writer.clone());
 
     // Reconcile owners into the manifest if config.yaml/--owner introduced
     // any that weren't already there (see "Resolve owners" above). Unlike
@@ -716,8 +719,7 @@ async fn main() -> Result<()> {
     .await;
 
     // Periodic DID-document republishing from the in-memory runtime head.
-    let did_publish_cache_warm_secs =
-        get_u64_setting(&config, "did_publish_cache_warm_secs", 86_400);
+    let did_publish_cache_warm_secs = get_u64_setting(&config, "did_publish_cache_warm_secs", 3600);
     let refresh_passphrase = config
         .secret_bundle_passphrase
         .clone()

@@ -893,22 +893,17 @@ async fn persist_initialised_transition(
 }
 
 // ── Graceful shutdown: persist entity states ──────────────────────────────────
-/// nodes and root manifest.
-/// Logs progress at `info` level with per-entity phases.  Returns the new
-/// root CID on success.
+/// Persist every entity's shutdown state and publish one serialised root
+/// manifest update. Logs progress at `info` level with per-entity phases.
+/// Returns the new root CID on success.
 pub async fn save_all_entity_states(
-    root_cid: &str,
+    manifest_writer: &crate::manifest::ManifestWriter,
     kubo_url: &str,
     registry: &plugin::EntityRegistry,
-    remote_pin: Option<&RemotePinConfig>,
 ) -> Result<String> {
-    // Phase 1: fetch current manifest.
-    tracing::info!(root_cid = %root_cid, "Fetching current runtime manifest");
-    let mut manifest: RuntimeManifest = kubo::dag_get(kubo_url, root_cid)
-        .await
-        .context("fetching current runtime manifest")?;
-
-    // Snapshot the registry so we don't hold the lock during async IPFS calls.
+    let kubo_url = kubo_url.to_string();
+    // Snapshot the registry so we don't hold the registry lock while the
+    // manifest writer serialises the shutdown read-modify-write.
     let snapshot: Vec<(String, Arc<plugin::EntityPlugin>)> = registry
         .read()
         .await
@@ -916,71 +911,66 @@ pub async fn save_all_entity_states(
         .map(|(k, v)| (k.clone(), Arc::clone(v)))
         .collect();
 
-    // Phase 2: persist each entity's state and lifecycle.
-    // Stateless entities skip state saving but still get lifecycle: stopped.
-    for (name, entity) in &snapshot {
-        // Stateless native entities are manifest markers/compiled-in runtime
-        // hooks. Stateful native entities still pass through prepare_reload_save(),
-        // whose native backend may currently be a no-op.
-        if entity.is_native() && entity.kind == PluginKind::Stateless {
-            continue;
-        }
-        let Some(entity_link) = manifest.entities.get(name).cloned() else {
-            tracing::warn!(name = %name, "Entity in registry but not in manifest, skipping");
-            continue;
-        };
-        let mut entity_node: EntityNode = match kubo::dag_get(kubo_url, &entity_link.cid).await {
-            Ok(n) => n,
-            Err(e) => {
-                tracing::warn!(name = %name, error = %e, "Failed to fetch entity node for state update");
-                continue;
-            }
-        };
+    let (new_root_cid, ()) = manifest_writer
+        .mutate_async(|manifest| {
+            Box::pin(async move {
+                // Persist each entity's state and lifecycle. Stateless entities
+                // skip state saving but still get lifecycle: stopped.
+                for (name, entity) in &snapshot {
+                    // Stateless native entities are manifest markers/compiled-in runtime
+                    // hooks. Stateful native entities still pass through prepare_reload_save(),
+                    // whose native backend may currently be a no-op.
+                    if entity.is_native() && entity.kind == PluginKind::Stateless {
+                        continue;
+                    }
+                    let Some(entity_link) = manifest.entities.get(name).cloned() else {
+                        tracing::warn!(name = %name, "Entity in registry but not in manifest, skipping");
+                        continue;
+                    };
+                    let mut entity_node: EntityNode = match kubo::dag_get(&kubo_url, &entity_link.cid).await {
+                        Ok(n) => n,
+                        Err(e) => {
+                            tracing::warn!(name = %name, error = %e, "Failed to fetch entity node for state update");
+                            continue;
+                        }
+                    };
 
-        if entity.kind != PluginKind::Stateless {
-            tracing::info!(name = %name, "{}", crate::i18n::t("entity-state-saving"));
-            match entity
-                .prepare_reload_save(kubo_url, crate::plugin::graceful_shutdown_timeout())
-                .await
-            {
-                Ok(Some(cid)) => {
-                    tracing::info!(name = %name, cid = %cid, "{}", crate::i18n::t("entity-state-saved"));
-                    entity_node.state = Some(IpldLink::new(cid));
+                    if entity.kind != PluginKind::Stateless {
+                        tracing::info!(name = %name, "{}", crate::i18n::t("entity-state-saving"));
+                        match entity
+                            .graceful_shutdown_save(&kubo_url, crate::plugin::graceful_shutdown_timeout())
+                            .await
+                        {
+                            Ok(Some(cid)) => {
+                                tracing::info!(name = %name, cid = %cid, "{}", crate::i18n::t("entity-state-saved"));
+                                entity_node.state = Some(IpldLink::new(cid));
+                            }
+                            Ok(None) => {
+                                tracing::info!(name = %name, "{}", crate::i18n::t("entity-state-empty"));
+                            }
+                            Err(e) => {
+                                return Err(e).with_context(|| format!("saving state for entity '{name}'"));
+                            }
+                        }
+                    }
+
+                    match kubo::dag_put(&kubo_url, &entity_node).await {
+                        Ok(new_cid) => {
+                            tracing::info!(name = %name, cid = %new_cid, "Updated entity node on shutdown");
+                            manifest
+                                .entities
+                                .insert(name.clone(), IpldLink::new(new_cid));
+                        }
+                        Err(e) => {
+                            return Err(e)
+                                .with_context(|| format!("publishing updated entity node for '{name}'"));
+                        }
+                    }
                 }
-                Ok(None) => {
-                    tracing::info!(name = %name, "{}", crate::i18n::t("entity-state-empty"));
-                }
-                Err(e) => {
-                    return Err(e).with_context(|| format!("saving state for entity '{name}'"));
-                }
-            }
-        }
-
-        match kubo::dag_put(kubo_url, &entity_node).await {
-            Ok(new_cid) => {
-                tracing::info!(name = %name, cid = %new_cid, "Updated entity node on shutdown");
-                manifest
-                    .entities
-                    .insert(name.clone(), IpldLink::new(new_cid));
-            }
-            Err(e) => {
-                return Err(e)
-                    .with_context(|| format!("publishing updated entity node for '{name}'"));
-            }
-        }
-    }
-
-    // Phase 3: publish updated manifest.
-    tracing::info!("Publishing updated runtime manifest");
-    let new_root_cid = kubo::dag_put(kubo_url, &manifest)
-        .await
-        .context("dag_put updated manifest")?;
-
-    // Swap pins atomically via pin/update.
-    if let Err(e) = kubo::pin_update(kubo_url, root_cid, &new_root_cid).await {
-        tracing::warn!(old = %root_cid, new = %new_root_cid, error = %e, "pin/update failed after state save");
-    }
-    replace_remote_root_pin(kubo_url, remote_pin, Some(root_cid), &new_root_cid).await;
+                Ok(())
+            })
+        })
+        .await?;
 
     Ok(new_root_cid)
 }

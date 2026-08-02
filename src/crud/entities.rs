@@ -547,8 +547,7 @@ mod tests {
             .await
             .insert(kind.protocol.clone(), Arc::new(kind.clone()));
         let entity_registry = new_entity_registry();
-        let (envelope_tx, _envelope_rx) =
-            tokio::sync::mpsc::channel::<(String, SendEnvelope)>(16);
+        let (envelope_tx, _envelope_rx) = tokio::sync::mpsc::channel::<(String, SendEnvelope)>(16);
 
         let runtime_did = ma_core::Did::new_url("k51qzi5uqu5runtime", None::<String>).unwrap();
         let runtime_signing = ma_core::SigningKey::generate(
@@ -689,8 +688,7 @@ mod tests {
             .await
             .insert(kind.protocol.clone(), Arc::new(kind.clone()));
         let entity_registry = new_entity_registry();
-        let (envelope_tx, _envelope_rx) =
-            tokio::sync::mpsc::channel::<(String, SendEnvelope)>(16);
+        let (envelope_tx, _envelope_rx) = tokio::sync::mpsc::channel::<(String, SendEnvelope)>(16);
 
         let runtime_did = ma_core::Did::new_url("k51qzi5uqu5runtime", None::<String>).unwrap();
         let runtime_signing = ma_core::SigningKey::generate(

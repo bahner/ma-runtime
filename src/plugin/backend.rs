@@ -9,7 +9,7 @@
 use anyhow::{anyhow, Result};
 use extism::{host_fn, Function, Manifest, Plugin, PluginBuilder, UserData, Wasm, PTR};
 use tokio::sync::{
-    mpsc::{Receiver, Sender, error::TrySendError},
+    mpsc::{error::TrySendError, Receiver, Sender},
     oneshot,
 };
 use tracing::{debug, info, warn};
@@ -963,7 +963,10 @@ pub(super) fn run_wasm_thread(
                     }
                 }
             }
-            EntityMsg::Shutdown { reply } => {
+            EntityMsg::Shutdown {
+                require_signal_success,
+                reply,
+            } => {
                 let signal_result = ts
                     .plugin
                     .call::<&[u8], Vec<u8>>("on_signal", signal_atom(":shutdown").as_slice());
@@ -974,7 +977,13 @@ pub(super) fn run_wasm_thread(
                     .and_then(|arc| arc.lock().ok().and_then(|c| c.pending.clone()));
                 let _ = match signal_result {
                     Ok(_) => reply.send(Ok(pending)),
-                    Err(e) => reply.send(Err(anyhow!("on_signal(:shutdown) failed: {e}"))),
+                    Err(e) if require_signal_success => {
+                        reply.send(Err(anyhow!("on_signal(:shutdown) failed: {e}")))
+                    }
+                    Err(e) => {
+                        warn!(fragment = %cfg.fragment, error = %e, "on_signal(:shutdown) failed during graceful shutdown; continuing with queued pending state only");
+                        reply.send(Ok(pending))
+                    }
                 };
             }
             EntityMsg::Terminate => break,
@@ -1006,12 +1015,21 @@ pub(super) fn run_native_thread(
                 let _ = reply.send((actor.take_pending)());
             }
             EntityMsg::MarkSaved(bytes) => (actor.mark_saved)(bytes),
-            EntityMsg::Shutdown { reply } => {
+            EntityMsg::Shutdown {
+                require_signal_success,
+                reply,
+            } => {
                 let signal_result = (actor.signal)(NativeSignal::Shutdown);
                 let pending = (actor.take_pending)();
                 let _ = match signal_result {
                     Ok(()) => reply.send(Ok(pending)),
-                    Err(e) => reply.send(Err(anyhow!("native on_signal(:shutdown) failed: {e}"))),
+                    Err(e) if require_signal_success => {
+                        reply.send(Err(anyhow!("native on_signal(:shutdown) failed: {e}")))
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "native on_signal(:shutdown) failed during graceful shutdown; continuing with queued pending state only");
+                        reply.send(Ok(pending))
+                    }
                 };
             }
             EntityMsg::Terminate => break,

@@ -38,6 +38,10 @@ pub struct RpcHandlerCtx {
     pub group_cache: GroupCache,
     pub manifest_writer: crate::manifest::ManifestWriter,
     pub shared_config: Arc<tokio::sync::RwLock<ma_core::Config>>,
+    pub runtime_slug: Arc<str>,
+    pub runtime_ipns_key: [u8; 32],
+    pub ipns_publish: crate::ipfs::IpnsPublishSettings,
+    pub did_publish_timeout_secs: u64,
 }
 
 // ── Entity creation helper ─────────────────────────────────────────────────────
@@ -265,6 +269,9 @@ pub async fn handle_rpc_message(
 
     // Fragment routing: entity plugin dispatch.
     if let Some(fragment) = local_target_fragment(&message.to, &ctx.our_did) {
+        if fragment == "root" && rpc_verb(&term) == Some(":publish") {
+            return handle_root_publish_rpc(message, ctx, &owners).await;
+        }
         let ep = ctx.entity_registry.read().await.get(&fragment).cloned();
         return if let Some(entity) = ep {
             let fragment_for_log = entity.fragment.clone();
@@ -294,6 +301,59 @@ pub async fn handle_rpc_message(
     }
 
     handle_root_runtime_rpc(message, ctx, &term).await
+}
+
+async fn handle_root_publish_rpc(
+    message: &ma_core::Message,
+    ctx: &RpcHandlerCtx,
+    owners: &[String],
+) -> Result<()> {
+    if !crate::acl::is_owner(owners, &message.from) {
+        return send_rpc_error_reply(message, ctx, "owner required");
+    }
+
+    let Some(root_cid) = ctx.stats.read().await.root_cid.clone() else {
+        return send_rpc_error_reply(message, ctx, "no manifest root CID available");
+    };
+    let kubo_url = ctx.kubo_rpc_url.to_string();
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(ctx.did_publish_timeout_secs),
+        crate::ipfs::publish_runtime_root_cid(
+            &kubo_url,
+            &ctx.runtime_slug,
+            &ctx.runtime_ipns_key,
+            &root_cid,
+            ctx.ipns_publish,
+        ),
+    )
+    .await
+    {
+        Ok(Ok(_)) => {}
+        Ok(Err(err)) => return send_rpc_error_reply(message, ctx, &format!("{err:#}")),
+        Err(_) => return send_rpc_error_reply(message, ctx, "root publish timed out"),
+    }
+
+    let mut payload = Vec::new();
+    ciborium::ser::into_writer(
+        &CborValue::Array(vec![
+            CborValue::Text(":ok".to_string()),
+            CborValue::Text(root_cid),
+        ]),
+        &mut payload,
+    )
+    .context("encode :publish reply")?;
+    send_rpc_reply(message, ctx, &payload)
+}
+
+fn rpc_verb(term: &CborValue) -> Option<&str> {
+    match term {
+        CborValue::Text(verb) => Some(verb.as_str()),
+        CborValue::Array(items) => match items.first() {
+            Some(CborValue::Text(verb)) => Some(verb.as_str()),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 async fn handle_root_runtime_rpc(
@@ -818,6 +878,7 @@ fn send_rpc_error_reply(
 
 #[cfg(test)]
 mod tests {
+    use ciborium::Value as CborValue;
     use std::collections::BTreeMap;
     use std::sync::Arc;
     use tokio::sync::RwLock;
@@ -833,7 +894,9 @@ mod tests {
 
     use ma_core::{MESSAGE_TYPE_RPC, MESSAGE_TYPE_RPC_REPLY};
 
-    use super::{handle_entity_plugin_message, rpc_message_kind, RpcMessageKind, RPC_PROTOCOL_ID};
+    use super::{
+        handle_entity_plugin_message, rpc_message_kind, rpc_verb, RpcMessageKind, RPC_PROTOCOL_ID,
+    };
 
     #[test]
     fn rpc_reply_is_classified_separately_from_requests() {
@@ -843,6 +906,22 @@ mod tests {
             RpcMessageKind::Reply
         );
         assert_eq!(rpc_message_kind("text/plain"), RpcMessageKind::Unsupported);
+    }
+
+    #[test]
+    fn rpc_verb_extracts_text_atom_and_array_head() {
+        assert_eq!(
+            rpc_verb(&CborValue::Text(":publish".to_string())),
+            Some(":publish")
+        );
+        assert_eq!(
+            rpc_verb(&CborValue::Array(vec![
+                CborValue::Text(":publish".to_string()),
+                CborValue::Text("now".to_string()),
+            ])),
+            Some(":publish")
+        );
+        assert_eq!(rpc_verb(&CborValue::Array(vec![])), None);
     }
 
     #[allow(clippy::too_many_lines)]
@@ -919,6 +998,7 @@ mod tests {
             job_scheduler,
             SchedulerCtx {
                 entity_registry: entity_registry.clone(),
+                manifest_writer: Arc::new(tokio::sync::RwLock::new(None)),
                 kubo_rpc_url: kubo.url().to_string(),
                 our_did: runtime_did.base_id(),
             },
@@ -975,6 +1055,10 @@ mod tests {
                 config_path: None,
                 extra: serde_yaml::Mapping::new(),
             })),
+            runtime_slug: Arc::from("ma"),
+            runtime_ipns_key: [7u8; 32],
+            ipns_publish: crate::ipfs::IpnsPublishSettings::default(),
+            did_publish_timeout_secs: 120,
         };
 
         let mut payload = Vec::new();

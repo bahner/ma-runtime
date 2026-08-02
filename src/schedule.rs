@@ -33,6 +33,7 @@ use tokio_cron_scheduler::{Job, JobScheduler};
 use tracing::{trace, warn};
 
 use crate::entity::{CastInput, LocalMessage};
+use crate::manifest::ManifestWriter;
 use crate::plugin::EntityRegistry;
 
 // ── Schedule request ──────────────────────────────────────────────────────────
@@ -60,6 +61,7 @@ pub enum ScheduleRequest {
 #[derive(Clone)]
 pub struct SchedulerCtx {
     pub entity_registry: EntityRegistry,
+    pub manifest_writer: Arc<tokio::sync::RwLock<Option<ManifestWriter>>>,
     pub kubo_rpc_url: String,
     pub our_did: String,
 }
@@ -417,7 +419,29 @@ pub async fn dispatch_scheduled(
     // Persist state if changed.
     if let Some(state_bytes) = result.pending_state {
         match crate::kubo::ipfs_add_bytes_unpinned(&ctx.kubo_rpc_url, state_bytes.clone()).await {
-            Ok(_) => plugin.mark_saved(state_bytes),
+            Ok(cid) => {
+                let writer = ctx.manifest_writer.read().await.clone();
+                let Some(writer) = writer else {
+                    warn!(
+                        fragment = %fragment,
+                        cid = %cid,
+                        "scheduled dispatch: state saved to IPFS but manifest writer is not ready"
+                    );
+                    return;
+                };
+                match writer.set_entity_state(fragment, &cid).await {
+                    Ok(root_cid) => {
+                        plugin.mark_saved(state_bytes);
+                        trace!(fragment = %fragment, cid = %cid, %root_cid, "scheduled dispatch: entity state persisted");
+                    }
+                    Err(e) => warn!(
+                        fragment = %fragment,
+                        cid = %cid,
+                        error = %e,
+                        "scheduled dispatch: failed to update manifest with entity state"
+                    ),
+                }
+            }
             Err(e) => warn!(
                 fragment = %fragment,
                 error = %e,

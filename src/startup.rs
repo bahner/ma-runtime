@@ -151,8 +151,12 @@ pub fn runtime_manifest_config(
         serde_yaml::Value::from(get_u64_setting(
             config,
             "did_document_publishing_interval_secs",
-            300,
+            3600,
         )),
+    );
+    out.insert(
+        "did_publish_cache_warm_secs".to_string(),
+        serde_yaml::Value::from(get_u64_setting(config, "did_publish_cache_warm_secs", 3600)),
     );
     out.insert(
         "did_document_publishing_timeout_secs".to_string(),
@@ -356,6 +360,26 @@ mod tests {
                 .get("ipns_publish_timeout_secs")
                 .and_then(serde_yaml::Value::as_u64),
             Some(240)
+        );
+    }
+
+    #[test]
+    fn runtime_manifest_config_defaults_root_publish_to_hourly() {
+        let config = ma_core::config::Config::from_yaml_str("{}\n").unwrap();
+
+        let manifest_config = runtime_manifest_config(&config);
+
+        assert_eq!(
+            manifest_config
+                .get("did_document_publishing_interval_secs")
+                .and_then(serde_yaml::Value::as_u64),
+            Some(3600)
+        );
+        assert_eq!(
+            manifest_config
+                .get("did_publish_cache_warm_secs")
+                .and_then(serde_yaml::Value::as_u64),
+            Some(3600)
         );
     }
 }
