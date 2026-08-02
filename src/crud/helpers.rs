@@ -10,11 +10,14 @@ use ma_core::{
     Did, DidDocumentResolver, Ipld, CONTENT_TYPE_TERM, CONTENT_TYPE_TERM_CBOR,
     CONTENT_TYPE_TERM_YAML,
 };
+use tokio::sync::Semaphore;
 use tracing::{info, warn};
 
 use crate::entity::{EntityNode, KindNode, RuntimeManifest};
 
 use super::CrudHandlerCtx;
+
+const MAX_CONCURRENT_KIND_RELOADS: usize = 4;
 
 // ── Path helpers ───────────────────────────────────────────────────────────────
 
@@ -292,6 +295,7 @@ pub(super) async fn spawn_kind_dependency_reloads_for(
         let cfg = ctx.shared_config.read().await;
         super::config::wasm_reload_shutdown_timeout(&cfg)
     };
+    let reload_gate = Arc::new(Semaphore::new(MAX_CONCURRENT_KIND_RELOADS));
 
     for (name, link) in manifest.entities {
         let entity_node: EntityNode = match crate::kubo::dag_get(&ctx.kubo_rpc_url, &link.cid).await
@@ -317,6 +321,7 @@ pub(super) async fn spawn_kind_dependency_reloads_for(
             ctx.manifest_writer.clone(),
             runtime_config.clone(),
             reload_shutdown_timeout,
+            Arc::clone(&reload_gate),
         );
         reload_count += 1;
     }
@@ -328,7 +333,9 @@ pub(super) async fn spawn_kind_dependency_reloads_for(
 /// it into the entity registry (replacing any existing version).
 ///
 /// Returns immediately — the reload happens asynchronously so the CRUD event
-/// loop is never blocked by WASM fetching, instantiation, or `init()`.
+/// loop is never blocked by WASM fetching, instantiation, or `init()`. The
+/// caller supplies a shared semaphore so a broad kind overlay queues reloads
+/// instead of starting unbounded concurrent Kubo/Wasm work.
 ///
 /// Mirrors `bootstrap::load_entities`'s lifecycle-persistence step: if the
 /// load transitions `lifecycle` (typically `new` → `running` on first
@@ -349,8 +356,13 @@ pub(super) fn spawn_entity_reload(
     manifest_writer: crate::manifest::ManifestWriter,
     runtime_config: std::collections::BTreeMap<String, String>,
     reload_shutdown_timeout: std::time::Duration,
+    reload_gate: Arc<Semaphore>,
 ) {
     tokio::spawn(async move {
+        let Ok(_permit) = reload_gate.acquire_owned().await else {
+            warn!(name = %name, kind = %entity_node.kind, "entity reload skipped because reload gate closed");
+            return;
+        };
         info!(
             name = %name,
             kind = %entity_node.kind,

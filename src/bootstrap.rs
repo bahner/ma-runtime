@@ -780,7 +780,7 @@ async fn load_initial_state(node: &EntityNode, kind_node: &KindNode, kubo_url: &
         return Vec::new();
     }
     match &node.state {
-        Some(link) => ma_core::cat_bytes(kubo_url, &link.cid)
+        Some(link) => kubo::cat_bytes(kubo_url, &link.cid)
             .await
             .unwrap_or_default(),
         None => Vec::new(),

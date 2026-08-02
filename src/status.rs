@@ -447,7 +447,7 @@ async fn serve_zion_path(state: StatusState, path: &str) -> axum::response::Resp
 
 async fn kubo_cat_ipfs_path(kubo_url: &str, ipfs_path: &str) -> anyhow::Result<Option<Vec<u8>>> {
     let base = kubo_url.trim_end_matches('/');
-    let response = reqwest::Client::new()
+    let response = crate::kubo::client()
         .post(format!("{base}/api/v0/cat"))
         .query(&[("arg", ipfs_path)])
         .send()
@@ -467,7 +467,7 @@ async fn kubo_block_get_ipld_path(
         return Ok(None);
     };
     let base = kubo_url.trim_end_matches('/');
-    let response = reqwest::Client::new()
+    let response = crate::kubo::client()
         .post(format!("{base}/api/v0/block/get"))
         .query(&[("arg", cid.as_str())])
         .send()

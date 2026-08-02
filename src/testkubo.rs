@@ -35,6 +35,7 @@ impl MockKubo {
             .route("/api/v0/dag/get", post(dag_get))
             .route("/api/v0/dag/resolve", post(dag_resolve))
             .route("/api/v0/name/resolve", post(name_resolve))
+            .route("/api/v0/add", post(add))
             .route("/api/v0/block/get", post(block_get))
             .route("/api/v0/cat", post(cat))
             .route("/api/v0/pin/update", post(pin_ok))
@@ -88,6 +89,19 @@ fn extract_json(body: &[u8]) -> Vec<u8> {
     }
 }
 
+fn extract_multipart_file(body: &[u8]) -> Vec<u8> {
+    let Some(start) = body.windows(4).position(|w| w == b"\r\n\r\n") else {
+        return body.to_vec();
+    };
+    let content_start = start + 4;
+    let content = &body[content_start..];
+    let end = content
+        .windows(4)
+        .position(|w| w == b"\r\n--")
+        .unwrap_or(content.len());
+    content[..end].to_vec()
+}
+
 fn query_arg(raw: Option<String>, key: &str) -> Option<String> {
     raw?.split('&').find_map(|kv| {
         let (k, v) = kv.split_once('=')?;
@@ -135,6 +149,13 @@ async fn cat(State(store): State<Store>, RawQuery(q): RawQuery) -> Vec<u8> {
     let arg = query_arg(q, "arg").unwrap_or_default();
     let cid = arg.strip_prefix("/ipfs/").unwrap_or(&arg);
     store.0.lock().await.get(cid).cloned().unwrap_or_default()
+}
+
+async fn add(State(store): State<Store>, body: Bytes) -> String {
+    let bytes = extract_multipart_file(&body);
+    let cid = fake_cid(&bytes);
+    store.0.lock().await.insert(cid.clone(), bytes);
+    format!("{{\"Hash\":\"{cid}\"}}")
 }
 
 async fn block_get(State(store): State<Store>, RawQuery(q): RawQuery) -> Vec<u8> {

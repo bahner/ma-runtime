@@ -8,7 +8,6 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use ma_core::ipfs_add;
 use tracing::{error, info, warn};
 
 use crate::entity::{CastInput, LocalMessage, PluginMsg};
@@ -84,7 +83,7 @@ pub async fn handle_inbox_message(message: &ma_core::Message, ctx: &InboxHandler
         let entity_arc = Arc::clone(&entity);
         let writer = ctx.manifest_writer.clone();
         tokio::spawn(async move {
-            match ipfs_add(&kubo_url, state_bytes.clone()).await {
+            match crate::kubo::ipfs_add_bytes(&kubo_url, state_bytes.clone()).await {
                 Ok(cid) => match writer.set_entity_state(&fragment_str, &cid).await {
                     Ok(root_cid) => {
                         entity_arc.mark_saved(state_bytes);

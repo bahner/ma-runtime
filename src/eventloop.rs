@@ -11,7 +11,7 @@ use anyhow::{anyhow, Result};
 use ciborium::Value as CborValue;
 use ma_core::config::Config;
 use ma_core::{
-    ipfs_add, Did, DidDocumentResolver, Inbox, MaEndpoint, Message, SigningKey, CONTENT_TYPE_TERM,
+    Did, DidDocumentResolver, Inbox, MaEndpoint, Message, SigningKey, CONTENT_TYPE_TERM,
     INBOX_PROTOCOL_ID, IPFS_PROTOCOL_ID, MESSAGE_TYPE_CRUD, MESSAGE_TYPE_CRUD_REPLY,
     MESSAGE_TYPE_IDENTITY_PUBLISH_REQUEST, MESSAGE_TYPE_IPFS_REQUEST, MESSAGE_TYPE_RPC,
     MESSAGE_TYPE_RPC_REPLY,
@@ -235,7 +235,7 @@ async fn dispatch_local_plugin_envelope(
         let writer = manifest_writer.clone();
         let kubo_url = kubo_url.to_string();
         tokio::spawn(async move {
-            match ipfs_add(&kubo_url, state_bytes.clone()).await {
+            match crate::kubo::ipfs_add_bytes(&kubo_url, state_bytes.clone()).await {
                 Ok(cid) => match writer.set_entity_state(&entity_arc.fragment, &cid).await {
                     Ok(root_cid) => {
                         entity_arc.mark_saved(state_bytes);

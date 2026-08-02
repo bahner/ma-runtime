@@ -230,7 +230,7 @@ pub async fn switch_lang(lang: &str, kubo_url: &str) {
         let Some(link) = lang_map.get(lang) else {
             return;
         };
-        let Ok(bytes) = ma_core::cat_bytes(kubo_url, &link.cid).await else {
+        let Ok(bytes) = kubo::cat_bytes(kubo_url, &link.cid).await else {
             return;
         };
         let Ok(ftl) = String::from_utf8(bytes) else {
@@ -331,7 +331,7 @@ async fn load_all_messages(
 
     let lang_map = fetch_lang_map(kubo_url, lang_cid, root_cid).await;
     for (code, link) in &lang_map {
-        if let Ok(bytes) = ma_core::cat_bytes(kubo_url, &link.cid).await {
+        if let Ok(bytes) = kubo::cat_bytes(kubo_url, &link.cid).await {
             if let Ok(ftl) = String::from_utf8(bytes) {
                 all.insert(code.clone(), parse_ftl(&ftl, code));
             }

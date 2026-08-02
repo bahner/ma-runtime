@@ -1,7 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use ma_core::ipfs::ipns_key_name_for_parts;
 use ma_core::ipfs::IpfsDidPublisher;
-use ma_core::ipfs_add;
 use ma_core::{
     ipns_from_secret, resolve_endpoint_for_protocol, validate_identity_publish_message,
     validate_ipfs_request, Did, DidDocumentResolver, Document, Inbox, ReplayGuard, SigningKey,
@@ -189,7 +188,7 @@ async fn dag_put_cbor(kubo_url: &str, data: &[u8]) -> Result<String> {
         .mime_str("application/octet-stream")?;
     let form = multipart::Form::new().part("file", part);
 
-    let body = reqwest::Client::new()
+    let body = crate::kubo::client()
         .post(url)
         .query(&[
             ("store-codec", "dag-cbor"),
@@ -226,7 +225,7 @@ async fn name_publish(
     );
 
     let lifetime = format!("{publish_lifetime_hours}h");
-    let body = reqwest::Client::new()
+    let body = crate::kubo::client()
         .post(url)
         .query(&[
             ("arg", arg.as_str()),
@@ -260,7 +259,7 @@ async fn resolve_ipns_path(kubo_url: &str, key_id: &str) -> Result<Option<String
     let url = format!("{base}/api/v0/name/resolve");
     let arg = format!("/ipns/{key_id}");
 
-    let body = reqwest::Client::new()
+    let body = crate::kubo::client()
         .post(url)
         .query(&[("arg", arg.as_str()), ("recursive", "true")])
         .send()
@@ -333,7 +332,7 @@ async fn list_keys(kubo_url: &str) -> Result<Vec<(String, String)>> {
     let base = kubo_url.trim_end_matches('/');
     let url = format!("{base}/api/v0/key/list");
 
-    let body = reqwest::Client::new()
+    let body = crate::kubo::client()
         .post(url)
         .send()
         .await?
@@ -376,7 +375,7 @@ async fn import_key(kubo_url: &str, key_name: &str, key_bytes: Vec<u8>) -> Resul
         .mime_str("application/octet-stream")?;
     let form = multipart::Form::new().part("file", part);
 
-    let body = reqwest::Client::new()
+    let body = crate::kubo::client()
         .post(url)
         .query(&[
             ("arg", key_name),
@@ -562,9 +561,8 @@ async fn resolve_did_for_outbox(
         }
     }
 
-    Err(last_error.unwrap_or_else(|| anyhow::anyhow!(
-        "DID document resolve failed for {target_base}"
-    )))
+    Err(last_error
+        .unwrap_or_else(|| anyhow::anyhow!("DID document resolve failed for {target_base}")))
 }
 
 fn spawn_did_resolve_attempt(
@@ -576,17 +574,15 @@ fn spawn_did_resolve_attempt(
     let resolver = Arc::clone(resolver);
     let target_base = target_base.to_string();
     resolves.spawn(async move {
-        let result = match tokio::time::timeout(
-            Duration::from_secs(10),
-            resolver.resolve(&target_base),
-        )
-        .await
-        {
-            Ok(result) => result.map_err(anyhow::Error::from),
-            Err(_elapsed) => Err(anyhow::anyhow!(
-                "DID document resolve timed out for {target_base}"
-            )),
-        };
+        let result =
+            match tokio::time::timeout(Duration::from_secs(10), resolver.resolve(&target_base))
+                .await
+            {
+                Ok(result) => result.map_err(anyhow::Error::from),
+                Err(_elapsed) => Err(anyhow::anyhow!(
+                    "DID document resolve timed out for {target_base}"
+                )),
+            };
         (attempt, result)
     });
 }
@@ -758,7 +754,7 @@ async fn handle_ipfs_store(
             .await
             .context("dag put failed")?
     } else {
-        ipfs_add(ctx.kubo_rpc_url, v.content.clone())
+        crate::kubo::ipfs_add_bytes(ctx.kubo_rpc_url, v.content.clone())
             .await
             .context("ipfs add failed")?
     };

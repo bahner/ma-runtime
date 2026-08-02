@@ -5,16 +5,21 @@
 use anyhow::{anyhow, Result};
 use reqwest::multipart;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use std::sync::OnceLock;
 
 /// HTTP client with hard timeouts.  `dag/get` on a CID that is not in the
 /// local store makes Kubo search the network — without a client-side bound
 /// that request (and whatever task awaits it) would hang indefinitely.
-fn client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(5))
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new())
+pub(crate) fn client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    })
 }
 
 // ── Response types ────────────────────────────────────────────────────────────
@@ -45,6 +50,12 @@ struct NameResolveResponse {
     path_upper: String,
     #[serde(default, rename = "path")]
     path_lower: String,
+}
+
+#[derive(Deserialize)]
+struct AddResponse {
+    #[serde(rename = "Hash")]
+    hash: String,
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -122,6 +133,46 @@ pub async fn pin_update(kubo_url: &str, old_cid: &str, new_cid: &str) -> Result<
     Err(anyhow!("pin/update {old_cid} → {new_cid} failed: {body}"))
 }
 
+/// Add raw bytes to IPFS via Kubo and return the resulting CID.
+pub async fn ipfs_add_bytes(kubo_url: &str, data: Vec<u8>) -> Result<String> {
+    let base = kubo_url.trim_end_matches('/');
+    let url = format!("{base}/api/v0/add");
+
+    let part = multipart::Part::bytes(data).file_name("data");
+    let form = multipart::Form::new().part("file", part);
+
+    let body = client()
+        .post(url)
+        .query(&[("pin", "true")])
+        .multipart(form)
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+
+    let parsed: AddResponse = serde_json::from_str(&body)
+        .map_err(|e| anyhow!("failed parsing add response: {e} body={body}"))?;
+    Ok(parsed.hash)
+}
+
+/// Fetch raw bytes from IPFS through Kubo's `/cat` endpoint.
+pub async fn cat_bytes(kubo_url: &str, cid: &str) -> Result<Vec<u8>> {
+    let base = kubo_url.trim_end_matches('/');
+    let url = format!("{base}/api/v0/cat");
+
+    let bytes = client()
+        .post(url)
+        .query(&[("arg", cid)])
+        .send()
+        .await?
+        .error_for_status()?
+        .bytes()
+        .await?;
+
+    Ok(bytes.to_vec())
+}
+
 /// Fetch an IPLD node from Kubo and deserialise it from `dag-json`.
 pub async fn dag_get<T: DeserializeOwned>(kubo_url: &str, cid: &str) -> Result<T> {
     let base = kubo_url.trim_end_matches('/');
@@ -184,7 +235,9 @@ pub async fn name_resolve(kubo_url: &str, ipns_id: &str) -> Result<String> {
         .strip_prefix("/ipfs/")
         .map_or_else(|| path.trim().to_string(), ToString::to_string);
     if cid.is_empty() {
-        Err(anyhow!("name/resolve returned empty path for {arg}: {body}"))
+        Err(anyhow!(
+            "name/resolve returned empty path for {arg}: {body}"
+        ))
     } else {
         Ok(cid)
     }

@@ -16,9 +16,10 @@
 use std::{collections::HashMap, sync::Arc};
 
 use anyhow::{anyhow, Context, Result};
-use ma_core::{cat_bytes, ipfs_add};
 use tokio::sync::{mpsc::UnboundedSender, oneshot, RwLock};
 use tracing::{debug, info, warn};
+
+use crate::kubo::cat_bytes;
 
 use crate::entity::{
     CastInput, CreateEntityRequest, EntityNode, Evaluator, KindNode, Lifecycle, PluginKind,
@@ -594,7 +595,7 @@ impl EntityPlugin {
         };
 
         if let Some(bytes) = pending {
-            let cid = ipfs_add(kubo_url, bytes.clone())
+            let cid = crate::kubo::ipfs_add_bytes(kubo_url, bytes.clone())
                 .await
                 .map_err(|e| anyhow!("ipfs_add for '{}' state: {e}", self.fragment))?;
             self.mark_saved(bytes);
@@ -626,7 +627,7 @@ impl EntityPlugin {
         };
 
         if let Some(bytes) = pending {
-            let cid = ipfs_add(kubo_url, bytes.clone())
+            let cid = crate::kubo::ipfs_add_bytes(kubo_url, bytes.clone())
                 .await
                 .map_err(|e| anyhow!("ipfs_add for '{}' shutdown state: {e}", self.fragment))?;
             self.mark_saved(bytes);

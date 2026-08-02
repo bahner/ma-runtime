@@ -5,8 +5,8 @@ use std::sync::Arc;
 use anyhow::{anyhow, Context, Result};
 use ciborium::Value as CborValue;
 use ma_core::{
-    ipfs_add, Did, DidDocumentResolver, Ipld, SigningKey, CONTENT_TYPE_TERM,
-    MESSAGE_TYPE_RPC, MESSAGE_TYPE_RPC_REPLY,
+    Did, DidDocumentResolver, Ipld, SigningKey, CONTENT_TYPE_TERM, MESSAGE_TYPE_RPC,
+    MESSAGE_TYPE_RPC_REPLY,
 };
 use tracing::{debug, error, info, warn};
 
@@ -521,7 +521,7 @@ async fn handle_entity_plugin_message(
         let kubo_url = ctx.kubo_rpc_url.to_string();
         let writer = ctx.manifest_writer.clone();
         tokio::spawn(async move {
-            match ipfs_add(&kubo_url, state_bytes.clone()).await {
+            match crate::kubo::ipfs_add_bytes(&kubo_url, state_bytes.clone()).await {
                 Ok(cid) => match writer.set_entity_state(&entity_arc.fragment, &cid).await {
                     Ok(root_cid) => {
                         debug!(fragment = %entity_arc.fragment, %cid, %root_cid, "plugin state saved via ma_set_state");

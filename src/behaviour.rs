@@ -15,9 +15,8 @@
 //! reference-to-bytes resolver — nothing more.
 
 use anyhow::{anyhow, Context, Result};
-use ma_core::cat_bytes;
 
-use crate::kubo::dag_resolve;
+use crate::kubo::{cat_bytes, dag_resolve};
 
 /// Fetch `EntityNode.behaviour`'s content as raw bytes — a single, flat
 /// fetch, no scanning, no recursion. Used by `EntityPlugin::load` to

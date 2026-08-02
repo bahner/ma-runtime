@@ -28,7 +28,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
-use ma_core::{ipfs_add, CONTENT_TYPE_TERM, MESSAGE_TYPE_RPC};
+use ma_core::{CONTENT_TYPE_TERM, MESSAGE_TYPE_RPC};
 use tokio_cron_scheduler::{Job, JobScheduler};
 use tracing::{trace, warn};
 
@@ -416,7 +416,7 @@ pub async fn dispatch_scheduled(
 
     // Persist state if changed.
     if let Some(state_bytes) = result.pending_state {
-        match ipfs_add(&ctx.kubo_rpc_url, state_bytes.clone()).await {
+        match crate::kubo::ipfs_add_bytes(&ctx.kubo_rpc_url, state_bytes.clone()).await {
             Ok(_) => plugin.mark_saved(state_bytes),
             Err(e) => warn!(
                 fragment = %fragment,

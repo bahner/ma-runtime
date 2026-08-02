@@ -23,17 +23,17 @@ mod tests {
     async fn resolves_did_document_through_kubo_rpc() {
         let kubo = crate::testkubo::MockKubo::start().await;
         let did = ma_core::Did::new_identity("k51qzi5uqu5kuboresolver").unwrap();
-        let signing_key = SigningKey::generate(
-            ma_core::Did::new_url(did.ipns.clone(), Some("sign")).unwrap(),
-        )
-        .unwrap();
+        let signing_key =
+            SigningKey::generate(ma_core::Did::new_url(did.ipns.clone(), Some("sign")).unwrap())
+                .unwrap();
         let mut document = ma_core::Document::new(&did, &did);
         let vm = ma_core::VerificationMethod::try_from(&signing_key).unwrap();
         document.verification_method.push(vm.clone());
         document.assertion_method.push(vm.id.clone());
         document.sign(&signing_key, &vm).unwrap();
 
-        kubo.add_bytes_at(&did.ipns, document.encode().unwrap()).await;
+        kubo.add_bytes_at(&did.ipns, document.encode().unwrap())
+            .await;
         let resolver = KuboDidResolver::new(kubo.url().to_string());
 
         let resolved = resolver
@@ -70,12 +70,9 @@ impl DidDocumentResolver for KuboDidResolver {
     async fn resolve(&self, did: &str) -> ma_core::Result<Document> {
         self.resolve_via_kubo(did)
             .await
-            .map_err(|kubo_err| {
-                ma_core::Error::Resolution {
-                    did: did.to_string(),
-                    detail: format!("Kubo RPC failed: {kubo_err}"),
-                }
+            .map_err(|kubo_err| ma_core::Error::Resolution {
+                did: did.to_string(),
+                detail: format!("Kubo RPC failed: {kubo_err}"),
             })
     }
-
 }

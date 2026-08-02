@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use ciborium::Value as CborValue;
 use std::sync::Arc;
+use tokio::sync::Semaphore;
 use tracing::info;
 
 use crate::acl::check_full;
@@ -16,6 +17,10 @@ use super::CrudHandlerCtx;
 async fn reload_shutdown_timeout(ctx: &CrudHandlerCtx) -> std::time::Duration {
     let cfg = ctx.shared_config.read().await;
     super::config::wasm_reload_shutdown_timeout(&cfg)
+}
+
+fn single_entity_reload_gate() -> Arc<Semaphore> {
+    Arc::new(Semaphore::new(1))
 }
 
 // ── Management capability helpers ─────────────────────────────────────────────
@@ -211,6 +216,7 @@ async fn handle_single_entity(
                 ctx.manifest_writer.clone(),
                 runtime_config,
                 reload_shutdown_timeout,
+                single_entity_reload_gate(),
             );
             info!(name = %name, cid = %cid, "{}", crate::i18n::t("entity-created"));
             send_crud_ok_cid(message, reply_type, ctx, cid).await
@@ -340,6 +346,7 @@ async fn handle_entity_acl_field(
                 ctx.manifest_writer.clone(),
                 runtime_config,
                 reload_shutdown_timeout,
+                single_entity_reload_gate(),
             );
             info!(name = %name, acl_name = %acl_name, entity_cid = %entity_cid, "entity ACL name set");
             send_crud_ok_cid(message, reply_type, ctx, &entity_cid).await
@@ -362,6 +369,7 @@ async fn handle_entity_acl_field(
                 ctx.manifest_writer.clone(),
                 runtime_config,
                 reload_shutdown_timeout,
+                single_entity_reload_gate(),
             );
             info!(name = %name, entity_cid = %entity_cid, "entity ACL cleared");
             send_crud_ok_cid(message, reply_type, ctx, &entity_cid).await
