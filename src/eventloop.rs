@@ -17,7 +17,7 @@ use ma_core::{
     MESSAGE_TYPE_RPC_REPLY,
 };
 use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Semaphore};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 use zeroize::Zeroize;
@@ -33,7 +33,9 @@ use crate::routing::{local_actor_url, local_target_fragment};
 use crate::status::SharedStats;
 use crate::{bootstrap, crud, i18n, inbox, ipfs, rpc, status};
 
-const PLUGIN_OUTBOX_DRAIN_BUDGET: usize = 256;
+const PLUGIN_OUTBOX_DRAIN_BUDGET: usize = 64;
+const LOCAL_PLUGIN_DISPATCH_LIMIT: usize = 16;
+const REMOTE_PLUGIN_DELIVERY_LIMIT: usize = 16;
 
 #[derive(Clone)]
 struct LocalSideEffectCtx {
@@ -304,7 +306,7 @@ async fn dispatch_local_plugin_envelope(
                     std::collections::BTreeMap::new()
                 });
 
-            match crate::plugin::EntityPlugin::load(
+            match crate::plugin::EntityPlugin::load_with_fibonacci_backoff(
                 req.fragment.clone(),
                 &entity_node,
                 &kind_node,
@@ -410,6 +412,8 @@ pub async fn run(
 ) -> Result<()> {
     let mut ticker = tokio::time::interval(Duration::from_millis(poll_ms));
     let mut ctrl_c = Box::pin(tokio::signal::ctrl_c());
+    let local_plugin_dispatch_gate = Arc::new(Semaphore::new(LOCAL_PLUGIN_DISPATCH_LIMIT));
+    let remote_plugin_delivery_gate = Arc::new(Semaphore::new(REMOTE_PLUGIN_DELIVERY_LIMIT));
 
     loop {
         tokio::select! {
@@ -548,19 +552,17 @@ pub async fn run(
                             envelope_tx: envelope_tx.clone(),
                             manifest_writer: manifest_writer.clone(),
                         };
-                        tokio::spawn(async move {
-                            if let Err(err) = tokio::time::timeout(
-                                Duration::from_secs(30),
-                                crud::handle_crud_message(&message, &acl_snapshot, &ctx),
-                            )
-                            .await
-                            .unwrap_or_else(|_| Err(anyhow::anyhow!("crud handler timed out")))
-                            {
-                                warn!(error = %err, from = %message.from, "CRUD message rejected");
-                            }
-                            message.content.zeroize();
-                            message.signature.zeroize();
-                        });
+                        if let Err(err) = tokio::time::timeout(
+                            Duration::from_secs(30),
+                            crud::handle_crud_message(&message, &acl_snapshot, &ctx),
+                        )
+                        .await
+                        .unwrap_or_else(|_| Err(anyhow::anyhow!("crud handler timed out")))
+                        {
+                            warn!(error = %err, from = %message.from, "CRUD message rejected");
+                        }
+                        message.content.zeroize();
+                        message.signature.zeroize();
                     }
                 }
 
@@ -629,7 +631,12 @@ pub async fn run(
                             stats: stats.clone(),
                             shared_config: Arc::clone(&shared_config),
                         };
+                        let Ok(permit) = local_plugin_dispatch_gate.clone().try_acquire_owned() else {
+                            debug!(fragment = %fragment, target = %target_fragment, limit = LOCAL_PLUGIN_DISPATCH_LIMIT, "plugin envelope: local dispatch limit reached; envelope dropped");
+                            continue;
+                        };
                         tokio::spawn(async move {
+                            let _permit = permit;
                             if tokio::time::timeout(
                                 Duration::from_secs(30),
                                 dispatch_local_plugin_envelope(
@@ -688,7 +695,12 @@ pub async fn run(
                     let kubo_url = kubo_url.clone();
                     let our_did = our_did.clone();
                     let failed_envelope = env.clone();
+                    let Ok(permit) = remote_plugin_delivery_gate.clone().try_acquire_owned() else {
+                        debug!(fragment = %fragment, to = %env.to, limit = REMOTE_PLUGIN_DELIVERY_LIMIT, "plugin envelope: remote delivery limit reached; envelope dropped");
+                        continue;
+                    };
                     tokio::spawn(async move {
+                        let _permit = permit;
                         let outbox_result = if let Some(doc_cache) = doc_cache {
                             ipfs::open_outbox_for_did(&ep, &res, &doc_cache, &recipient, protocol)
                                 .await

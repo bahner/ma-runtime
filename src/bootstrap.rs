@@ -771,7 +771,7 @@ struct LoadedEntity {
 
 async fn load_wasm_entity(args: LoadEntityArgs<'_>) -> Option<LoadedEntity> {
     let init_payload = args.node.init.as_ref().map(|s| s.as_bytes().to_vec());
-    match plugin::EntityPlugin::load(
+    match plugin::EntityPlugin::load_with_fibonacci_backoff(
         args.name.to_string(),
         args.node,
         args.kind_node,

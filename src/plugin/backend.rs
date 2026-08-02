@@ -9,10 +9,10 @@
 use anyhow::{anyhow, Result};
 use extism::{host_fn, Function, Manifest, Plugin, PluginBuilder, UserData, Wasm, PTR};
 use tokio::sync::{
-    mpsc::{Receiver, Sender},
+    mpsc::{Receiver, Sender, error::TrySendError},
     oneshot,
 };
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::entity::{
     CastInput, CreateEntityRequest, Lifecycle, ReplyRequest, SendEnvelope, SetBehaviourRequest,
@@ -44,6 +44,17 @@ struct OutboxCtx {
     fragment: String,
 }
 
+fn enqueue_plugin_envelope(ctx: &OutboxCtx, envelope: SendEnvelope) -> Result<()> {
+    match ctx.tx.try_send((ctx.fragment.clone(), envelope)) {
+        Ok(()) => Ok(()),
+        Err(TrySendError::Full(_)) => {
+            debug!(fragment = %ctx.fragment, "plugin outbox full; fire-and-forget envelope dropped");
+            Ok(())
+        }
+        Err(TrySendError::Closed(_)) => Err(anyhow!("plugin outbox is closed")),
+    }
+}
+
 // `ma_send` host function exposed to plugins (namespace `extism:host/user`).
 //
 // The plugin passes a CBOR-encoded `SendEnvelope`.  The host forwards it
@@ -52,9 +63,7 @@ host_fn!(ma_send_fn(user_data: OutboxCtx; input: Vec<u8>) -> Vec<u8> {
     let envelope: SendEnvelope = from_cbor_bytes(&input)?;
     let arc = user_data.get()?;
     let ctx = arc.lock().unwrap();
-    ctx.tx
-        .try_send((ctx.fragment.clone(), envelope))
-        .map_err(|e| anyhow!("plugin outbox is full: {e}"))?;
+    enqueue_plugin_envelope(&ctx, envelope)?;
     drop(ctx);
     Ok(Vec::new())
 });
@@ -77,9 +86,7 @@ host_fn!(ma_reply_fn(user_data: OutboxCtx; input: Vec<u8>) -> Vec<u8> {
     };
     let arc = user_data.get()?;
     let ctx = arc.lock().unwrap();
-    ctx.tx
-        .try_send((ctx.fragment.clone(), envelope))
-        .map_err(|e| anyhow!("plugin outbox is full: {e}"))?;
+    enqueue_plugin_envelope(&ctx, envelope)?;
     drop(ctx);
     Ok(Vec::new())
 });

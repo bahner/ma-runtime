@@ -11,7 +11,7 @@ use ma_core::{
     CONTENT_TYPE_TERM_YAML,
 };
 use tokio::sync::Semaphore;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::entity::{EntityNode, KindNode, RuntimeManifest};
 
@@ -468,7 +468,7 @@ pub(super) fn spawn_entity_reload(
         }
 
         let init_payload = entity_node.init.as_ref().map(|s| s.as_bytes().to_vec());
-        match crate::plugin::EntityPlugin::load(
+        match crate::plugin::EntityPlugin::load_with_fibonacci_backoff(
             name.clone(),
             &entity_node,
             &kind_node,
@@ -486,7 +486,11 @@ pub(super) fn spawn_entity_reload(
             Ok((ep, lifecycle)) => {
                 if lifecycle == crate::entity::Lifecycle::Error && had_current_entity {
                     let reason = "plugin lifecycle returned error during reload";
-                    warn!(name = %name, "{reason}; keeping current plugin");
+                    error!(name = %name, reason, "entity failed to reload; unloading until next reload");
+                    entity_registry.write().await.remove(&name);
+                    if let Some(current) = current_entity {
+                        current.terminate_worker();
+                    }
                     mark_entity_reload_failed(&manifest_writer, &name, reason).await;
                     return;
                 }
@@ -546,12 +550,15 @@ pub(super) fn spawn_entity_reload(
             }
             Err(e) => {
                 let reason = format!("failed to load entity plugin: {e}");
-                warn!(
+                error!(
                     name = %name,
                     error = %e,
-                    "{}",
-                    crate::i18n::t("entity-load-failed")
+                    "entity failed to reload; unloading until next reload"
                 );
+                entity_registry.write().await.remove(&name);
+                if let Some(current) = current_entity {
+                    current.terminate_worker();
+                }
                 mark_entity_reload_failed(&manifest_writer, &name, &reason).await;
             }
         }

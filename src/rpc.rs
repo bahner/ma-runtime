@@ -162,7 +162,7 @@ async fn apply_behaviour_request(req: SetBehaviourRequest, ctx: &RpcHandlerCtx) 
         warn!(error = %e, "ma_set_behaviour: failed to build public plugin config; continuing with entity-local config only");
         std::collections::BTreeMap::new()
     });
-    let (plugin, lifecycle) = crate::plugin::EntityPlugin::load(
+    let (plugin, lifecycle) = crate::plugin::EntityPlugin::load_with_fibonacci_backoff(
         req.fragment.clone(),
         &updated_node,
         &kind_node,

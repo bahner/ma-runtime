@@ -30,6 +30,7 @@ mod backend;
 use backend::{run_native_thread, run_wasm_thread, WasmThreadCfg};
 
 const ENTITY_MAILBOX_CAPACITY: usize = 64;
+const ENTITY_LOAD_BACKOFF_SECS: &[u64] = &[1, 1, 2, 3, 5];
 
 // ── Actor thread model ────────────────────────────────────────────────────────
 //
@@ -472,6 +473,83 @@ impl EntityPlugin {
             tx,
         };
         Ok((ep, lifecycle))
+    }
+
+    /// Retry fatal plugin-load failures with a bounded Fibonacci backoff.
+    ///
+    /// A malformed or temporarily unavailable entity must not trigger a tight
+    /// reload loop. After the final attempt, callers should persist the load
+    /// error and leave the entity unloaded until the next explicit reload.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn load_with_fibonacci_backoff(
+        fragment: impl Into<String>,
+        node: &EntityNode,
+        kind_node: &KindNode,
+        our_did: &str,
+        kubo_url: &str,
+        envelope_tx: Sender<(String, SendEnvelope)>,
+        entity_registry: EntityRegistry,
+        iroh_node_id: &str,
+        started_at: u64,
+        runtime_config: std::collections::BTreeMap<String, String>,
+        init_payload: Option<Vec<u8>>,
+    ) -> Result<(Self, Lifecycle)> {
+        let fragment = fragment.into();
+        let mut last_error = None;
+
+        for (attempt_idx, delay_secs) in ENTITY_LOAD_BACKOFF_SECS.iter().copied().enumerate() {
+            match Self::load(
+                fragment.clone(),
+                node,
+                kind_node,
+                our_did,
+                kubo_url,
+                envelope_tx.clone(),
+                entity_registry.clone(),
+                iroh_node_id,
+                started_at,
+                runtime_config.clone(),
+                init_payload.clone(),
+            )
+            .await
+            {
+                Ok(loaded) => return Ok(loaded),
+                Err(err) => {
+                    warn!(
+                        fragment = %fragment,
+                        attempt = attempt_idx + 1,
+                        max_attempts = ENTITY_LOAD_BACKOFF_SECS.len() + 1,
+                        delay_secs,
+                        error = %err,
+                        "entity plugin load failed; retrying after Fibonacci backoff"
+                    );
+                    last_error = Some(err);
+                    tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+                }
+            }
+        }
+
+        Self::load(
+            fragment,
+            node,
+            kind_node,
+            our_did,
+            kubo_url,
+            envelope_tx,
+            entity_registry,
+            iroh_node_id,
+            started_at,
+            runtime_config,
+            init_payload,
+        )
+        .await
+        .map_err(|err| {
+            if let Some(previous) = last_error {
+                err.context(format!("previous load error after backoff: {previous}"))
+            } else {
+                err
+            }
+        })
     }
 
     /// Dispatch to the `on_message` export. Threads state in/out around the
