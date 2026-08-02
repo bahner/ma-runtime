@@ -13,6 +13,7 @@
 //! Extism) or which path the closure takes (for Native) — the Wasm export
 //! called is always `on_message`, regardless of statefulness.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::{collections::HashMap, sync::Arc};
 
 use anyhow::{anyhow, Context, Result};
@@ -20,6 +21,7 @@ use tokio::sync::{mpsc::Sender, oneshot, RwLock};
 use tracing::{debug, info, warn};
 
 use crate::kubo::cat_bytes;
+use crate::manifest::ManifestWriter;
 
 use crate::entity::{
     CastInput, CreateEntityRequest, EntityNode, Evaluator, KindNode, Lifecycle, PluginKind,
@@ -195,6 +197,8 @@ pub struct EntityPlugin {
     pub parent: Option<String>,
     /// `true` for compiled-in native entities (e.g. `#scheduler`).
     native: bool,
+    /// True while a background state persist loop is active for this entity.
+    state_persist_in_flight: AtomicBool,
     /// Channel to the entity's dedicated worker thread.
     tx: Sender<EntityMsg>,
 }
@@ -239,6 +243,7 @@ impl EntityPlugin {
             acl: node.acl.clone(),
             parent: node.parent.clone(),
             native: true,
+            state_persist_in_flight: AtomicBool::new(false),
             tx,
         };
         Ok((ep, Lifecycle::Running))
@@ -1020,6 +1025,7 @@ mod hostile {
             read_lambda_ma_text(&lambda_ma_dir, "scheme-actor/stdlib.ma")?,
             read_lambda_ma_text(&lambda_ma_dir, "scheme-actor/actor.ma")?,
             read_lambda_ma_text(&lambda_ma_dir, "scheme-actor/state.ma")?,
+            read_lambda_ma_text(&lambda_ma_dir, "scheme-actor/node.ma")?,
             read_lambda_ma_text(&lambda_ma_dir, "actors/agent.ma")?,
             read_lambda_ma_text(&lambda_ma_dir, "actors/duck.ma")?,
         ]

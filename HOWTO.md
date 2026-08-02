@@ -347,7 +347,7 @@ If the runtime is already running and reachable over CRUD, apply the same CID
 live instead of restarting:
 
 ```text
-@runtime/kinds: /ipfs/<printed-kinds-cid>
+@runtime/kinds: <printed-kinds-cid>
 ```
 
 Kinds are the most important architectural decision in your runtime.  A
