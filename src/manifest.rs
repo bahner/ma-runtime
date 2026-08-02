@@ -3,7 +3,7 @@
 //! Every runtime-phase mutation of the IPFS [`RuntimeManifest`] goes through a
 //! single [`ManifestWriter`].  It owns the authoritative root CID behind an
 //! async mutex, so the read-modify-write cycle (`dag_get` → mutate → `dag_put` →
-//! local and optional remote pin replacement) is serialised.
+//! local pin replacement) is serialised.
 //!
 //! This eliminates the last-writer-wins race that occurred when concurrent CRUD
 //! sets and `ma_create_entity` calls each read the same old root CID and raced
@@ -20,10 +20,10 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
-use ma_core::config::{Config, RemotePinConfig};
+use anyhow::Result;
+use ma_core::config::Config;
 use tokio::sync::{Mutex, MutexGuard, RwLock};
-use tracing::{error, info, warn};
+use tracing::warn;
 
 use crate::entity::{EntityNode, IpldLink, RuntimeManifest};
 use crate::status::SharedStats;
@@ -44,19 +44,6 @@ struct Inner {
     stats: SharedStats,
     config_path: Option<PathBuf>,
     shared_config: Option<Arc<RwLock<Config>>>,
-}
-
-impl Inner {
-    async fn remote_pin_config(&self) -> Result<Option<RemotePinConfig>> {
-        let Some(shared_config) = self.shared_config.as_ref() else {
-            return Ok(None);
-        };
-        let config = shared_config.read().await;
-        let default_name = crate::bootstrap::default_remote_root_pin_name(&config.slug);
-        config
-            .remote_pin_config_with_default_name(default_name)
-            .context("remote root pinning is misconfigured")
-    }
 }
 
 impl ManifestWriter {
@@ -104,8 +91,6 @@ impl ManifestWriter {
     ) -> Result<String> {
         let inner = &self.inner;
         let new_cid = crate::kubo::dag_put(&inner.kubo_url, manifest).await?;
-        self.replace_remote_root_pin(Some(&old_cid), &new_cid)
-            .await?;
         if let Err(e) = crate::kubo::pin_update(&inner.kubo_url, &old_cid, &new_cid).await {
             warn!(old = %old_cid, new = %new_cid, error = %e, "manifest pin_update failed");
         }
@@ -114,47 +99,6 @@ impl ManifestWriter {
         inner.stats.write().await.root_cid = Some(new_cid.clone());
         self.persist_root_cid(&new_cid).await;
         Ok(new_cid)
-    }
-
-    async fn replace_remote_root_pin(&self, old_cid: Option<&str>, new_cid: &str) -> Result<()> {
-        let inner = &self.inner;
-        let Some(remote) = inner.remote_pin_config().await? else {
-            return Ok(());
-        };
-        match ma_core::remote_pin_replace(&inner.kubo_url, &remote, old_cid, new_cid).await {
-            Ok(outcome) => {
-                if let Some(error) = outcome.previous_remove_error {
-                    warn!(
-                        old = old_cid.unwrap_or(""),
-                        new = %new_cid,
-                        service = %remote.service,
-                        name = %remote.name,
-                        error = %error,
-                        "remote root pin replacement left the previous pin in place"
-                    );
-                } else {
-                    info!(
-                        old = old_cid.unwrap_or(""),
-                        new = %new_cid,
-                        service = %remote.service,
-                        name = %remote.name,
-                        "remote root pin replaced"
-                    );
-                }
-                Ok(())
-            }
-            Err(err) => {
-                error!(
-                    old = old_cid.unwrap_or(""),
-                    new = %new_cid,
-                    service = %remote.service,
-                    name = %remote.name,
-                    error = %err,
-                    "remote root pin replacement failed"
-                );
-                Err(err).context("remote root pin replacement failed")
-            }
-        }
     }
 
     /// Apply `f` to the current manifest, publish it, swap the pin, and return
@@ -550,7 +494,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_remote_root_pin_does_not_advance_root() {
+    async fn remote_root_pin_config_does_not_block_manifest_commit() {
         let kubo = MockKubo::start().await;
         let (initial, stats) = seed(&kubo).await;
         let config = ma_core::Config {
@@ -585,13 +529,13 @@ mod tests {
             })
             .await;
 
-        assert!(result.is_err());
+        let new_root = result.unwrap();
         assert_eq!(
             stats.read().await.root_cid.as_deref(),
-            Some(initial.as_str()),
-            "a failed remote root pin must not advance the root CID"
+            Some(new_root.as_str()),
+            "remote root pin configuration must not block local manifest commits"
         );
-        let manifest: RuntimeManifest = crate::kubo::dag_get(kubo.url(), &initial).await.unwrap();
-        assert!(manifest.entities.is_empty());
+        let manifest: RuntimeManifest = crate::kubo::dag_get(kubo.url(), &new_root).await.unwrap();
+        assert!(manifest.entities.contains_key("room"));
     }
 }

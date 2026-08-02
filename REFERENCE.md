@@ -252,7 +252,10 @@ Recommended runtime model:
 - Runtime head CID is read from `root_cid` in `config.yaml` at startup, falling
   back to runtime IPNS if the config key is absent.
 - Runtime manifest mutations update `root_cid` in `config.yaml` as the head
-  advances.
+  advances. They do not replace the configured remote root pin or publish the
+  runtime IPNS name on every change.
+- Publish the current root explicitly with `@runtime#root:publish`, or rely on
+  the configured periodic republish interval.
 - `--root-cid <cid>` overrides both config and IPNS, and the selected head is
   written back to `config.yaml`.
 
@@ -729,8 +732,10 @@ status_cors_allowed_origins:
   `name/publish` request budget used by the shared IPNS publish helper.
 - DID outbox resolution uses `did_resolve_attempts` raced attempts. Each
   attempt has its own `did_resolve_attempt_timeout_secs` budget.
-- The runtime root manifest is published on startup, on clean shutdown, on the
-  periodic interval above, and when an owner sends `:publish` to `#root`.
+- Runtime manifest changes advance the local root CID immediately. The current
+  root CID is advertised through runtime IPNS on the periodic interval above and
+  when an owner sends `:publish` to `#root`; clean shutdown also attempts one
+  final runtime IPNS publish.
 
 ---
 

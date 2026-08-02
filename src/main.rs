@@ -410,12 +410,10 @@ async fn main() -> Result<()> {
     }
 
     if let (Some(rc), Some(kinds_cid)) = (root_cid.as_deref(), cli.kinds_cid.as_deref()) {
-        let remote_pin = bootstrap::runtime_remote_pin_config(&config);
         let result = bootstrap::apply_kinds_overlay(
             rc,
             kinds_cid,
             &config.kubo_rpc_url,
-            remote_pin.as_ref(),
         )
         .await
         .context("applying kinds CID overlay failed")?;

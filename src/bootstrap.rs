@@ -259,7 +259,6 @@ pub async fn apply_kinds_overlay(
     root_cid: &str,
     kinds_cid: &str,
     kubo_url: &str,
-    remote_pin: Option<&RemotePinConfig>,
 ) -> Result<KindsOverlayResult> {
     let mut manifest: RuntimeManifest = kubo::dag_get(kubo_url, root_cid)
         .await
@@ -278,7 +277,6 @@ pub async fn apply_kinds_overlay(
     let new_root_cid = kubo::dag_put(kubo_url, &manifest)
         .await
         .context("dag_put root manifest after kinds overlay")?;
-    replace_remote_root_pin(kubo_url, remote_pin, Some(root_cid), &new_root_cid).await?;
     if let Err(e) = kubo::pin_update(kubo_url, root_cid, &new_root_cid).await {
         tracing::warn!(old = %root_cid, new = %new_root_cid, error = %e, "pin/update failed after kinds overlay");
     }
@@ -659,21 +657,10 @@ pub async fn load_entities(
         return (loaded, None);
     }
 
-    // Publish updated manifest and swap pin.
+    // Publish updated manifest and swap the local root pin. Remote publication
+    // is handled by explicit `#root:publish` or the periodic republish task.
     match kubo::dag_put(kubo_url, &manifest).await {
         Ok(new_root) => {
-            let remote_pin = runtime_remote_pin_config(daemon_config);
-            if let Err(e) = replace_remote_root_pin(
-                kubo_url,
-                remote_pin.as_ref(),
-                Some(root_cid),
-                &new_root,
-            )
-            .await
-            {
-                tracing::error!(root_cid = %new_root, error = %e, "Failed to replace remote root pin after lifecycle transitions");
-                return (loaded, None);
-            }
             if let Err(e) = kubo::pin_update(kubo_url, root_cid, &new_root).await {
                 tracing::warn!(old = %root_cid, new = %new_root, error = %e, "pin/update failed after lifecycle persist");
             }
@@ -1072,7 +1059,7 @@ mod tests {
         overlay.insert_protocol("/ma/test/0.0.1", IpldLink::new(&new_kind_cid));
         let kinds_cid = crate::kubo::dag_put(kubo.url(), &overlay).await.unwrap();
 
-        let result = apply_kinds_overlay(&root_cid, &kinds_cid, kubo.url(), None)
+        let result = apply_kinds_overlay(&root_cid, &kinds_cid, kubo.url())
             .await
             .unwrap();
         assert_eq!(result.changed_protocols, vec!["/ma/test/0.0.1"]);
