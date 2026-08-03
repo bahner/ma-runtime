@@ -920,13 +920,8 @@ mod tests {
             root_cid: Some(initial_root.clone()),
             ..Default::default()
         }));
-        let manifest_writer = ManifestWriter::new(
-            initial_root,
-            kubo.url().to_string(),
-            stats.clone(),
-            None,
-            None,
-        );
+        let manifest_writer =
+            ManifestWriter::new(initial_root, kubo.url().to_string(), stats.clone());
 
         let mut scheduler_acl = AclMap::new();
         scheduler_acl.insert("*".to_string(), CapabilityEntry::from_caps([":help"]));

@@ -208,9 +208,9 @@ Setting `i18n` via `:config.i18n: nb` takes effect immediately (calls
 `switch_lang()` to reload FTL translations in memory) and persists to IPFS.
 
 Startup head resolution order is `--root-cid`, `--bootstrap`, `root_cid` from
-`config.yaml`, then runtime IPNS. Any head found or produced at startup is
-written back to `config.yaml`; runtime manifest mutations keep `root_cid` in
-the in-memory config and YAML file in sync.
+`config.yaml`, then runtime IPNS. Runtime manifest mutations advance the
+in-memory head without rewriting `config.yaml`; the current `root_cid` is
+saved after a successful periodic republish and during graceful shutdown.
 
 ### IPFS publisher toggle
 

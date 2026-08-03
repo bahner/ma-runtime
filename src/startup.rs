@@ -103,19 +103,10 @@ pub fn select_root_cid(
     Ok(config_root_cid)
 }
 
-pub fn persist_root_cid_to_config(path: &Path, root_cid: &str) -> Result<()> {
-    let yaml_text = if path.exists() {
-        std::fs::read_to_string(path)?
-    } else {
-        String::new()
-    };
-    let yaml_to_parse = if yaml_text.trim().is_empty() {
-        "{}".to_string()
-    } else {
-        yaml_text
-    };
-    let mut config = Config::from_yaml_str(&yaml_to_parse)?;
-    config.config_path = Some(path.to_path_buf());
+pub fn persist_root_cid(config: &mut Config, root_cid: &str) -> Result<()> {
+    if root_cid_setting(config).as_deref() == Some(root_cid) {
+        return Ok(());
+    }
     config.extra.insert(
         serde_yaml::Value::String("root_cid".to_string()),
         serde_yaml::Value::String(root_cid.to_string()),
@@ -245,7 +236,7 @@ pub fn runtime_manifest_config(
 #[cfg(test)]
 mod tests {
     use super::{
-        persist_root_cid_to_config, root_cid_setting, runtime_manifest_config, select_root_cid,
+        persist_root_cid, root_cid_setting, runtime_manifest_config, select_root_cid,
         should_generate_headless_config,
     };
 
@@ -281,7 +272,12 @@ mod tests {
         )
         .unwrap();
 
-        persist_root_cid_to_config(&path, "bafyroot").unwrap();
+        let mut config = ma_core::config::Config::from_yaml_str(
+            "owners:\n  - did:ma:alice\ni18n: art-x-lyaric\nlog_level: info\n",
+        )
+        .unwrap();
+        config.config_path = Some(path.clone());
+        persist_root_cid(&mut config, "bafyroot").unwrap();
 
         let saved = std::fs::read_to_string(&path).unwrap();
         let config = ma_core::config::Config::from_yaml_str(&saved).unwrap();
@@ -294,6 +290,24 @@ mod tests {
             config.extra.get("owners"),
             Some(serde_yaml::Value::Sequence(_))
         ));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn does_not_rewrite_config_when_root_cid_is_unchanged() {
+        let path = std::env::temp_dir().join(format!(
+            "ma-runtime-unchanged-root-cid-test-{}.yaml",
+            std::process::id()
+        ));
+        let original = "# Keep this comment and formatting.\nroot_cid: bafyroot\nlog_level: info\n";
+        std::fs::write(&path, original).unwrap();
+
+        let mut config = ma_core::config::Config::from_yaml_str(original).unwrap();
+        config.config_path = Some(path.clone());
+        persist_root_cid(&mut config, "bafyroot").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
 
         let _ = std::fs::remove_file(path);
     }

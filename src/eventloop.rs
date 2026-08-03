@@ -791,6 +791,12 @@ pub async fn run(
                     }
 
                     let latest_root_cid = stats.read().await.root_cid.clone().unwrap_or_else(|| rc.clone());
+                    {
+                        let mut config = shared_config.write().await;
+                        if let Err(err) = crate::startup::persist_root_cid(&mut config, &latest_root_cid) {
+                            error!(root_cid = %latest_root_cid, error = %err, "failed to persist root_cid during shutdown");
+                        }
+                    }
                     match tokio::time::timeout(
                         Duration::from_secs(did_publish_timeout_secs),
                         ipfs::publish_runtime_root_cid(

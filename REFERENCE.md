@@ -256,18 +256,20 @@ make release
 ```
 
 Recommended runtime model:
+
 - Runtime head CID is read from `root_cid` in `config.yaml` at startup, falling
   back to runtime IPNS if the config key is absent.
-- Runtime manifest mutations update `root_cid` in `config.yaml` as the head
-  advances. They do not replace the configured remote root pin or publish the
-  runtime IPNS name on every change.
+- Runtime manifest mutations advance the head in memory without rewriting
+  `config.yaml`. The current head is saved after a successful periodic
+  republish and during graceful shutdown.
 - Publish the current root explicitly with `@runtime#root:publish`, or rely on
   the configured periodic republish interval.
-- `--root-cid <cid>` overrides both config and IPNS, and the selected head is
-  written back to `config.yaml`.
+- `--root-cid <cid>` overrides both config and IPNS for the running process.
 
 Warning for `--root-cid`:
-- It immediately resets runtime head and persists that reset to `config.yaml`.
+
+- It resets the runtime head; the reset is persisted at the next successful
+  periodic republish or graceful shutdown.
 - If you pass the wrong CID, retrieve the previous CID from runtime logs and restart with that value.
 
 On subsequent starts, the daemon restores runtime head from `config.yaml`, with

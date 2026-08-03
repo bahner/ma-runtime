@@ -538,8 +538,7 @@ mod tests {
             root_cid: Some(root_cid.clone()),
             ..Default::default()
         }));
-        let manifest_writer =
-            ManifestWriter::new(root_cid, kubo.url().to_string(), stats.clone(), None, None);
+        let manifest_writer = ManifestWriter::new(root_cid, kubo.url().to_string(), stats.clone());
 
         let kind_registry = new_kind_registry();
         kind_registry
@@ -679,8 +678,7 @@ mod tests {
             root_cid: Some(root_cid.clone()),
             ..Default::default()
         }));
-        let manifest_writer =
-            ManifestWriter::new(root_cid, kubo.url().to_string(), stats.clone(), None, None);
+        let manifest_writer = ManifestWriter::new(root_cid, kubo.url().to_string(), stats.clone());
 
         let kind_registry = new_kind_registry();
         kind_registry

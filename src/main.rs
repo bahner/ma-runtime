@@ -35,8 +35,8 @@ use tracing::{error, info, warn};
 
 use startup::{
     get_bool_setting, get_u64_setting, load_secret_bundle,
-    materialise_plugin_envelope_queue_capacity, persist_root_cid_to_config,
-    runtime_manifest_config, select_root_cid, should_generate_headless_config,
+    materialise_plugin_envelope_queue_capacity, runtime_manifest_config, select_root_cid,
+    should_generate_headless_config,
 };
 
 const MA_DEFAULT_SLUG: &str = "ma";
@@ -515,12 +515,6 @@ async fn main() -> Result<()> {
         }
     }
 
-    if let (Some(ref path), Some(ref rc)) = (&config.config_path, &root_cid) {
-        if let Err(e) = persist_root_cid_to_config(path, rc) {
-            warn!(root_cid = %rc, error = %e, "failed to persist root_cid to config.yaml");
-        }
-    }
-
     // ── Load named ACLs and groups into cache ──────────────────────────────────
     let acl_cache = acl::new_acl_cache();
     let group_cache = acl::new_group_cache();
@@ -661,8 +655,6 @@ async fn main() -> Result<()> {
     }));
 
     // Shared daemon config (enables runtime RPC writes + config.yaml save-back).
-    // Keep this alive before the manifest writer is created so every runtime
-    // head mutation updates both the in-memory config and config.yaml.
     let shared_config: std::sync::Arc<tokio::sync::RwLock<Config>> =
         std::sync::Arc::new(tokio::sync::RwLock::new(config.clone()));
 
@@ -674,8 +666,6 @@ async fn main() -> Result<()> {
         root_cid.clone().unwrap_or_default(),
         config.kubo_rpc_url.clone(),
         stats.clone(),
-        config.config_path.clone(),
-        Some(Arc::clone(&shared_config)),
     );
     *scheduler_manifest_writer.write().await = Some(manifest_writer.clone());
 
@@ -733,6 +723,7 @@ async fn main() -> Result<()> {
         .ok_or_else(|| anyhow!("secret_bundle_passphrase is required for periodic DID publish"))?;
     republish::spawn_periodic_did_publish(
         stats.clone(),
+        Arc::clone(&shared_config),
         config.kubo_rpc_url.clone(),
         config.slug.clone(),
         ma_base.clone(),

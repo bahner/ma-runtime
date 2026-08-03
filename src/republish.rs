@@ -9,8 +9,9 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use cid::Cid;
-use ma_core::config::SecretBundle;
+use ma_core::config::{Config, SecretBundle};
 use ma_core::{Ipld, MaExtension};
+use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
 use crate::ipfs;
@@ -18,6 +19,7 @@ use crate::status::SharedStats;
 
 struct PeriodicDidPublishContext {
     stats: SharedStats,
+    shared_config: std::sync::Arc<RwLock<Config>>,
     kubo_url: String,
     runtime_slug: String,
     ma_base: MaExtension,
@@ -33,6 +35,7 @@ struct PeriodicDidPublishContext {
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_periodic_did_publish(
     refresh_stats: SharedStats,
+    refresh_config: std::sync::Arc<RwLock<Config>>,
     refresh_kubo_url: String,
     refresh_runtime_slug: String,
     refresh_ma_base: MaExtension,
@@ -47,6 +50,7 @@ pub fn spawn_periodic_did_publish(
     tokio::spawn(async move {
         let context = PeriodicDidPublishContext {
             stats: refresh_stats,
+            shared_config: refresh_config,
             kubo_url: refresh_kubo_url,
             runtime_slug: refresh_runtime_slug,
             ma_base: refresh_ma_base,
@@ -74,6 +78,10 @@ pub fn spawn_periodic_did_publish(
                 continue;
             }
             if publish_current_root(&context, &latest_root_cid, cid_changed).await {
+                let mut config = context.shared_config.write().await;
+                if let Err(err) = crate::startup::persist_root_cid(&mut config, &latest_root_cid) {
+                    warn!(root_cid = %latest_root_cid, error = %err, "failed to persist root_cid after periodic republish");
+                }
                 last_published_cid = Some(latest_root_cid);
                 last_published_at = Instant::now();
             }

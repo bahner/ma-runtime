@@ -628,8 +628,7 @@ mod reload_tests {
             root_cid: Some(root_cid.clone()),
             ..Default::default()
         }));
-        let manifest_writer =
-            ManifestWriter::new(root_cid, kubo.url().to_string(), stats.clone(), None, None);
+        let manifest_writer = ManifestWriter::new(root_cid, kubo.url().to_string(), stats.clone());
 
         let pending_state = Arc::new(Mutex::new(Some(
             br#"{"children":{"did:ma:test#lamp":{"kind":"thing"}}}"#.to_vec(),
