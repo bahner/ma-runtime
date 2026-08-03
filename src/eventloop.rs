@@ -448,6 +448,9 @@ pub async fn run(
 
                 // Drain /ma/rpc/0.0.1
                 while let Some(mut message) = rpc_messages.pop(now) {
+                    if let Some(doc_cache) = &shared_doc_cache {
+                        ipfs::record_inbound_contact(doc_cache, &message.from).await;
+                    }
                     debug!(
                         node = %message.from,
                         protocol = rpc::RPC_PROTOCOL_ID,
@@ -504,6 +507,7 @@ pub async fn run(
                 // Drain /ma/ipfs/0.0.1
                 if let Some(ref mut ipfs) = ipfs_state {
                     while let Some(mut message) = ipfs.messages.pop(now) {
+                        ipfs::record_inbound_contact(&ipfs.doc_cache, &message.from).await;
                         debug!(
                             node = %message.from,
                             protocol = IPFS_PROTOCOL_ID,
@@ -553,6 +557,9 @@ pub async fn run(
                 // Drain /ma/crud/0.0.1
                 if let Some(ref mut crud_inbox) = crud_messages {
                     while let Some(mut message) = crud_inbox.pop(now) {
+                        if let Some(doc_cache) = &shared_doc_cache {
+                            ipfs::record_inbound_contact(doc_cache, &message.from).await;
+                        }
                         info!(
                             from = %message.from,
                             to = %message.to,
@@ -599,6 +606,9 @@ pub async fn run(
 
                 // Drain /ma/inbox/0.0.1
                 while let Some(mut message) = inbox_messages.pop(now) {
+                    if let Some(doc_cache) = &shared_doc_cache {
+                        ipfs::record_inbound_contact(doc_cache, &message.from).await;
+                    }
                     debug!(
                         from = %message.from,
                         to = %message.to,

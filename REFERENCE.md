@@ -711,6 +711,7 @@ the runtime manifest `config` node.
 ```yaml
 did_resolver_positive_ttl_secs: 60
 did_resolver_negative_ttl_secs: 10
+outbox_backoff_attempts: 30
 did_resolve_attempts: 5
 did_resolve_attempt_timeout_secs: 60
 wasm_reload_shutdown_timeout_ms: 250
@@ -785,6 +786,7 @@ in memory and are saved to `config.yaml`:
 | `log_file` | string or null | Path to log file |
 | `did_resolver_positive_ttl_secs` | u64 | Cache TTL for resolved DIDs |
 | `did_resolver_negative_ttl_secs` | u64 | Cache TTL for failed DID lookups |
+| `outbox_backoff_attempts` | positive integer | Maximum Fibonacci backoff steps for an unreachable `(DID, protocol)` outbox (default `30`). Delays are Fibonacci seconds (`1, 1, 2, 3, ...`) and remain at the final step until the peer contacts this runtime or an outbox connection succeeds. |
 | `wasm_reload_shutdown_timeout_ms` | u64 | Short per-actor budget for reload-time `:shutdown` state flush before the replacement proceeds (default `250`) |
 
 ### Manifest config keys

@@ -22,6 +22,7 @@ pub const DAEMON_CONFIG_KEYS_PUB: &[&str] = &[
     "did_resolver_positive_ttl_secs",
     "did_resolver_negative_ttl_secs",
     "log_file",
+    "outbox_backoff_attempts",
     "ipv6_enable",
     "wasm_reload_shutdown_timeout_ms",
 ];
@@ -56,6 +57,22 @@ pub const DEFAULT_RUNTIME_NAME: &str = "間trix";
 pub const DEFAULT_RUNTIME_DESCRIPTION: &str = "A 間 runtime with a lazy owner.";
 pub const DEFAULT_WASM_RELOAD_SHUTDOWN_TIMEOUT_MS: u64 = 250;
 pub const DEFAULT_PLUGIN_ENVELOPE_QUEUE_CAPACITY: usize = 1024;
+
+pub fn outbox_backoff_attempts(value: Option<&serde_yaml::Value>) -> Result<usize> {
+    let Some(value) = value else {
+        return Ok(crate::ipfs::DEFAULT_OUTBOX_BACKOFF_ATTEMPTS);
+    };
+    let attempts = value
+        .as_u64()
+        .ok_or_else(|| anyhow!("outbox_backoff_attempts must be a positive integer"))?;
+    let attempts = usize::try_from(attempts).map_err(|_| {
+        anyhow!("outbox_backoff_attempts exceeds this platform's usize range")
+    })?;
+    if attempts == 0 {
+        return Err(anyhow!("outbox_backoff_attempts must be greater than zero"));
+    }
+    Ok(attempts)
+}
 
 pub fn plugin_envelope_queue_capacity(value: Option<&serde_yaml::Value>) -> Result<usize> {
     let Some(value) = value else {
@@ -137,6 +154,11 @@ pub fn daemon_config_key_value_pub(cfg: &ma_core::Config, key: &str) -> serde_ya
         "log_file" => cfg.log_file.as_ref().map_or(serde_yaml::Value::Null, |p| {
             serde_yaml::Value::String(p.to_string_lossy().into_owned())
         }),
+        "outbox_backoff_attempts" => serde_yaml::Value::Number(
+            outbox_backoff_attempts(cfg.extra.get("outbox_backoff_attempts"))
+                .unwrap_or(crate::ipfs::DEFAULT_OUTBOX_BACKOFF_ATTEMPTS)
+                .into(),
+        ),
         "ipv6_enable" => serde_yaml::Value::Bool(
             cfg.extra
                 .get("ipv6_enable")
@@ -229,6 +251,14 @@ pub fn set_daemon_config_key_pub(cfg: &mut ma_core::Config, key: &str, val: &ser
         }
         "log_file" => {
             cfg.log_file = val.as_str().map(std::path::PathBuf::from);
+        }
+        "outbox_backoff_attempts" => {
+            if let Some(n) = val.as_u64() {
+                cfg.extra.insert(
+                    serde_yaml::Value::String("outbox_backoff_attempts".to_string()),
+                    serde_yaml::Value::Number(n.into()),
+                );
+            }
         }
         "ipv6_enable" => {
             if let Some(b) = val.as_bool() {
@@ -465,6 +495,12 @@ pub(super) async fn handle_config_ns(
                 .await;
             }
             if is_daemon_key {
+                if key == "outbox_backoff_attempts" {
+                    let attempts = outbox_backoff_attempts(Some(&yaml_val))?;
+                    if let Some(doc_cache) = &ctx.doc_cache {
+                        doc_cache.set_backoff_attempts(attempts);
+                    }
+                }
                 set_daemon_config_key(&mut *ctx.shared_config.write().await, &key, &yaml_val);
                 let save_result = ctx.shared_config.read().await.save();
                 if let Err(e) = save_result {
@@ -518,7 +554,7 @@ pub(super) async fn handle_config_ns(
 mod tests {
     use super::{
         cbor_to_yaml, default_manifest_config_value, is_protected_config_key_pub,
-        plugin_envelope_queue_capacity, public_plugin_config, set_daemon_config_key_pub,
+        outbox_backoff_attempts, plugin_envelope_queue_capacity, public_plugin_config, set_daemon_config_key_pub,
         wasm_reload_shutdown_timeout, DEFAULT_PLUGIN_ENVELOPE_QUEUE_CAPACITY,
         DEFAULT_RUNTIME_DESCRIPTION, DEFAULT_RUNTIME_NAME, DEFAULT_WASM_RELOAD_SHUTDOWN_TIMEOUT_MS,
     };
@@ -611,6 +647,19 @@ mod tests {
             super::daemon_config_key_value_pub(&cfg, "wasm_reload_shutdown_timeout_ms").as_u64(),
             Some(17)
         );
+    }
+
+    #[test]
+    fn outbox_backoff_attempts_requires_a_positive_integer() {
+        assert_eq!(
+            outbox_backoff_attempts(None).unwrap(),
+            crate::ipfs::DEFAULT_OUTBOX_BACKOFF_ATTEMPTS
+        );
+        assert_eq!(
+            outbox_backoff_attempts(Some(&serde_yaml::Value::Number(3_u64.into()))).unwrap(),
+            3
+        );
+        assert!(outbox_backoff_attempts(Some(&serde_yaml::Value::Number(0_u64.into()))).is_err());
     }
 
     #[test]
