@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 use std::time::Duration;
+use std::{collections::hash_map::Entry, collections::HashMap, hash::Hash};
 
 use anyhow::{anyhow, Result};
 use ciborium::Value as CborValue;
@@ -17,7 +18,7 @@ use ma_core::{
     MESSAGE_TYPE_RPC_REPLY,
 };
 use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::sync::{RwLock, Semaphore};
+use tokio::sync::{Mutex, RwLock, Semaphore};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 use zeroize::Zeroize;
@@ -43,6 +44,26 @@ struct LocalSideEffectCtx {
     envelope_tx: Sender<(String, SendEnvelope)>,
     stats: SharedStats,
     shared_config: Arc<RwLock<Config>>,
+    entity_creation_gate: Arc<Mutex<()>>,
+}
+
+async fn register_created_entity(
+    entity_registry: &EntityRegistry,
+    fragment: String,
+    entity: Arc<crate::plugin::EntityPlugin>,
+) -> bool {
+    let mut registry = entity_registry.write().await;
+    insert_if_absent(&mut registry, fragment, entity)
+}
+
+fn insert_if_absent<K: Eq + Hash, V>(registry: &mut HashMap<K, V>, key: K, value: V) -> bool {
+    match registry.entry(key) {
+        Entry::Vacant(entry) => {
+            entry.insert(value);
+            true
+        }
+        Entry::Occupied(_) => false,
+    }
 }
 
 async fn persist_new_entity(
@@ -245,6 +266,12 @@ async fn dispatch_local_plugin_envelope(
 
     if let Some(side_effects) = side_effects {
         for req in result.create_requests {
+            let _creation_guard = side_effects.entity_creation_gate.lock().await;
+            if entity_registry.read().await.contains_key(&req.fragment) {
+                debug!(fragment = %req.fragment, kind = %req.kind_protocol,
+                    "ma_create_entity: entity already exists; keeping current entity");
+                continue;
+            }
             let maybe_kind = side_effects
                 .kind_registry
                 .read()
@@ -314,10 +341,17 @@ async fn dispatch_local_plugin_envelope(
                     if let Ok(Some(cid)) = ep.trigger_save(kubo_url).await {
                         running_node.state = Some(IpldLink::new(cid));
                     }
-                    entity_registry
-                        .write()
-                        .await
-                        .insert(req.fragment.clone(), Arc::new(ep));
+                    let registered = register_created_entity(
+                        entity_registry,
+                        req.fragment.clone(),
+                        Arc::new(ep),
+                    )
+                    .await;
+                    if !registered {
+                        debug!(fragment = %req.fragment, kind = %req.kind_protocol,
+                            "ma_create_entity: concurrent entity won registration; discarding duplicate");
+                        continue;
+                    }
                     info!(fragment = %req.fragment, kind = %req.kind_protocol,
                         parent = %req.parent, "entity created via ma_create_entity");
                     let kubo_url = kubo_url.to_string();
@@ -403,6 +437,7 @@ pub async fn run(
     let mut ctrl_c = Box::pin(tokio::signal::ctrl_c());
     let local_plugin_dispatch_gate = Arc::new(Semaphore::new(LOCAL_PLUGIN_DISPATCH_LIMIT));
     let remote_plugin_delivery_gate = Arc::new(Semaphore::new(REMOTE_PLUGIN_DELIVERY_LIMIT));
+    let entity_creation_gate = Arc::new(Mutex::new(()));
 
     loop {
         tokio::select! {
@@ -626,6 +661,7 @@ pub async fn run(
                             envelope_tx: envelope_tx.clone(),
                             stats: stats.clone(),
                             shared_config: Arc::clone(&shared_config),
+                            entity_creation_gate: Arc::clone(&entity_creation_gate),
                         };
                         let Ok(permit) = local_plugin_dispatch_gate.clone().acquire_owned().await else {
                             warn!(fragment = %fragment, target = %target_fragment, "plugin envelope: local dispatch gate closed");
@@ -846,7 +882,22 @@ pub async fn run(
 
 #[cfg(test)]
 mod tests {
-    use super::{local_actor_url, local_target_fragment};
+    use std::collections::HashMap;
+
+    use super::{insert_if_absent, local_actor_url, local_target_fragment};
+
+    #[test]
+    fn concurrent_entity_creation_keeps_first_registered_entity() {
+        let mut registry = HashMap::new();
+
+        assert!(insert_if_absent(&mut registry, "avatar", "with-inventory"));
+        assert!(!insert_if_absent(
+            &mut registry,
+            "avatar",
+            "without-inventory"
+        ));
+        assert_eq!(registry.get("avatar"), Some(&"with-inventory"));
+    }
 
     #[test]
     fn local_target_fragment_accepts_local_forms_only() {
