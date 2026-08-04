@@ -1,0 +1,46 @@
+name: ma
+
+services:
+  kubo:
+    image: ipfs/kubo:master-latest
+    environment:
+      IPFS_PROFILE: server
+    volumes:
+      - kubo-data:/data/ipfs
+    configs:
+      - source: allow-docker-bridge-peers
+        target: /container-init.d/10-allow-docker-bridge-peers.sh
+    healthcheck:
+      test: ["CMD", "ipfs", "id"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  ma:
+    image: ${MA_IMAGE:-bahner/ma:latest}
+    command: ["--slug", "docker", "--kubo-rpc-url", "http://kubo:5001", "--status-bind", "0.0.0.0:5003"]
+    environment:
+      - MA_ROOT_CID
+    depends_on:
+      kubo:
+        condition: service_healthy
+    ports:
+      - "5003:5003"
+    volumes:
+      - ma-config:/home/ma/.config/ma
+
+volumes:
+  kubo-data:
+  ma-config:
+
+configs:
+  allow-docker-bridge-peers:
+    content: |
+      #!/bin/sh
+      set -eu
+
+      filters="$$(ipfs config Swarm.AddrFilters --json | tr -d '\n')"
+      updated_filters="$$(printf '%s' "$$filters" | sed 's#,[[:space:]]*"/ip4/172.16.0.0/ipcidr/12"##')"
+      if [ "$$updated_filters" != "$$filters" ]; then
+        ipfs config Swarm.AddrFilters --json "$$updated_filters"
+      fi

@@ -66,7 +66,7 @@ struct Cli {
     bootstrap: Option<PathBuf>,
 
     /// WARNING: resets runtime head for this process. If wrong, recover old CID from logs.
-    #[arg(long)]
+    #[arg(long, env = "MA_ROOT_CID")]
     root_cid: Option<String>,
 
     /// Apply a kinds-tree CID over the selected runtime head without replacing entities.
@@ -89,7 +89,11 @@ struct Cli {
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    cli.root_cid = cli.root_cid.take().and_then(|root_cid| {
+        let root_cid = root_cid.trim();
+        (!root_cid.is_empty()).then(|| root_cid.to_string())
+    });
 
     if cli.ma.gen_headless_config {
         Config::gen_headless(&cli.ma, MA_DEFAULT_SLUG)?;
@@ -129,7 +133,7 @@ async fn main() -> Result<()> {
     // headless config automatically so the daemon works out of the box without
     // manual configuration.
     let bundle_path = config.effective_secret_bundle()?;
-    let config = if should_generate_headless_config(&config, &bundle_path) {
+    let mut config = if should_generate_headless_config(&config, &bundle_path) {
         warn!("No config found.");
         warn!("Initialising new runtime identity.");
         Config::gen_headless(&cli.ma, MA_DEFAULT_SLUG)?;
@@ -298,6 +302,10 @@ async fn main() -> Result<()> {
     // ── Own DID document (ma extension uses protocol + runtime link) ─────────
     // root_cid priority: --root-cid CLI > --bootstrap generated CID > config.yaml > IPNS resolution.
     let mut root_cid = select_root_cid(cli.root_cid.clone(), bootstrap_root_cid, &config)?;
+    if let Some(ref root_cid) = root_cid {
+        startup::persist_root_cid(&mut config, root_cid)
+            .context("failed to persist selected root_cid")?;
+    }
     let lang_cid = config
         .extra
         .get("i18n_cid")

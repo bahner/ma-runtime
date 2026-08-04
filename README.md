@@ -180,6 +180,34 @@ cargo build --release
 # binary: target/release/ma
 ```
 
+### Docker Compose
+
+Start Kubo and an isolated runtime with:
+
+```sh
+docker compose up
+```
+
+The runtime is available at <http://localhost:5003/zion/>. Its `docker.yaml`
+and `docker.bin` live in the persistent `ma-config` Docker volume. Back them
+up, including while the runtime is stopped, with a temporary container:
+
+```sh
+docker run --rm -v ma_ma-config:/state:ro alpine \
+  tar -C /state -czf - docker.yaml docker.bin > ma-docker-backup.tgz
+```
+
+To seed the Docker runtime from an existing root CID on its first start, set
+`MA_ROOT_CID` for that one invocation:
+
+```sh
+MA_ROOT_CID=bafy... docker compose up
+```
+
+Stop it normally after the initial publish, then start later runs with plain
+`docker compose up`. The persistent Docker identity resolves its runtime head
+from IPNS; do not leave `MA_ROOT_CID` set after seeding.
+
 ### First run
 
 On the first start `ma` detects a missing secret bundle and generates a

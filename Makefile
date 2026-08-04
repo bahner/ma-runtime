@@ -8,8 +8,12 @@ PREFIX   			?= $(HOME)/.local/bin
 PUBLISH  			:= ma:bin/
 PUBLISH_SH    := .publish.sh
 RUN_ARGS			?=
+DOCKER			?= docker
+DOCKER_COMPOSE	?= docker compose
+DOCKER_IMAGE	?= bahner/ma
+DOCKER_TAG		?= latest
 
-.PHONY: all clean distclean install lint publish test
+.PHONY: all clean distclean docker docker-image docker-push install lint publish test
 
 all: $(BINARY)
 
@@ -21,6 +25,15 @@ lint:
 test:
 	$(CARGO) clippy $(CLIPPY_STRICT)
 	$(CARGO) test --all-features
+
+docker:
+	$(DOCKER_COMPOSE) up
+
+docker-image:
+	$(DOCKER) build --tag $(DOCKER_IMAGE):$(DOCKER_TAG) .
+
+docker-push: docker-image
+	$(DOCKER) push $(DOCKER_IMAGE):$(DOCKER_TAG)
 
 # Publish all i18n/*.ftl files to IPFS and write the resulting CIDs to
 # src/i18n.yaml.  Requires `ipfs` (Kubo) and `jq` to be available.

@@ -380,7 +380,10 @@ pub async fn build_manifest(
         .context("dag_put root manifest")?;
     tracing::info!(root_cid = %root_cid, "Published runtime root manifest");
 
-    replace_remote_root_pin(kubo_url, remote_pin, old_root_cid, &root_cid).await?;
+    if let Err(error) = replace_remote_root_pin(kubo_url, remote_pin, old_root_cid, &root_cid).await
+    {
+        tracing::warn!(root_cid = %root_cid, error = %error, "continuing after remote root pin replacement failure");
+    }
     if let Some(old) = old_root_cid {
         if let Err(e) = kubo::pin_update(kubo_url, old, &root_cid).await {
             tracing::warn!(old = %old, new = %root_cid, error = %e, "pin/update failed after bootstrap");

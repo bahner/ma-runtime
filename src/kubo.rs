@@ -109,11 +109,28 @@ pub async fn dag_put<T: Serialize + Sync>(kubo_url: &str, value: &T) -> Result<S
 /// Recursively pin a CID. Used for first-time bootstrap when there is no
 /// prior root to update from.
 pub async fn pin_add(kubo_url: &str, cid: &str) -> Result<()> {
-    let _permit = acquire_request_permit("pin/add").await?;
+    let permit = acquire_request_permit("pin/add").await?;
     let base = kubo_url.trim_end_matches('/');
     let url = format!("{base}/api/v0/pin/add");
     client()
         .post(&url)
+        .query(&[("arg", cid), ("recursive", "true")])
+        .send()
+        .await?
+        .error_for_status()?;
+    drop(permit);
+    routing_provide(kubo_url, cid).await?;
+    Ok(())
+}
+
+/// Announce a CID to IPFS routing so independent Kubo nodes can discover the
+/// provider and fetch the recursively pinned DAG.
+pub async fn routing_provide(kubo_url: &str, cid: &str) -> Result<()> {
+    let _permit = acquire_request_permit("routing/provide").await?;
+    let base = kubo_url.trim_end_matches('/');
+    let url = format!("{base}/api/v0/routing/provide");
+    client()
+        .post(url)
         .query(&[("arg", cid), ("recursive", "true")])
         .send()
         .await?
@@ -134,6 +151,8 @@ pub async fn pin_update(kubo_url: &str, old_cid: &str, new_cid: &str) -> Result<
         .send()
         .await?;
     if resp.status().is_success() {
+        drop(permit);
+        routing_provide(kubo_url, new_cid).await?;
         return Ok(());
     }
     let body = resp.text().await.unwrap_or_default();
