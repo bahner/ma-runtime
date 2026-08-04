@@ -208,6 +208,22 @@ Stop it normally after the initial publish, then start later runs with plain
 `docker compose up`. The persistent Docker identity resolves its runtime head
 from IPNS; do not leave `MA_ROOT_CID` set after seeding.
 
+To mirror runtime heads to a remote pinning service, provide the following
+environment variables when starting Compose:
+
+```sh
+MA_PIN_REMOTE_NAME=pinata \
+MA_PIN_REMOTE_API_URL=https://api.pinata.cloud/psa \
+MA_PIN_REMOTE_API_SECRET=... \
+docker compose up
+```
+
+All three variables are Docker startup settings. `MA_PIN_REMOTE_NAME` is the
+Kubo service name, `MA_PIN_REMOTE_API_URL` is its pinning-service API endpoint,
+and `MA_PIN_REMOTE_API_SECRET` is its API key. When all are set, the `ma`
+container registers the named service with Kubo if it is absent. Existing
+services are preserved.
+
 ### First run
 
 On the first start `ma` detects a missing secret bundle and generates a
