@@ -72,8 +72,11 @@ publish: $(RELEASE)
 
 release:
 	@test -n "$(MA_VERSION)" || { echo "MA_VERSION is required (for example: make release MA_VERSION=0.0.1)" >&2; exit 2; }
+	$(CARGO) build --release
 	cargo release $(MA_VERSION) --no-confirm --no-publish --execute
-	$(MAKE) publish docker-push DOCKER_TAG=$(MA_VERSION)
+	scp $(RELEASE) $(PUBLISH)
+	test -f $(PUBLISH_SH) && bash $(PUBLISH_SH)
+	$(MAKE) docker-push DOCKER_TAG=$(MA_VERSION)
 
 distclean: clean
 	rm -rf target
