@@ -12,8 +12,9 @@ DOCKER			?= docker
 DOCKER_COMPOSE	?= docker compose
 DOCKER_IMAGE	?= bahner/ma
 DOCKER_TAG		?= latest
+MA_VERSION		?=
 
-.PHONY: all clean distclean docker docker-image docker-push install lint publish test
+.PHONY: all clean distclean docker docker-image docker-push install lint publish release test
 
 all: $(BINARY)
 
@@ -68,6 +69,11 @@ install: $(RELEASE)
 publish: $(RELEASE)
 	scp $(RELEASE) $(PUBLISH)
 	test -f $(PUBLISH_SH) && bash $(PUBLISH_SH)
+
+release:
+	@test -n "$(MA_VERSION)" || { echo "MA_VERSION is required (for example: make release MA_VERSION=0.0.1)" >&2; exit 2; }
+	cargo release $(MA_VERSION) --no-confirm --no-publish --execute
+	$(MAKE) publish docker-push DOCKER_TAG=$(MA_VERSION)
 
 distclean: clean
 	rm -rf target
