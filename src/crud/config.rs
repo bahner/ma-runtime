@@ -65,9 +65,8 @@ pub fn outbox_backoff_attempts(value: Option<&serde_yaml::Value>) -> Result<usiz
     let attempts = value
         .as_u64()
         .ok_or_else(|| anyhow!("outbox_backoff_attempts must be a positive integer"))?;
-    let attempts = usize::try_from(attempts).map_err(|_| {
-        anyhow!("outbox_backoff_attempts exceeds this platform's usize range")
-    })?;
+    let attempts = usize::try_from(attempts)
+        .map_err(|_| anyhow!("outbox_backoff_attempts exceeds this platform's usize range"))?;
     if attempts == 0 {
         return Err(anyhow!("outbox_backoff_attempts must be greater than zero"));
     }
@@ -554,9 +553,10 @@ pub(super) async fn handle_config_ns(
 mod tests {
     use super::{
         cbor_to_yaml, default_manifest_config_value, is_protected_config_key_pub,
-        outbox_backoff_attempts, plugin_envelope_queue_capacity, public_plugin_config, set_daemon_config_key_pub,
-        wasm_reload_shutdown_timeout, DEFAULT_PLUGIN_ENVELOPE_QUEUE_CAPACITY,
-        DEFAULT_RUNTIME_DESCRIPTION, DEFAULT_RUNTIME_NAME, DEFAULT_WASM_RELOAD_SHUTDOWN_TIMEOUT_MS,
+        outbox_backoff_attempts, plugin_envelope_queue_capacity, public_plugin_config,
+        set_daemon_config_key_pub, wasm_reload_shutdown_timeout,
+        DEFAULT_PLUGIN_ENVELOPE_QUEUE_CAPACITY, DEFAULT_RUNTIME_DESCRIPTION, DEFAULT_RUNTIME_NAME,
+        DEFAULT_WASM_RELOAD_SHUTDOWN_TIMEOUT_MS,
     };
     use ciborium::Value as CborValue;
     use ma_core::Config;

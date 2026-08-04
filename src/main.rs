@@ -432,10 +432,9 @@ async fn main() -> Result<()> {
     } else {
         crud::config::DEFAULT_PLUGIN_ENVELOPE_QUEUE_CAPACITY
     };
-    let outbox_backoff_attempts = crud::config::outbox_backoff_attempts(
-        config.extra.get("outbox_backoff_attempts"),
-    )
-    .context("invalid outbox_backoff_attempts in config.yaml")?;
+    let outbox_backoff_attempts =
+        crud::config::outbox_backoff_attempts(config.extra.get("outbox_backoff_attempts"))
+            .context("invalid outbox_backoff_attempts in config.yaml")?;
 
     // ── i18n: fetch lang via RuntimeManifest.i18n from IPFS ────────────
     // Priority: --i18n / MA_I18N > config.extra["i18n"] > manifest config.i18n (CID
@@ -461,7 +460,10 @@ async fn main() -> Result<()> {
     let ipfs_state = if ipfs_publisher_enabled {
         let messages = ipfs_messages.expect("ipfs inbox exists when publisher is enabled");
         info!("IPFS publisher service enabled");
-        Some(ipfs::IpfsServiceState::new(messages, outbox_backoff_attempts))
+        Some(ipfs::IpfsServiceState::new(
+            messages,
+            outbox_backoff_attempts,
+        ))
     } else {
         info!("IPFS publisher service disabled (set ipfs_publisher: true in config to enable)");
         None
@@ -751,6 +753,7 @@ async fn main() -> Result<()> {
     // ── Shared DID document resolver (local gateway first, public fallbacks) ──
     let shared_resolver: Arc<dyn ma_core::DidDocumentResolver> =
         Arc::new(config.ipfs_gateway_resolver());
+    let remote_pin = bootstrap::runtime_remote_pin_config(&config);
 
     // ── Main event loop + graceful shutdown ─────────────────────────────────────
     eventloop::run(
@@ -774,6 +777,7 @@ async fn main() -> Result<()> {
         signing_key,
         runtime_ipns_key,
         config.slug.clone(),
+        remote_pin,
         did_publish_timeout_secs,
         ipns_publish,
         did_resolve,

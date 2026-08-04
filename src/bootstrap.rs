@@ -34,6 +34,18 @@ pub fn default_remote_root_pin_name(slug: &str) -> String {
     )
 }
 
+pub fn owner_did_remote_pin_name(did: &str) -> String {
+    let now = time::OffsetDateTime::now_utc();
+    let digest = blake3::hash(did.as_bytes()).to_hex();
+    format!(
+        "ma-agent-blake3({})-{:04}-{:02}-{:02}",
+        &digest[..16],
+        now.year(),
+        u8::from(now.month()),
+        now.day()
+    )
+}
+
 pub fn runtime_remote_pin_config(config: &ma_core::Config) -> Option<RemotePinConfig> {
     let default_name = default_remote_root_pin_name(&config.slug);
     match config.remote_pin_config_with_default_name(default_name) {
@@ -985,10 +997,30 @@ pub async fn save_all_entity_states(
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_kinds_overlay, apply_kinds_tree_overlay, BootstrapYaml};
+    use super::{
+        apply_kinds_overlay, apply_kinds_tree_overlay, owner_did_remote_pin_name, BootstrapYaml,
+    };
     use crate::entity::{EntityNode, Evaluator, IpldLink, KindNode, KindTree, RuntimeManifest};
     use ma_core::{check_cap, CAP_IDENTITY_PUBLISH, CAP_IPFS, CAP_RPC};
     use std::collections::{BTreeMap, HashMap};
+
+    #[test]
+    fn owner_did_remote_pin_name_uses_short_blake3_digest_and_utc_date() {
+        let did = "did:ma:owner";
+        let digest = blake3::hash(did.as_bytes()).to_hex();
+        let name = owner_did_remote_pin_name(did);
+
+        assert!(name.starts_with(&format!("ma-agent-blake3({})-", &digest[..16])));
+        let (_, date) = name.rsplit_once(")-").expect("pin name date separator");
+        let mut parts = date.split('-');
+        let year = parts.next().expect("pin name year");
+        let month = parts.next().expect("pin name month");
+        let day = parts.next().expect("pin name day");
+        assert!(parts.next().is_none(), "pin name has one ISO date");
+        assert!(year.len() == 4 && year.chars().all(|c| c.is_ascii_digit()));
+        assert!(month.len() == 2 && month.chars().all(|c| c.is_ascii_digit()));
+        assert!(day.len() == 2 && day.chars().all(|c| c.is_ascii_digit()));
+    }
 
     #[test]
     fn example_yaml_parses() {

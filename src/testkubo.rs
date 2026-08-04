@@ -63,7 +63,6 @@ impl MockKubo {
         self.store.0.lock().await.insert(cid.clone(), bytes);
         cid
     }
-
 }
 
 /// Content-address a node body.  Deterministic and CID-shaped, but not a real

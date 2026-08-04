@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Context, Result};
+use ma_core::config::RemotePinConfig;
 use ma_core::ipfs::ipns_key_name_for_parts;
 use ma_core::ipfs::IpfsDidPublisher;
 use ma_core::{
@@ -16,7 +17,7 @@ use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 use zeroize::Zeroizing;
 
-use crate::acl::{check_full, AclMap, GroupCache, CAP_IDENTITY_PUBLISH, CAP_IPFS};
+use crate::acl::{check_full, is_owner, AclMap, GroupCache, CAP_IDENTITY_PUBLISH, CAP_IPFS};
 use crate::i18n;
 use crate::rpc::RPC_PROTOCOL_ID;
 
@@ -51,7 +52,8 @@ impl OutboxCache {
     }
 
     pub fn set_backoff_attempts(&self, attempts: usize) {
-        self.backoff_attempts.store(attempts.max(1), Ordering::Relaxed);
+        self.backoff_attempts
+            .store(attempts.max(1), Ordering::Relaxed);
     }
 
     async fn document(&self, did: &str) -> Option<Document> {
@@ -89,9 +91,7 @@ impl OutboxCache {
                 }
                 (
                     backoff.current_delay,
-                    backoff
-                        .previous_delay
-                        .saturating_add(backoff.current_delay),
+                    backoff.previous_delay.saturating_add(backoff.current_delay),
                     backoff.attempts + 1,
                 )
             })
@@ -148,6 +148,7 @@ pub struct IpfsHandlerCtx<'a> {
     /// Arc so reply-delivery tasks can be spawned without blocking the event loop.
     pub endpoint: Arc<dyn ma_core::MaEndpoint>,
     pub kubo_rpc_url: &'a str,
+    pub remote_pin: Option<&'a RemotePinConfig>,
     pub ipns_publish: IpnsPublishSettings,
     pub did_resolve: DidResolveSettings,
     pub resolver: Arc<dyn DidDocumentResolver>,
@@ -879,7 +880,9 @@ async fn handle_did_document_publish(
     ctx.doc_cache
         .insert_document(sender_for_cache.base_id(), document.clone())
         .await;
-    ctx.doc_cache.clear_unreachable(&sender_for_cache.base_id()).await;
+    ctx.doc_cache
+        .clear_unreachable(&sender_for_cache.base_id())
+        .await;
 
     let key = Zeroizing::new(ipns_secret_key);
     let key_name = ma_core::ipfs::ipns_key_name_for_document(&document);
@@ -906,6 +909,60 @@ async fn handle_did_document_publish(
             error = %err,
             "DID document local pin replacement failed"
         );
+    }
+    let owners = ctx
+        .group_cache
+        .read()
+        .await
+        .get("owners")
+        .cloned()
+        .unwrap_or_default();
+    if is_owner(&owners, &message.from) {
+        if let Some(remote_pin) = ctx.remote_pin {
+            let remote_pin = RemotePinConfig {
+                service: remote_pin.service.clone(),
+                name: crate::bootstrap::owner_did_remote_pin_name(&message.from),
+            };
+            match ma_core::remote_pin_replace(
+                ctx.kubo_rpc_url,
+                &remote_pin,
+                old_cid.as_deref(),
+                &cid,
+            )
+            .await
+            {
+                Ok(outcome) => {
+                    if let Some(error) = outcome.previous_remove_error {
+                        warn!(
+                            did = %document_did.id(),
+                            old = old_cid.as_deref().unwrap_or(""),
+                            new = %cid,
+                            service = %remote_pin.service,
+                            name = %remote_pin.name,
+                            error = %error,
+                            "owner DID remote pin replacement left the previous pin in place"
+                        );
+                    } else {
+                        info!(
+                            did = %document_did.id(),
+                            cid = %cid,
+                            service = %remote_pin.service,
+                            name = %remote_pin.name,
+                            "owner DID remote pin replaced"
+                        );
+                    }
+                }
+                Err(error) => warn!(
+                    did = %document_did.id(),
+                    old = old_cid.as_deref().unwrap_or(""),
+                    new = %cid,
+                    service = %remote_pin.service,
+                    name = %remote_pin.name,
+                    error = %error,
+                    "owner DID remote pin replacement failed"
+                ),
+            }
+        }
     }
     info!(did = %document_did.id(), cid = %cid, "{}", i18n::t("document-published"));
 
