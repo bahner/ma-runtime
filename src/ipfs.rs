@@ -1029,9 +1029,13 @@ async fn handle_ipfs_store(
     let cid = if v.content_type == "application/vnd.ipld.dag-cbor" {
         let val: serde_json::Value = ciborium::de::from_reader(v.content.as_slice())
             .context("failed to decode incoming DAG-CBOR")?;
-        crate::kubo::dag_put(ctx.kubo_rpc_url, &val)
+        let cid = crate::kubo::dag_put(ctx.kubo_rpc_url, &val)
             .await
-            .context("dag put failed")?
+            .context("dag put failed")?;
+        crate::kubo::pin_add(ctx.kubo_rpc_url, &cid)
+            .await
+            .context("pin stored DAG-CBOR failed")?;
+        cid
     } else {
         crate::kubo::ipfs_add_bytes_unpinned(ctx.kubo_rpc_url, v.content.clone())
             .await

@@ -2,7 +2,7 @@ name: ma
 
 services:
   kubo:
-    image: ipfs/kubo:master-latest
+    image: ipfs/kubo:v0.43.0
     environment:
       IPFS_PROFILE: server
     volumes:
