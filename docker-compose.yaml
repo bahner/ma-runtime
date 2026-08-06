@@ -21,9 +21,12 @@ services:
     command: ["--slug", "docker", "--kubo-rpc-url", "http://kubo:5001", "--status-bind", "0.0.0.0:5003"]
     environment:
       - MA_ROOT_CID
-      # Set all three to configure a Kubo remote pinning service on startup.
+      # Set MA_PIN_REMOTE=true and the service credentials to enable replication.
       # The entrypoint registers the service with Kubo when it is absent.
+      - MA_PIN_REMOTE
+      - MA_PIN_REMOTE_SERVICE
       - MA_PIN_REMOTE_NAME
+      - MA_PIN_OVERWRITE
       - MA_PIN_REMOTE_API_URL
       - MA_PIN_REMOTE_API_SECRET
     depends_on:

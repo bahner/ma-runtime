@@ -152,6 +152,10 @@ async fn publish_did_document(
     doc_cbor: Vec<u8>,
     ipns_key: Vec<u8>,
 ) -> bool {
+    let config = context.shared_config.read().await;
+    let remote_pin = crate::bootstrap::runtime_remote_pin_config(&config);
+    let pin_overwrite = config.pin_overwrite;
+    drop(config);
     let publish = tokio::time::timeout(
         context.timeout,
         ipfs::do_publish_own_document(
@@ -160,6 +164,8 @@ async fn publish_did_document(
             doc_cbor,
             ipns_key,
             context.ipns_publish,
+            remote_pin,
+            pin_overwrite,
         ),
     )
     .await;

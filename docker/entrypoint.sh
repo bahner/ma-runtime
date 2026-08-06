@@ -2,16 +2,17 @@
 set -eu
 
 configure_pin_remote_service() {
-    service=${MA_PIN_REMOTE_NAME:-}
+    enabled=${MA_PIN_REMOTE:-false}
+    service=${MA_PIN_REMOTE_SERVICE:-}
     endpoint=${MA_PIN_REMOTE_API_URL:-}
     key=${MA_PIN_REMOTE_API_SECRET:-}
 
-    if [ -z "$service" ] && [ -z "$endpoint" ] && [ -z "$key" ]; then
+    if [ "$enabled" != "true" ]; then
         return
     fi
 
     if [ -z "$service" ] || [ -z "$endpoint" ] || [ -z "$key" ]; then
-        echo "MA_PIN_REMOTE_NAME, MA_PIN_REMOTE_API_URL, and MA_PIN_REMOTE_API_SECRET must be set together" >&2
+        echo "MA_PIN_REMOTE=true requires MA_PIN_REMOTE_SERVICE, MA_PIN_REMOTE_API_URL, and MA_PIN_REMOTE_API_SECRET" >&2
         exit 1
     fi
 

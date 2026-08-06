@@ -60,46 +60,28 @@ pub fn runtime_remote_pin_config(config: &ma_core::Config) -> Option<RemotePinCo
 async fn replace_remote_root_pin(
     kubo_url: &str,
     remote_pin: Option<&RemotePinConfig>,
-    old_cid: Option<&str>,
     new_cid: &str,
 ) -> Result<()> {
     let Some(remote) = remote_pin else {
         return Ok(());
     };
-    match ma_core::remote_pin_replace(kubo_url, remote, old_cid, new_cid).await {
-        Ok(outcome) => {
-            if let Some(error) = outcome.previous_remove_error {
-                tracing::warn!(
-                    old = old_cid.unwrap_or(""),
-                    new = %new_cid,
-                    service = %remote.service,
-                    name = %remote.name,
-                    error = %error,
-                    "remote root pin replacement left the previous pin in place"
-                );
-            } else {
-                tracing::info!(
-                    old = old_cid.unwrap_or(""),
-                    new = %new_cid,
-                    service = %remote.service,
-                    name = %remote.name,
-                    "remote root pin replaced"
-                );
-            }
-            Ok(())
-        }
-        Err(err) => {
-            tracing::error!(
-                old = old_cid.unwrap_or(""),
-                new = %new_cid,
-                service = %remote.service,
-                name = %remote.name,
-                error = %err,
-                "remote root pin replacement failed"
-            );
-            Err(err).context("remote root pin replacement failed")
-        }
-    }
+    let cleanup_scheduled = ma_core::remote_pin_replace_named(
+        kubo_url,
+        &remote.service,
+        &remote.name,
+        new_cid,
+        remote.overwrite,
+    )
+    .await
+    .context("creating remote root pin")?;
+    tracing::info!(
+        new = %new_cid,
+        service = %remote.service,
+        name = %remote.name,
+        cleanup_scheduled,
+        "remote root pin confirmed"
+    );
+    Ok(())
 }
 
 // ── YAML bootstrap schema ─────────────────────────────────────────────────────
@@ -380,8 +362,7 @@ pub async fn build_manifest(
         .context("dag_put root manifest")?;
     tracing::info!(root_cid = %root_cid, "Published runtime root manifest");
 
-    if let Err(error) = replace_remote_root_pin(kubo_url, remote_pin, old_root_cid, &root_cid).await
-    {
+    if let Err(error) = replace_remote_root_pin(kubo_url, remote_pin, &root_cid).await {
         tracing::warn!(root_cid = %root_cid, error = %error, "continuing after remote root pin replacement failure");
     }
     if let Some(old) = old_root_cid {

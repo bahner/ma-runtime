@@ -20,7 +20,7 @@ extism = "1"
 fluent = "0.16"
 blake3 = "1"
 libp2p-identity = "0.2"
-ma-core = { version = "0.12", default-features = false, features = ["config", "kubo", "iroh", "acl"] }
+ma-core = { version = "0.13", default-features = false, features = ["config", "kubo", "iroh", "acl"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart"] }
 serde = { version = "1", features = ["derive"] }
 serde_bytes = "0.11"

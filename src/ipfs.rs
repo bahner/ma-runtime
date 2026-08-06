@@ -1,7 +1,9 @@
 use anyhow::{anyhow, Context, Result};
 use ma_core::config::RemotePinConfig;
 use ma_core::ipfs::ipns_key_name_for_parts;
-use ma_core::ipfs::IpfsDidPublisher;
+use ma_core::ipfs::{
+    DidDocumentPublishOptions, IpfsDidPublisher, IpnsPublishOptions, RemotePinOptions,
+};
 use ma_core::{
     ipns_from_secret, resolve_endpoint_for_protocol, validate_identity_publish_message,
     validate_ipfs_request, Did, DidDocumentResolver, Document, Inbox, ReplayGuard, SigningKey,
@@ -17,7 +19,7 @@ use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 use zeroize::Zeroizing;
 
-use crate::acl::{check_full, is_owner, AclMap, GroupCache, CAP_IDENTITY_PUBLISH, CAP_IPFS};
+use crate::acl::{check_full, AclMap, GroupCache, CAP_IDENTITY_PUBLISH, CAP_IPFS};
 use crate::i18n;
 use crate::rpc::RPC_PROTOCOL_ID;
 
@@ -70,8 +72,7 @@ impl OutboxCache {
         let unreachable = self.unreachable.lock().await;
         match unreachable.get(&key).copied() {
             Some(backoff) if backoff.retry_at > now => Some(backoff.retry_at.duration_since(now)),
-            Some(_) => None,
-            None => None,
+            _ => None,
         }
     }
 
@@ -79,23 +80,23 @@ impl OutboxCache {
         let key = (did.to_string(), protocol.to_string());
         let mut unreachable = self.unreachable.lock().await;
         let max_attempts = self.backoff_attempts.load(Ordering::Relaxed).max(1);
-        let (previous_delay, current_delay, attempts) = unreachable
-            .get(&key)
-            .map(|backoff| {
-                if backoff.attempts >= max_attempts {
-                    return (
-                        backoff.previous_delay,
+        let (previous_delay, current_delay, attempts) =
+            unreachable
+                .get(&key)
+                .map_or((Duration::ZERO, OUTBOX_BACKOFF_INITIAL, 1), |backoff| {
+                    if backoff.attempts >= max_attempts {
+                        return (
+                            backoff.previous_delay,
+                            backoff.current_delay,
+                            backoff.attempts,
+                        );
+                    }
+                    (
                         backoff.current_delay,
-                        backoff.attempts,
-                    );
-                }
-                (
-                    backoff.current_delay,
-                    backoff.previous_delay.saturating_add(backoff.current_delay),
-                    backoff.attempts + 1,
-                )
-            })
-            .unwrap_or((Duration::ZERO, OUTBOX_BACKOFF_INITIAL, 1));
+                        backoff.previous_delay.saturating_add(backoff.current_delay),
+                        backoff.attempts + 1,
+                    )
+                });
         unreachable.insert(
             key,
             UnreachableOutbox {
@@ -198,24 +199,33 @@ pub async fn do_publish_own_document(
     doc_cbor: Vec<u8>,
     ipns_secret_key: Vec<u8>,
     ipns_publish: IpnsPublishSettings,
+    remote_pin: Option<RemotePinConfig>,
+    pin_overwrite: bool,
 ) -> Result<()> {
-    // Wrap in Zeroizing so the key bytes are cleared on return *and* on
-    // async cancellation (e.g. if the 2-minute timeout fires and drops
-    // the future before the explicit zeroize at the end could run).
     let ipns_secret_key = Zeroizing::new(ipns_secret_key);
     let publisher = IpfsDidPublisher::new(&kubo_url)?;
     publisher.wait_until_ready(10).await?;
 
-    // Decode once so we can derive deterministic Kubo key alias from DID IPNS.
-    let document = Document::decode(&doc_cbor)
-        .map_err(|e| anyhow!("invalid own DID document dag-cbor: {e}"))?;
-    let document_did = Did::try_from(document.id.as_str())
-        .map_err(|e| anyhow!("invalid own DID '{}': {e}", document.id))?;
-    let key_name = ipns_key_name_for_parts(&["runtime", &runtime_slug], &document_did.ipns);
-
-    ensure_kubo_ipns_key(&kubo_url, &key_name, &document_did.ipns, &ipns_secret_key).await?;
-    let cid = dag_put_cbor(&kubo_url, &doc_cbor, true).await?;
-    name_publish(&kubo_url, &key_name, &cid, ipns_publish).await?;
+    let options = DidDocumentPublishOptions {
+        key_parts: vec!["runtime".to_string(), runtime_slug],
+        ipns: IpnsPublishOptions {
+            timeout: Duration::from_secs(ipns_publish.timeout_secs.max(1)),
+            allow_offline: ipns_publish.allow_offline,
+            lifetime: format!("{}h", ipns_publish.lifetime_hours),
+            ttl: None,
+            resolve: ipns_publish.resolve,
+            quieter: true,
+        },
+        remote_pin: remote_pin.map(|remote| RemotePinOptions {
+            service: remote.service,
+            name: remote.name,
+        }),
+        overwrite: pin_overwrite,
+        ..DidDocumentPublishOptions::default()
+    };
+    publisher
+        .publish_document(doc_cbor, ipns_secret_key, options)
+        .await?;
     Ok(())
 }
 
@@ -910,59 +920,8 @@ async fn handle_did_document_publish(
             "DID document local pin replacement failed"
         );
     }
-    let owners = ctx
-        .group_cache
-        .read()
-        .await
-        .get("owners")
-        .cloned()
-        .unwrap_or_default();
-    if is_owner(&owners, &message.from) {
-        if let Some(remote_pin) = ctx.remote_pin {
-            let remote_pin = RemotePinConfig {
-                service: remote_pin.service.clone(),
-                name: crate::bootstrap::owner_did_remote_pin_name(&message.from),
-            };
-            match ma_core::remote_pin_replace(
-                ctx.kubo_rpc_url,
-                &remote_pin,
-                old_cid.as_deref(),
-                &cid,
-            )
-            .await
-            {
-                Ok(outcome) => {
-                    if let Some(error) = outcome.previous_remove_error {
-                        warn!(
-                            did = %document_did.id(),
-                            old = old_cid.as_deref().unwrap_or(""),
-                            new = %cid,
-                            service = %remote_pin.service,
-                            name = %remote_pin.name,
-                            error = %error,
-                            "owner DID remote pin replacement left the previous pin in place"
-                        );
-                    } else {
-                        info!(
-                            did = %document_did.id(),
-                            cid = %cid,
-                            service = %remote_pin.service,
-                            name = %remote_pin.name,
-                            "owner DID remote pin replaced"
-                        );
-                    }
-                }
-                Err(error) => warn!(
-                    did = %document_did.id(),
-                    old = old_cid.as_deref().unwrap_or(""),
-                    new = %cid,
-                    service = %remote_pin.service,
-                    name = %remote_pin.name,
-                    error = %error,
-                    "owner DID remote pin replacement failed"
-                ),
-            }
-        }
+    if let Some(configured_remote) = ctx.remote_pin {
+        replace_owner_remote_pin(ctx, configured_remote, &message.from, &document_did, &cid).await;
     }
     info!(did = %document_did.id(), cid = %cid, "{}", i18n::t("document-published"));
 
@@ -1012,6 +971,44 @@ async fn handle_did_document_publish(
     }
 
     Ok(())
+}
+
+async fn replace_owner_remote_pin(
+    ctx: &IpfsHandlerCtx<'_>,
+    configured_remote: &RemotePinConfig,
+    from: &str,
+    document_did: &ma_core::Did,
+    cid: &str,
+) {
+    let name = crate::bootstrap::owner_did_remote_pin_name(from);
+    match ma_core::remote_pin_replace_named(
+        ctx.kubo_rpc_url,
+        &configured_remote.service,
+        &name,
+        cid,
+        configured_remote.overwrite,
+    )
+    .await
+    {
+        Ok(cleanup_scheduled) => {
+            info!(
+                did = %document_did.id(),
+                cid = %cid,
+                service = %configured_remote.service,
+                name = %name,
+                cleanup_scheduled,
+                "DID remote pin confirmed"
+            );
+        }
+        Err(error) => warn!(
+            did = %document_did.id(),
+            new = %cid,
+            service = %configured_remote.service,
+            name = %name,
+            error = %error,
+            "DID remote pin creation failed"
+        ),
+    }
 }
 
 async fn handle_ipfs_store(

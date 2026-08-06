@@ -212,17 +212,24 @@ To mirror runtime heads to a remote pinning service, provide the following
 environment variables when starting Compose:
 
 ```sh
-MA_PIN_REMOTE_NAME=pinata \
+MA_PIN_REMOTE=true \
+MA_PIN_REMOTE_SERVICE=pinata \
+MA_PIN_REMOTE_NAME=ma-runtime-docker \
+MA_PIN_OVERWRITE=true \
 MA_PIN_REMOTE_API_URL=https://api.pinata.cloud/psa \
 MA_PIN_REMOTE_API_SECRET=... \
 docker compose up
 ```
 
-All three variables are Docker startup settings. `MA_PIN_REMOTE_NAME` is the
-Kubo service name, `MA_PIN_REMOTE_API_URL` is its pinning-service API endpoint,
-and `MA_PIN_REMOTE_API_SECRET` is its API key. When all are set, the `ma`
-container registers the named service with Kubo if it is absent. Existing
-services are preserved.
+`MA_PIN_REMOTE=true` enables remote replication. `MA_PIN_REMOTE_SERVICE` is
+the Kubo service name, `MA_PIN_REMOTE_NAME` is the optional label on the remote
+pin, `MA_PIN_REMOTE_API_URL` is the service API endpoint, and
+`MA_PIN_REMOTE_API_SECRET` is its API key. `MA_PIN_OVERWRITE` defaults to
+`true`: the fresh pin is protected under a temporary in-flight name while a
+detached best-effort job removes all old pins with the same exact name, then
+renames the pin to the requested name. Cleanup does not delay publication.
+The `ma` container registers the named service with Kubo if
+it is absent. Existing services are preserved.
 
 ### First run
 

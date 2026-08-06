@@ -1,5 +1,5 @@
 # NOTE: Do not add a [patch.crates-io] ma-core path override here.
-# Runtime releases must build against the published crates.io ma-core 0.12 line.
+# Runtime releases must build against the published crates.io ma-core 0.13 line.
 
 name: CI / Release
 

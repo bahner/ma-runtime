@@ -1030,6 +1030,7 @@ mod tests {
                 pin_remote: false,
                 pin_remote_service: None,
                 pin_remote_name: None,
+                pin_overwrite: true,
                 secret_bundle: None,
                 secret_bundle_passphrase: None,
                 config_path: None,
