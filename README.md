@@ -288,8 +288,20 @@ concrete kind descriptors are maintained by the profile that owns them.
 ```sh
 ma
 # with options:
-ma --owner did:ma:<your-ipns> --status-bind 0.0.0.0:5003
+ma --owner did:ma:<your-ipns>
 ```
+
+For persistent local startup settings, add them to `ma.yaml`:
+
+```yaml
+slug: ma
+poll_ms: 100
+status_bind: 127.0.0.1:5003
+```
+
+`--slug`, `--poll-ms`, and `--status-bind` override the corresponding YAML
+values for one invocation. A YAML `slug` affects runtime defaults after the
+config file is selected; it cannot select the config file itself.
 
 Once IPFS Desktop and `ma` are running, the simplest and safest way to begin is
 to open `http://localhost:5003/zion` in your browser. The runtime serves Zion

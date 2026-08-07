@@ -6,7 +6,10 @@
 use anyhow::{anyhow, Context, Result};
 use cid::Cid;
 use ma_core::config::{Config, SecretBundle};
-use std::path::Path;
+use std::{net::SocketAddr, path::Path};
+
+pub const DEFAULT_POLL_MS: u64 = 100;
+pub const DEFAULT_STATUS_BIND: &str = "127.0.0.1:5003";
 
 pub async fn materialise_plugin_envelope_queue_capacity(
     kubo_url: &str,
@@ -72,6 +75,40 @@ pub fn get_bool_setting(config: &Config, key: &str, default: bool) -> bool {
         .get(key)
         .and_then(serde_yaml::Value::as_bool)
         .unwrap_or(default)
+}
+
+pub fn select_poll_ms(cli_poll_ms: Option<u64>, config: &Config) -> Result<u64> {
+    let poll_ms = match cli_poll_ms {
+        Some(value) => value,
+        None => match config.extra.get("poll_ms") {
+            Some(value) => value
+                .as_u64()
+                .ok_or_else(|| anyhow!("poll_ms in config.yaml must be a positive integer"))?,
+            None => DEFAULT_POLL_MS,
+        },
+    };
+    if poll_ms == 0 {
+        return Err(anyhow!("poll_ms must be greater than zero"));
+    }
+    Ok(poll_ms)
+}
+
+pub fn select_status_bind(
+    cli_status_bind: Option<SocketAddr>,
+    config: &Config,
+) -> Result<SocketAddr> {
+    if let Some(status_bind) = cli_status_bind {
+        return Ok(status_bind);
+    }
+    let status_bind = match config.extra.get("status_bind") {
+        Some(value) => value
+            .as_str()
+            .ok_or_else(|| anyhow!("status_bind in config.yaml must be a socket address"))?,
+        None => DEFAULT_STATUS_BIND,
+    };
+    status_bind
+        .parse()
+        .with_context(|| format!("invalid status_bind in config.yaml: {status_bind}"))
 }
 
 pub fn root_cid_setting(config: &Config) -> Option<String> {
@@ -236,8 +273,9 @@ pub fn runtime_manifest_config(
 #[cfg(test)]
 mod tests {
     use super::{
-        persist_root_cid, root_cid_setting, runtime_manifest_config, select_root_cid,
-        should_generate_headless_config,
+        persist_root_cid, root_cid_setting, runtime_manifest_config, select_poll_ms,
+        select_root_cid, select_status_bind, should_generate_headless_config, DEFAULT_POLL_MS,
+        DEFAULT_STATUS_BIND,
     };
 
     #[test]
@@ -258,6 +296,55 @@ mod tests {
         let err = select_root_cid(None, None, &config).unwrap_err();
 
         assert!(err.to_string().contains("invalid root_cid in config.yaml"));
+    }
+
+    #[test]
+    fn runtime_startup_settings_default_when_unset() {
+        let config = ma_core::config::Config::from_yaml_str("{}\n").unwrap();
+
+        assert_eq!(select_poll_ms(None, &config).unwrap(), DEFAULT_POLL_MS);
+        assert_eq!(
+            select_status_bind(None, &config).unwrap().to_string(),
+            DEFAULT_STATUS_BIND
+        );
+    }
+
+    #[test]
+    fn runtime_startup_settings_use_yaml_when_cli_is_absent() {
+        let config =
+            ma_core::config::Config::from_yaml_str("poll_ms: 250\nstatus_bind: 127.0.0.1:9000\n")
+                .unwrap();
+
+        assert_eq!(select_poll_ms(None, &config).unwrap(), 250);
+        assert_eq!(
+            select_status_bind(None, &config).unwrap().to_string(),
+            "127.0.0.1:9000"
+        );
+    }
+
+    #[test]
+    fn cli_runtime_startup_settings_override_yaml() {
+        let config =
+            ma_core::config::Config::from_yaml_str("poll_ms: 250\nstatus_bind: 127.0.0.1:9000\n")
+                .unwrap();
+
+        assert_eq!(select_poll_ms(Some(50), &config).unwrap(), 50);
+        assert_eq!(
+            select_status_bind(Some("127.0.0.1:9100".parse().unwrap()), &config)
+                .unwrap()
+                .to_string(),
+            "127.0.0.1:9100"
+        );
+    }
+
+    #[test]
+    fn invalid_runtime_startup_settings_error() {
+        let zero_poll = ma_core::config::Config::from_yaml_str("poll_ms: 0\n").unwrap();
+        assert!(select_poll_ms(None, &zero_poll).is_err());
+
+        let invalid_status =
+            ma_core::config::Config::from_yaml_str("status_bind: not-an-address\n").unwrap();
+        assert!(select_status_bind(None, &invalid_status).is_err());
     }
 
     #[test]

@@ -35,8 +35,8 @@ use tracing::{error, info, warn};
 
 use startup::{
     get_bool_setting, get_u64_setting, load_secret_bundle,
-    materialise_plugin_envelope_queue_capacity, runtime_manifest_config, select_root_cid,
-    should_generate_headless_config,
+    materialise_plugin_envelope_queue_capacity, runtime_manifest_config, select_poll_ms,
+    select_root_cid, select_status_bind, should_generate_headless_config,
 };
 
 const MA_DEFAULT_SLUG: &str = "ma";
@@ -74,16 +74,16 @@ struct Cli {
     kinds_cid: Option<String>,
 
     /// Poll interval in milliseconds.
-    #[arg(long, default_value_t = 100)]
-    poll_ms: u64,
+    #[arg(long)]
+    poll_ms: Option<u64>,
 
     /// Language for log messages. Falls back to `i18n:` in config.yaml, then "nb".
     #[arg(long, env = "MA_I18N")]
     i18n: Option<String>,
 
     /// Status web server bind address.
-    #[arg(long, default_value = "127.0.0.1:5003")]
-    status_bind: SocketAddr,
+    #[arg(long)]
+    status_bind: Option<SocketAddr>,
 }
 
 #[tokio::main]
@@ -166,6 +166,9 @@ async fn main() -> Result<()> {
         }
         config
     };
+
+    let poll_ms = select_poll_ms(cli.poll_ms, &config)?;
+    let status_bind = select_status_bind(cli.status_bind, &config)?;
 
     // ── gen-root-cid: publish bootstrap tree + lang files to IPFS, print root CID, exit ──
     if let Some(ref yaml_path) = cli.gen_root_cid {
@@ -676,7 +679,7 @@ async fn main() -> Result<()> {
     let shared_config: std::sync::Arc<tokio::sync::RwLock<Config>> =
         std::sync::Arc::new(tokio::sync::RwLock::new(config.clone()));
 
-    status::spawn_status_server(stats.clone(), acl.clone(), cli.status_bind);
+    status::spawn_status_server(stats.clone(), acl.clone(), status_bind);
 
     // Serialised manifest writer — all runtime-phase manifest mutations (CRUD
     // sets, ma_create_entity) go through this to avoid last-writer-wins races.
@@ -758,7 +761,7 @@ async fn main() -> Result<()> {
         did = %our_did,
         endpoint_id = %endpoint.id(),
         kubo_rpc_url = %config.kubo_rpc_url,
-        status_bind = %cli.status_bind,
+        status_bind = %status_bind,
         "{}", i18n::t("started")
     );
 
@@ -793,7 +796,7 @@ async fn main() -> Result<()> {
         did_publish_timeout_secs,
         ipns_publish,
         did_resolve,
-        cli.poll_ms,
+        poll_ms,
     )
     .await
 }

@@ -347,11 +347,11 @@ ma --acl-file /etc/ma/acl.yaml --status-bind 0.0.0.0:5003
 | `--kinds-cid <CID>` | — | Apply a kinds-tree CID over the selected runtime head without replacing entities or entity state |
 | `--owner <DID>` | — | DID(s) of the runtime owner(s); repeat for multiple; falls back to `owners:` in config |
 | `--acl-file <PATH>` | — | ACL YAML; open (`*`) if omitted |
-| `--poll-ms <MS>` | `100` | Service poll interval |
+| `--poll-ms <MS>` | `100` | Service poll interval. Overrides `poll_ms:` in config.yaml. |
 | `--i18n <LANG>` | — | Log language (e.g. `nb`, `en`). Also `MA_I18N` env var. Falls back to `i18n:` in config or `nb`. |
-| `--status-bind <ADDR>` | `127.0.0.1:5003` | Status HTTP server address |
+| `--status-bind <ADDR>` | `127.0.0.1:5003` | Status HTTP server bind address. Overrides `status_bind:` in config.yaml. |
 | `--gen-headless-config` | — | Generate config + bundle, then exit |
-| `--slug <SLUG>` | `ma` | Config/bundle slug (also `MA_SLUG` env). Never put in `ma.yaml` — see [Configuration keys](#configuration-keys-mayaml). |
+| `--slug <SLUG>` | `ma` | Config/bundle slug (also `MA_SLUG` env). Overrides `slug:` in `ma.yaml`; YAML cannot choose its own file — see [Configuration keys](#configuration-keys-mayaml). |
 
 ---
 
@@ -753,9 +753,14 @@ status_cors_allowed_origins:
 
 ### `slug`
 
-`slug` is **CLI/env-only** (`--slug` / `MA_SLUG`). It is never written to
-`config.yaml` — the runtime needs the slug to locate the config file in the
-first place, creating an unsolvable catch-22 if the slug were stored there.
+The config file is selected before YAML is loaded: `--config` wins, then
+`--slug` / `MA_SLUG`, then the default slug. Once that file is loaded, its
+optional `slug:` sets the effective runtime slug for bundle, log, Kubo alias,
+and other slug-derived defaults. CLI/environment slug overrides YAML.
+
+Therefore `ma --config /tmp/testing.yaml` with `slug: testing` loads exactly
+`/tmp/testing.yaml` while using `testing` as the runtime slug. A YAML slug can
+never select or redirect its own config file.
 
 ### Protected keys
 
@@ -763,7 +768,7 @@ These keys are never readable or writable via `:config.*` RPC:
 
 | Key | Reason |
 |-----|--------|
-| `slug` | CLI/env-only (catch-22, see above) |
+| `slug` | Changes runtime identity/default paths; set in config.yaml or before startup, never through RPC |
 | `secret_bundle` | Key material path — must not leak |
 | `secret_bundle_passphrase` | Secret — must never be exposed via RPC |
 | `config_path` | Internal path — not user-settable via RPC |
@@ -788,6 +793,17 @@ in memory and are saved to `config.yaml`:
 | `did_resolver_negative_ttl_secs` | u64 | Cache TTL for failed DID lookups |
 | `outbox_backoff_attempts` | positive integer | Maximum Fibonacci backoff steps for an unreachable `(DID, protocol)` outbox (default `30`). Delays are Fibonacci seconds (`1, 1, 2, 3, ...`) and remain at the final step until the peer contacts this runtime or an outbox connection succeeds. |
 | `wasm_reload_shutdown_timeout_ms` | u64 | Short per-actor budget for reload-time `:shutdown` state flush before the replacement proceeds (default `250`) |
+
+### Startup-only config keys
+
+These deployment-local settings are read when the runtime starts and take
+effect after restart. CLI values override YAML values; invalid YAML prevents
+startup rather than silently falling back to a default.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `poll_ms` | positive integer | `100` | Event-loop poll interval in milliseconds. |
+| `status_bind` | socket address | `127.0.0.1:5003` | Status HTTP server bind address, for example `127.0.0.1:5003`. Keep the default local-only unless a controlled deployment requires otherwise. |
 
 ### Manifest config keys
 

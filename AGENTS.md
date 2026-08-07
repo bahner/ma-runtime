@@ -167,16 +167,17 @@ follow XDG paths via ma-core:
 
 ### Config key categories
 
-**`slug`** is CLI/env-only (`--slug` / `MA_SLUG`). It is **never written to
-`config.yaml`** — writing it there creates an unsolvable catch-22 (the runtime
-slug is needed to read the file that would tell it the slug). Set it via `--slug`
-or `MA_SLUG` env var only.
+**`slug`** may be stored in `config.yaml`. The config path is selected before
+YAML is loaded: `--config` wins, then `--slug` / `MA_SLUG`, then the default
+slug. After that selected file is read, its `slug:` value sets the effective
+runtime slug and derived defaults. YAML `slug` must never select, redirect, or
+reload a config file; CLI/environment slug overrides it.
 
 **Protected keys** — never exposed or writable via `:config.*` RPC:
 
 | Key | Reason |
 |-----|--------|
-| `slug` | CLI/env-only (catch-22, see above) |
+| `slug` | Runtime identity/default paths; set in config.yaml or before startup, never through RPC |
 | `secret_bundle` | Key material path — must not leak |
 | `secret_bundle_passphrase` | Secret — must never be exposed |
 | `config_path` | Internal path — not user-settable via RPC |
@@ -240,8 +241,8 @@ random passphrase, and writes both config and bundle to the XDG paths with mode
 ma
 # or with an explicit ACL file:
 ma --acl-file /etc/ma/acl.yaml
-# or with a custom status bind address:
-ma --status-bind 0.0.0.0:5003
+# or with a custom local status bind address:
+ma --status-bind 127.0.0.1:5004
 ```
 
 ## CLI flags
