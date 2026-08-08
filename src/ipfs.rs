@@ -599,8 +599,9 @@ fn build_rpc_reply_message(
 ) -> Result<(ma_core::Message, Did, String)> {
     let sender = Did::try_from(from).with_context(|| format!("invalid sender DID: {from}"))?;
     let rpc_did_url = format!("did:ma:{}#rpc", sender.ipns);
+    let ipfs_did_url = format!("{}#ipfs", ctx.our_did);
     let mut reply = ma_core::Message::new(
-        ctx.our_did,
+        &ipfs_did_url,
         &rpc_did_url,
         MESSAGE_TYPE_RPC_REPLY,
         "application/cbor",

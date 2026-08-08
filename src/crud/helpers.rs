@@ -936,7 +936,7 @@ async fn send_crud_reply_raw(
         .with_context(|| format!("invalid sender DID: {}", incoming.from))?;
 
     let mut reply = ma_core::Message::new(
-        ctx.our_did.as_ref(),
+        &incoming.to,
         &incoming.from,
         reply_type,
         content_type,

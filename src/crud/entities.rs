@@ -616,8 +616,8 @@ mod tests {
         };
 
         let incoming = ma_core::Message::new(
-            sender_did.base_id(),
-            runtime_did.base_id(),
+            format!("{}#crud", sender_did.base_id()),
+            format!("{}#root", runtime_did.base_id()),
             ma_core::MESSAGE_TYPE_CRUD,
             ma_core::CONTENT_TYPE_TERM,
             b"set acl",
@@ -758,8 +758,8 @@ mod tests {
         };
 
         let incoming = ma_core::Message::new(
-            sender_did.base_id(),
-            runtime_did.base_id(),
+            format!("{}#crud", sender_did.base_id()),
+            format!("{}#root", runtime_did.base_id()),
             ma_core::MESSAGE_TYPE_CRUD,
             ma_core::CONTENT_TYPE_TERM,
             b"clear acl",

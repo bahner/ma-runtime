@@ -766,7 +766,7 @@ fn send_rpc_reply_typed(
         .with_context(|| format!("invalid sender DID: {}", incoming.from))?;
 
     let mut reply = ma_core::Message::new(
-        ctx.our_did.as_ref(),
+        &incoming.to,
         &incoming.from,
         MESSAGE_TYPE_RPC_REPLY,
         content_type,
