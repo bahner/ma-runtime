@@ -7,6 +7,7 @@ use anyhow::{anyhow, Context, Result};
 use cid::Cid;
 use ma_core::config::{Config, SecretBundle};
 use std::{net::SocketAddr, path::Path};
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 pub const DEFAULT_POLL_MS: u64 = 100;
 pub const DEFAULT_STATUS_BIND: &str = "127.0.0.1:5003";
@@ -51,6 +52,33 @@ pub fn load_secret_bundle(config: &Config) -> Result<SecretBundle> {
             bundle_path.display()
         )
     })
+}
+
+/// Canonicalise an RFC 3339 timestamp to whole-second UTC precision.
+///
+/// Returns `None` when the input cannot be parsed as RFC 3339.
+pub fn canonicalise_rfc3339_utc_seconds(value: &str) -> Option<String> {
+    let parsed = OffsetDateTime::parse(value, &Rfc3339).ok()?;
+    let whole_seconds = parsed.replace_nanosecond(0).ok()?;
+    whole_seconds.format(&Rfc3339).ok()
+}
+
+/// Ensure bundle `created_at` is serialised in canonical whole-second RFC 3339 form.
+///
+/// This preserves the timestamp instant and only changes textual precision.
+pub fn canonicalise_bundle_created_at(bundle: &mut SecretBundle) {
+    if let Some(canonical) = canonicalise_rfc3339_utc_seconds(&bundle.created_at) {
+        bundle.created_at = canonical;
+    }
+}
+
+/// QA guard for DID-document timestamp consistency before publish.
+///
+/// `createdAt` is normalised to whole-second RFC 3339 text without changing
+/// the represented instant. `updatedAt` is renewed by `SecretBundle::build_document`
+/// via `Document::touch()` and therefore stays in canonical whole-second form.
+pub fn qa_prepare_bundle_timestamps_for_publish(bundle: &mut SecretBundle) {
+    canonicalise_bundle_created_at(bundle);
 }
 
 pub fn should_generate_headless_config(config: &Config, bundle_path: &Path) -> bool {
@@ -273,10 +301,72 @@ pub fn runtime_manifest_config(
 #[cfg(test)]
 mod tests {
     use super::{
-        persist_root_cid, root_cid_setting, runtime_manifest_config, select_poll_ms,
-        select_root_cid, select_status_bind, should_generate_headless_config, DEFAULT_POLL_MS,
-        DEFAULT_STATUS_BIND,
+        canonicalise_bundle_created_at, canonicalise_rfc3339_utc_seconds, persist_root_cid,
+        qa_prepare_bundle_timestamps_for_publish, root_cid_setting, runtime_manifest_config,
+        select_poll_ms, select_root_cid, select_status_bind, should_generate_headless_config,
+        DEFAULT_POLL_MS, DEFAULT_STATUS_BIND,
     };
+
+    #[test]
+    fn canonicalises_subsecond_rfc3339_to_whole_seconds() {
+        assert_eq!(
+            canonicalise_rfc3339_utc_seconds("2026-07-19T19:45:24.489Z").as_deref(),
+            Some("2026-07-19T19:45:24Z")
+        );
+    }
+
+    #[test]
+    fn leaves_whole_second_rfc3339_unchanged() {
+        assert_eq!(
+            canonicalise_rfc3339_utc_seconds("2026-08-08T08:02:37Z").as_deref(),
+            Some("2026-08-08T08:02:37Z")
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_rfc3339() {
+        assert_eq!(canonicalise_rfc3339_utc_seconds("not-a-timestamp"), None);
+    }
+
+    #[test]
+    fn canonicalises_bundle_created_at_only() {
+        let bundle = ma_core::config::SecretBundle::generate();
+        let mut bundle = bundle;
+        bundle.created_at = "2026-07-19T19:45:24.489Z".to_string();
+
+        canonicalise_bundle_created_at(&mut bundle);
+
+        assert_eq!(bundle.created_at, "2026-07-19T19:45:24Z");
+    }
+
+    #[test]
+    fn qa_prepare_normalises_created_at() {
+        let bundle = ma_core::config::SecretBundle::generate();
+        let mut bundle = bundle;
+        bundle.created_at = "2026-07-19T19:45:24.489Z".to_string();
+
+        qa_prepare_bundle_timestamps_for_publish(&mut bundle);
+
+        assert_eq!(bundle.created_at, "2026-07-19T19:45:24Z");
+    }
+
+    #[test]
+    fn qa_prepare_and_build_document_keep_second_precision_for_both_timestamps() {
+        let mut bundle = ma_core::config::SecretBundle::generate();
+        bundle.created_at = "2026-07-19T19:45:24.489Z".to_string();
+
+        qa_prepare_bundle_timestamps_for_publish(&mut bundle);
+
+        let ma = ma_core::MaExtension::new().kind("runtime");
+        let document = bundle.build_document(ma).unwrap();
+
+        assert_eq!(document.created_at, "2026-07-19T19:45:24Z");
+        assert!(document.created_at.ends_with('Z'));
+        assert!(!document.created_at.contains('.'));
+
+        assert!(document.updated_at.ends_with('Z'));
+        assert!(!document.updated_at.contains('.'));
+    }
 
     #[test]
     fn cli_root_cid_overrides_invalid_config_root_cid() {

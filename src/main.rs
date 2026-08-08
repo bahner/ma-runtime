@@ -35,8 +35,9 @@ use tracing::{error, info, warn};
 
 use startup::{
     get_bool_setting, get_u64_setting, load_secret_bundle,
-    materialise_plugin_envelope_queue_capacity, runtime_manifest_config, select_poll_ms,
-    select_root_cid, select_status_bind, should_generate_headless_config,
+    materialise_plugin_envelope_queue_capacity, qa_prepare_bundle_timestamps_for_publish,
+    runtime_manifest_config, select_poll_ms, select_root_cid, select_status_bind,
+    should_generate_headless_config,
 };
 
 const MA_DEFAULT_SLUG: &str = "ma";
@@ -262,7 +263,8 @@ async fn main() -> Result<()> {
         .and_then(serde_yaml::value::Value::as_bool)
         .unwrap_or(true);
 
-    let secrets = load_secret_bundle(&config)?;
+    let mut secrets = load_secret_bundle(&config)?;
+    qa_prepare_bundle_timestamps_for_publish(&mut secrets);
     let shared_resolver: Arc<dyn ma_core::DidDocumentResolver> =
         Arc::new(config.ipfs_gateway_resolver());
 

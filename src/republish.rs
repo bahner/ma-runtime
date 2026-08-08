@@ -115,13 +115,14 @@ fn build_did_publish_payload(
             return None;
         }
     };
-    let bundle = match SecretBundle::load(&context.bundle_path, &context.passphrase) {
+    let mut bundle = match SecretBundle::load(&context.bundle_path, &context.passphrase) {
         Ok(bundle) => bundle,
         Err(err) => {
             error!(error = %format!("{err:#}"), "periodic DID load secret bundle failed");
             return None;
         }
     };
+    crate::startup::qa_prepare_bundle_timestamps_for_publish(&mut bundle);
     let ma = context
         .ma_base
         .clone()
