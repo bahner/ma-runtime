@@ -35,6 +35,7 @@
 //! Dispatch surface: `on_message`
 
 use std::sync::Arc;
+use std::sync::PoisonError;
 use std::{collections::HashMap, sync::Mutex};
 
 use anyhow::{anyhow, Result};
@@ -154,7 +155,7 @@ impl ScheduleRegistry {
     }
 
     fn begin_registration(&self, schedule_key: &str) -> RegistrationAttempt {
-        let mut map = self.jobs.lock().expect("jobs map poisoned");
+        let mut map = self.jobs.lock().unwrap_or_else(PoisonError::into_inner);
         let previous = map.get(schedule_key).copied();
         let version = previous.map_or(1, |entry| entry.version.saturating_add(1));
         map.insert(
@@ -174,7 +175,7 @@ impl ScheduleRegistry {
     fn active_guard(&self, schedule_key: String, version: u64) -> ActiveScheduleGuard {
         let jobs = Arc::clone(&self.jobs);
         Arc::new(move || {
-            let map = jobs.lock().expect("jobs map poisoned");
+            let map = jobs.lock().unwrap_or_else(PoisonError::into_inner);
             map.get(&schedule_key)
                 .is_some_and(|entry| entry.version == version)
         })
@@ -186,7 +187,7 @@ impl ScheduleRegistry {
         version: u64,
         job_id: uuid::Uuid,
     ) -> RegistrationCommit {
-        let mut map = self.jobs.lock().expect("jobs map poisoned");
+        let mut map = self.jobs.lock().unwrap_or_else(PoisonError::into_inner);
         if map
             .get(schedule_key)
             .is_some_and(|entry| entry.version == version)
@@ -205,7 +206,7 @@ impl ScheduleRegistry {
     }
 
     fn rollback_registration(&self, schedule_key: &str, version: u64) {
-        let mut map = self.jobs.lock().expect("jobs map poisoned");
+        let mut map = self.jobs.lock().unwrap_or_else(PoisonError::into_inner);
         if map
             .get(schedule_key)
             .is_some_and(|entry| entry.version == version)
@@ -215,7 +216,10 @@ impl ScheduleRegistry {
     }
 
     fn deactivate_all(&self) {
-        self.jobs.lock().expect("jobs map poisoned").clear();
+        self.jobs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
     }
 }
 

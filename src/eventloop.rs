@@ -66,40 +66,6 @@ fn insert_if_absent<K: Eq + Hash, V>(registry: &mut HashMap<K, V>, key: K, value
     }
 }
 
-async fn persist_new_entity(
-    manifest_writer: &ManifestWriter,
-    kubo_url: &str,
-    fragment: &str,
-    entity_node: &EntityNode,
-) -> Result<()> {
-    let entity_cid = crate::kubo::dag_put(kubo_url, entity_node).await?;
-    let fragment = fragment.to_string();
-    manifest_writer
-        .mutate(move |m| {
-            m.entities.insert(fragment, IpldLink::new(&entity_cid));
-            Ok(())
-        })
-        .await?;
-    Ok(())
-}
-
-fn normalize_behaviour_cid(value: &str) -> Result<String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Err(anyhow!("behaviour reference is empty"));
-    }
-    if let Some(cid) = trimmed.strip_prefix("/ipfs/") {
-        if cid.is_empty() {
-            return Err(anyhow!("/ipfs/ behaviour reference is missing a CID"));
-        }
-        return Ok(cid.to_string());
-    }
-    if trimmed.starts_with("/ipns/") {
-        return Err(anyhow!("/ipns/ behaviour references are not supported here; publish the code to /ipfs/<cid> first"));
-    }
-    Ok(trimmed.to_string())
-}
-
 async fn public_plugin_config_for_local(
     kubo_url: &str,
     side_effects: &LocalSideEffectCtx,
@@ -235,7 +201,7 @@ async fn dispatch_local_plugin_envelope(
                 behaviour: match req
                     .behaviour_cid
                     .as_deref()
-                    .map(normalize_behaviour_cid)
+                    .map(crate::entity::normalize_behaviour_cid)
                     .transpose()
                 {
                     Ok(value) => value.as_deref().map(IpldLink::new),
@@ -300,13 +266,10 @@ async fn dispatch_local_plugin_envelope(
                     }
                     info!(fragment = %req.fragment, kind = %req.kind_protocol,
                         parent = %req.parent, "entity created via ma_create_entity");
-                    let kubo_url = kubo_url.to_string();
                     let fragment = req.fragment.clone();
                     let writer = manifest_writer.clone();
                     tokio::spawn(async move {
-                        if let Err(e) =
-                            persist_new_entity(&writer, &kubo_url, &fragment, &running_node).await
-                        {
+                        if let Err(e) = writer.insert_entity(&fragment, &running_node).await {
                             warn!(fragment = %fragment, error = %e, "failed to persist new entity to manifest");
                         }
                     });

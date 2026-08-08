@@ -251,6 +251,18 @@ impl ManifestWriter {
         self.publish_manifest_update(&mut guard, old_cid, &manifest)
             .await
     }
+
+    /// Publish `entity_node` to Kubo and insert it at `fragment` in the manifest.
+    pub async fn insert_entity(&self, fragment: &str, entity_node: &EntityNode) -> Result<()> {
+        let entity_cid = crate::kubo::dag_put(&self.inner.kubo_url, entity_node).await?;
+        let fragment = fragment.to_string();
+        self.mutate(move |m| {
+            m.entities.insert(fragment, IpldLink::new(&entity_cid));
+            Ok(())
+        })
+        .await?;
+        Ok(())
+    }
 }
 
 impl std::fmt::Debug for ManifestWriter {

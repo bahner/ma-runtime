@@ -614,6 +614,29 @@ pub fn is_genesis_entity(kind: &KindNode, entity: &EntityNode) -> bool {
         .unwrap_or(false)
 }
 
+/// Normalise a raw behaviour CID reference: strips `/ipfs/` prefix, rejects
+/// `/ipns/` paths and empty strings.
+pub fn normalize_behaviour_cid(value: &str) -> anyhow::Result<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow::anyhow!("behaviour reference is empty"));
+    }
+    if let Some(cid) = trimmed.strip_prefix("/ipfs/") {
+        if cid.is_empty() {
+            return Err(anyhow::anyhow!(
+                "/ipfs/ behaviour reference is missing a CID"
+            ));
+        }
+        return Ok(cid.to_string());
+    }
+    if trimmed.starts_with("/ipns/") {
+        return Err(anyhow::anyhow!(
+            "/ipns/ behaviour references are not supported here; publish the code to /ipfs/<cid> first"
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
 /// Root IPLD node for this runtime.
 /// Stored as CID in `config.yaml` and published into the DID document under
 /// `ma.runtime`.

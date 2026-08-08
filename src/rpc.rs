@@ -44,25 +44,6 @@ pub struct RpcHandlerCtx {
     pub did_publish_timeout_secs: u64,
 }
 
-// ── Entity creation helper ─────────────────────────────────────────────────────
-
-async fn persist_new_entity(
-    manifest_writer: &crate::manifest::ManifestWriter,
-    kubo_url: &str,
-    fragment: &str,
-    entity_node: &crate::entity::EntityNode,
-) -> Result<()> {
-    let entity_cid = crate::kubo::dag_put(kubo_url, entity_node).await?;
-    let fragment = fragment.to_string();
-    manifest_writer
-        .mutate(move |m| {
-            m.entities.insert(fragment, IpldLink::new(&entity_cid));
-            Ok(())
-        })
-        .await?;
-    Ok(())
-}
-
 async fn public_plugin_config_for_rpc(
     ctx: &RpcHandlerCtx,
 ) -> Result<std::collections::BTreeMap<String, String>> {
@@ -80,20 +61,7 @@ async fn public_plugin_config_for_rpc(
 }
 
 fn normalize_behaviour_cid(value: &str) -> Result<String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Err(anyhow!("behaviour reference is empty"));
-    }
-    if let Some(cid) = trimmed.strip_prefix("/ipfs/") {
-        if cid.is_empty() {
-            return Err(anyhow!("/ipfs/ behaviour reference is missing a CID"));
-        }
-        return Ok(cid.to_string());
-    }
-    if trimmed.starts_with("/ipns/") {
-        return Err(anyhow!("/ipns/ behaviour references are not supported here; publish the code to /ipfs/<cid> first"));
-    }
-    Ok(trimmed.to_string())
+    crate::entity::normalize_behaviour_cid(value)
 }
 
 async fn load_entity_node_for_update(
@@ -660,13 +628,10 @@ async fn handle_entity_plugin_message(
                 // already live in the in-memory registry above.  The manifest
                 // writer serialises this against all other manifest mutations,
                 // so concurrent creates can no longer clobber each other.
-                let kubo_url = ctx.kubo_rpc_url.to_string();
                 let fragment = req.fragment.clone();
                 let writer = ctx.manifest_writer.clone();
                 tokio::spawn(async move {
-                    if let Err(e) =
-                        persist_new_entity(&writer, &kubo_url, &fragment, &running_node).await
-                    {
+                    if let Err(e) = writer.insert_entity(&fragment, &running_node).await {
                         warn!(fragment = %fragment, error = %e, "failed to persist new entity to manifest");
                     }
                 });
