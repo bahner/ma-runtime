@@ -369,9 +369,11 @@ ma --acl-file /etc/ma/acl.yaml --status-bind 0.0.0.0:5003
 10. Wait for Kubo readiness (10 attempts).
 11. Resolve `root_cid` from `--root-cid` CLI or runtime IPNS. If none found, publish a
     minimal empty `RuntimeManifest` to Kubo and use that CID as the runtime head.
-12. If `--kinds-cid <cid>` is present, read that CID as a `KindTree` overlay,
-  apply it additively to the selected manifest, and publish a new runtime head
-  whose `entities` links are preserved.
+12. If `--kinds-cid <cid>` is present, require an existing runtime head, read
+  that CID as a `KindTree` overlay, apply it additively to the selected
+  manifest, and publish a new runtime head whose `entities` links are
+  preserved. If no head can be selected from CLI, bootstrap, config, or runtime
+  IPNS, startup fails instead of creating an empty minimal manifest.
 13. Fetch locale from `RuntimeManifest.config.i18n`; fall back to embedded FTL if unavailable.
 14. Load Wasm entity plugins from IPFS manifest.
 15. Start `#scheduler` native actor.

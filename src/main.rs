@@ -36,8 +36,8 @@ use tracing::{error, info, warn};
 use startup::{
     get_bool_setting, get_u64_setting, load_secret_bundle,
     materialise_plugin_envelope_queue_capacity, qa_prepare_bundle_timestamps_for_publish,
-    runtime_manifest_config, select_poll_ms, select_root_cid, select_status_bind,
-    should_generate_headless_config,
+    require_kinds_overlay_base, runtime_manifest_config, select_poll_ms, select_root_cid,
+    select_status_bind, should_generate_headless_config,
 };
 
 const MA_DEFAULT_SLUG: &str = "ma";
@@ -423,6 +423,7 @@ async fn main() -> Result<()> {
             ipfs::resolve_runtime_root_cid_by_ipns_id(&config.kubo_rpc_url, &runtime_ipns_id)
                 .await
                 .context("failed to resolve runtime root CID from IPNS")?;
+        require_kinds_overlay_base(cli.kinds_cid.as_deref(), root_cid.as_deref())?;
         if root_cid.is_none() {
             warn!("No runtime root CID found in IPNS; bootstrapping minimal manifest");
             match status::bootstrap_minimal_manifest(&config.kubo_rpc_url, &[]).await {

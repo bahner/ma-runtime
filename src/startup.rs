@@ -168,6 +168,15 @@ pub fn select_root_cid(
     Ok(config_root_cid)
 }
 
+pub fn require_kinds_overlay_base(kinds_cid: Option<&str>, root_cid: Option<&str>) -> Result<()> {
+    if kinds_cid.is_some() && root_cid.is_none() {
+        return Err(anyhow!(
+            "--kinds-cid requires an existing runtime head from --root-cid, --bootstrap, config.yaml, or runtime IPNS"
+        ));
+    }
+    Ok(())
+}
+
 pub fn persist_root_cid(config: &mut Config, root_cid: &str) -> Result<()> {
     if root_cid_setting(config).as_deref() == Some(root_cid) {
         return Ok(());
@@ -302,9 +311,9 @@ pub fn runtime_manifest_config(
 mod tests {
     use super::{
         canonicalise_bundle_created_at, canonicalise_rfc3339_utc_seconds, persist_root_cid,
-        qa_prepare_bundle_timestamps_for_publish, root_cid_setting, runtime_manifest_config,
-        select_poll_ms, select_root_cid, select_status_bind, should_generate_headless_config,
-        DEFAULT_POLL_MS, DEFAULT_STATUS_BIND,
+        qa_prepare_bundle_timestamps_for_publish, require_kinds_overlay_base, root_cid_setting,
+        runtime_manifest_config, select_poll_ms, select_root_cid, select_status_bind,
+        should_generate_headless_config, DEFAULT_POLL_MS, DEFAULT_STATUS_BIND,
     };
 
     #[test]
@@ -386,6 +395,21 @@ mod tests {
         let err = select_root_cid(None, None, &config).unwrap_err();
 
         assert!(err.to_string().contains("invalid root_cid in config.yaml"));
+    }
+
+    #[test]
+    fn kinds_overlay_requires_an_existing_runtime_head() {
+        let err = require_kinds_overlay_base(Some("bafykinds"), None).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("--kinds-cid requires an existing runtime head"));
+    }
+
+    #[test]
+    fn kinds_overlay_accepts_an_existing_runtime_head() {
+        require_kinds_overlay_base(Some("bafykinds"), Some("bafyroot")).unwrap();
+        require_kinds_overlay_base(None, None).unwrap();
     }
 
     #[test]
