@@ -263,6 +263,8 @@ async fn main() -> Result<()> {
         .unwrap_or(true);
 
     let secrets = load_secret_bundle(&config)?;
+    let shared_resolver: Arc<dyn ma_core::DidDocumentResolver> =
+        Arc::new(config.ipfs_gateway_resolver());
 
     // ── Runtime IPNS key (separate from the DID-document IPNS key) ───────────
     let runtime_ipns_key: [u8; 32] = secrets
@@ -278,7 +280,13 @@ async fn main() -> Result<()> {
     } else {
         info!("{}", i18n::t("ipv6-disabled"));
     }
-    let mut endpoint = ma_core::new_ma_endpoint(secrets.iroh_secret_key, ipv6_enabled).await?;
+    let mut endpoint = ma_core::new_ma_endpoint(
+        secrets.iroh_secret_key,
+        secrets.encryption_key()?,
+        Arc::clone(&shared_resolver),
+        ipv6_enabled,
+    )
+    .await?;
     let rpc_messages = endpoint.service(rpc::RPC_PROTOCOL_ID);
     let inbox_messages = endpoint.service(INBOX_PROTOCOL_ID);
     let ipfs_messages = if ipfs_publisher_enabled {
@@ -765,9 +773,6 @@ async fn main() -> Result<()> {
         "{}", i18n::t("started")
     );
 
-    // ── Shared DID document resolver (local gateway first, public fallbacks) ──
-    let shared_resolver: Arc<dyn ma_core::DidDocumentResolver> =
-        Arc::new(config.ipfs_gateway_resolver());
     let remote_pin = bootstrap::runtime_remote_pin_config(&config);
 
     // ── Main event loop + graceful shutdown ─────────────────────────────────────

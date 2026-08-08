@@ -944,7 +944,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut runtime_endpoint_box = ma_core::new_ma_endpoint([11u8; 32], false).await.unwrap();
+        let mut runtime_endpoint_box = crate::testkubo::test_endpoint([11u8; 32]).await;
         let _runtime_rpc_inbox = runtime_endpoint_box.service(RPC_PROTOCOL_ID);
         let runtime_endpoint: Arc<dyn ma_core::MaEndpoint> = Arc::from(runtime_endpoint_box);
 

@@ -585,7 +585,7 @@ mod tests {
             "open"
         );
 
-        let mut endpoint = ma_core::new_ma_endpoint([3u8; 32], false).await.unwrap();
+        let mut endpoint = crate::testkubo::test_endpoint([3u8; 32]).await;
         let _crud_inbox = endpoint.service(ma_core::CRUD_PROTOCOL_ID);
         let sender_did = ma_core::Did::new_url(&sender_ipns, None::<String>).unwrap();
         let mut sender_doc = ma_core::Document::new(&sender_did, &sender_did);
@@ -727,7 +727,7 @@ mod tests {
             "open"
         );
 
-        let mut endpoint = ma_core::new_ma_endpoint([3u8; 32], false).await.unwrap();
+        let mut endpoint = crate::testkubo::test_endpoint([3u8; 32]).await;
         let _crud_inbox = endpoint.service(ma_core::CRUD_PROTOCOL_ID);
         let sender_did = ma_core::Did::new_url(&sender_ipns, None::<String>).unwrap();
         let mut sender_doc = ma_core::Document::new(&sender_did, &sender_did);
