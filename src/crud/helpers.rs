@@ -935,16 +935,16 @@ async fn send_crud_reply_raw(
     let sender = Did::try_from(incoming.from.as_str())
         .with_context(|| format!("invalid sender DID: {}", incoming.from))?;
 
-    let mut reply = ma_core::Message::new(
+    let reply = ma_core::Message::new_reply(
         &incoming.to,
         &incoming.from,
         reply_type,
         content_type,
         content,
+        &incoming.id,
         ctx.signing_key.as_ref(),
     )
     .context("failed to build CRUD reply")?;
-    reply.reply_to = Some(incoming.id.clone());
 
     let outbox_result = if let Some(doc_cache) = &ctx.doc_cache {
         crate::ipfs::open_outbox_for_did(

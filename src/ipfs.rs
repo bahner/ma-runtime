@@ -600,16 +600,16 @@ fn build_rpc_reply_message(
     let sender = Did::try_from(from).with_context(|| format!("invalid sender DID: {from}"))?;
     let rpc_did_url = format!("did:ma:{}#rpc", sender.ipns);
     let ipfs_did_url = format!("{}#ipfs", ctx.our_did);
-    let mut reply = ma_core::Message::new(
+    let reply = ma_core::Message::new_reply(
         &ipfs_did_url,
         &rpc_did_url,
         MESSAGE_TYPE_RPC_REPLY,
         "application/cbor",
         payload,
+        in_reply_to,
         ctx.signing_key,
     )
     .context("failed to build reply message")?;
-    reply.reply_to = Some(in_reply_to.to_string());
     Ok((reply, sender, rpc_did_url))
 }
 

@@ -657,21 +657,32 @@ pub async fn run(
                             continue;
                         }
                     };
-                    let mut msg = match ma_core::Message::new(
-                        &sender_did_url,
-                        &env.to,
-                        &msg_type,
-                        &env.content_type,
-                        &env.content,
-                        &signing_key,
-                    ) {
+                    let message = match env.reply_to.as_deref() {
+                        Some(reply_to) => ma_core::Message::new_reply(
+                            &sender_did_url,
+                            &env.to,
+                            &msg_type,
+                            &env.content_type,
+                            &env.content,
+                            reply_to,
+                            &signing_key,
+                        ),
+                        None => ma_core::Message::new(
+                            &sender_did_url,
+                            &env.to,
+                            &msg_type,
+                            &env.content_type,
+                            &env.content,
+                            &signing_key,
+                        ),
+                    };
+                    let msg = match message {
                         Ok(m) => m,
                         Err(e) => {
                             warn!(fragment = %fragment, error = %e, "plugin envelope: failed to build message; skipped");
                             continue;
                         }
                     };
-                    msg.reply_to.clone_from(&env.reply_to);
                     let protocol = protocol_for(&msg_type);
                     // Spawn each delivery independently so one unreachable peer
                     // cannot block others. Outbox opening applies its own

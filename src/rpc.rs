@@ -765,16 +765,16 @@ fn send_rpc_reply_typed(
     let sender = Did::try_from(incoming.from.as_str())
         .with_context(|| format!("invalid sender DID: {}", incoming.from))?;
 
-    let mut reply = ma_core::Message::new(
+    let reply = ma_core::Message::new_reply(
         &incoming.to,
         &incoming.from,
         MESSAGE_TYPE_RPC_REPLY,
         content_type,
         content,
+        &incoming.id,
         &ctx.signing_key,
     )
     .context("failed to build RPC reply")?;
-    reply.reply_to = Some(incoming.id.clone());
 
     // Spawn the delivery so the event loop is never blocked by DID resolution
     // or QUIC connection setup. The reply is fire-and-forget from the handler's
