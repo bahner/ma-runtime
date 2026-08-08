@@ -131,60 +131,6 @@ fn protocol_for(msg_type: &str) -> &'static str {
     }
 }
 
-fn delivery_failed_content(to: &str, reason: &str, original_content: &[u8]) -> Result<Vec<u8>> {
-    let original_term = ciborium::de::from_reader(original_content).unwrap_or(CborValue::Null);
-    let term = CborValue::Array(vec![
-        CborValue::Text(":delivery-failed".to_string()),
-        CborValue::Text(to.to_string()),
-        CborValue::Text(reason.to_string()),
-        original_term,
-    ]);
-    let mut content = Vec::new();
-    ciborium::ser::into_writer(&term, &mut content)?;
-    Ok(content)
-}
-
-async fn dispatch_delivery_failed(
-    sender_fragment: &str,
-    failed_envelope: SendEnvelope,
-    reason: &str,
-    entity_registry: &EntityRegistry,
-    manifest_writer: &ManifestWriter,
-    kubo_url: &str,
-    our_did: &str,
-) {
-    let content = match delivery_failed_content(
-        &failed_envelope.to,
-        reason,
-        &failed_envelope.content,
-    ) {
-        Ok(content) => content,
-        Err(err) => {
-            warn!(fragment = %sender_fragment, to = %failed_envelope.to, error = %err, "plugin envelope: failed to encode delivery failure");
-            return;
-        }
-    };
-    let failure = SendEnvelope {
-        to: local_actor_url(our_did, sender_fragment),
-        content_type: CONTENT_TYPE_TERM.to_string(),
-        message_type: Some(MESSAGE_TYPE_RPC.to_string()),
-        content,
-        reply_to: None,
-    };
-    dispatch_local_plugin_envelope(
-        sender_fragment,
-        sender_fragment,
-        failure,
-        MESSAGE_TYPE_RPC,
-        entity_registry,
-        manifest_writer,
-        kubo_url,
-        our_did,
-        None,
-    )
-    .await;
-}
-
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 async fn dispatch_local_plugin_envelope(
     sender_fragment: &str,
@@ -734,11 +680,6 @@ pub async fn run(
                     let res = Arc::clone(&shared_resolver);
                     let doc_cache = ipfs_state.as_ref().map(|ipfs| Arc::clone(&ipfs.doc_cache));
                     let base = recipient.base_id().clone();
-                    let entity_registry = entity_registry.clone();
-                    let manifest_writer = manifest_writer.clone();
-                    let kubo_url = kubo_url.clone();
-                    let our_did = our_did.clone();
-                    let failed_envelope = env.clone();
                     let Ok(permit) = remote_plugin_delivery_gate.clone().try_acquire_owned() else {
                         debug!(fragment = %fragment, to = %env.to, limit = REMOTE_PLUGIN_DELIVERY_LIMIT, "plugin envelope: remote delivery limit reached; envelope dropped");
                         continue;
@@ -771,31 +712,11 @@ pub async fn run(
                         match outbox_result {
                             Ok(mut outbox) => {
                                 if let Err(e) = outbox.send(&msg).await {
-                                    warn!(fragment = %fragment, to = %env.to, error = %e, "plugin envelope delivery failed");
-                                    dispatch_delivery_failed(
-                                        &fragment,
-                                        failed_envelope,
-                                        &format!("delivery failed: {e}"),
-                                        &entity_registry,
-                                        &manifest_writer,
-                                        &kubo_url,
-                                        &our_did,
-                                    )
-                                    .await;
+                                    warn!(fragment = %fragment, to = %env.to, error = %e, "plugin envelope delivery failed; dropping envelope");
                                 }
                             }
                             Err(e) => {
-                                debug!(fragment = %fragment, to = %env.to, error = %e, "plugin envelope: outbox open failed");
-                                dispatch_delivery_failed(
-                                    &fragment,
-                                    failed_envelope,
-                                    &format!("outbox open failed: {e}"),
-                                    &entity_registry,
-                                    &manifest_writer,
-                                    &kubo_url,
-                                    &our_did,
-                                )
-                                .await;
+                                debug!(fragment = %fragment, to = %env.to, error = %e, "plugin envelope: outbox open failed; dropping envelope");
                             }
                         }
                     });
