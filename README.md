@@ -305,9 +305,13 @@ config file is selected; it cannot select the config file itself.
 
 Once IPFS Desktop and `ma` are running, the simplest and safest way to begin is
 to open `http://localhost:5003/zion` in your browser. The runtime serves Zion
-through its local-only status server, so you do not need a separate web app or a
-remote origin for first setup. The status page remains available at
-`http://127.0.0.1:5003`.
+through its local-only status server, so you do not need a remote browser origin
+for first setup. The default Zion files are nevertheless selected through the
+ma maintainer's IPNS key. Treat that source only as bootstrap help, not as a
+trust root. Publish Zion under an IPNS key you control and replace
+`/config/zion` with your own `/ipns/...` path; the commands are in
+[HOWTO.md](HOWTO.md#publish-zion-under-your-own-key). The status page remains
+available at `http://127.0.0.1:5003`.
 
 ### Wasm memory reservation
 

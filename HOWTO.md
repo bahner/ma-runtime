@@ -133,14 +133,15 @@ curl http://127.0.0.1:5003/status.json
 
 ## Step 4 — Open zion and claim your runtime
 
-zion is the browser-based actor terminal. The easiest, best, and safest first
-run path is to use the copy served by your own local runtime:
+zion is the browser-based actor terminal. The easiest first-run path is to use
+the copy served by your own local runtime:
 
 **<http://localhost:5003/zion>**
 
-This keeps setup on the local status server that `ma` just started. It also
-avoids depending on a separately hosted web app while you create and claim your
-first identity.
+This keeps the browser origin on the local status server that `ma` just
+started. By default, however, the Zion files are resolved from an IPNS name
+controlled by the ma maintainer. That default is bootstrap help, not a trust
+root. Do not rely on the maintainer's key as your permanent software source.
 
 1. Create an identity (pick a username, set a passphrase).
 
@@ -171,6 +172,32 @@ Your Zion identity needs to become an owner before it can safely administer the
 runtime. Loading Zion from `http://localhost:5003/zion` lets the browser call
 the local status server directly for that one-time claim, then use normal
 authenticated ma protocols after ownership is established.
+
+### Publish Zion under your own key
+
+After the initial setup, build Zion from source and publish it with an IPNS key
+you control:
+
+```sh
+git clone https://github.com/bahner/ma-zion.git
+cd ma-zion
+trunk build --release
+cid=$(ipfs add -Qr dist)
+ipfs key gen zion
+ipfs name publish --key=zion "/ipfs/$cid"
+ipfs key list -l
+```
+
+If a `zion` key already exists, skip `ipfs key gen zion`. Find its key ID in
+the final command's output, then set the claimed runtime's Zion source from the
+Zion terminal:
+
+```text
+@ma/config/zion: /ipns/<your-zion-key-id>
+```
+
+Reload `http://localhost:5003/zion`. The runtime now resolves Zion through
+your key. You decide which build that key points to and when it changes.
 
 ### Privacy and encryption
 

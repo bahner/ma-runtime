@@ -124,6 +124,7 @@ async fn handle_index(State(state): State<StatusState>) -> impl IntoResponse {
     };
     let zion_path =
         manifest_config_string(&kubo_rpc_url, root_cid.as_deref(), ZION_CONFIG_KEY).await;
+    let zion_trust_html = zion_source_trust_notice(zion_path.as_deref());
     let ipfs_status = if ipfs_enabled { "enabled" } else { "disabled" };
     let entities_html = if entity_names.is_empty() {
         "<em>none</em>".to_string()
@@ -153,7 +154,7 @@ async fn handle_index(State(state): State<StatusState>) -> impl IntoResponse {
 <style>body{{font-family:monospace;max-width:700px;margin:2em auto;background:#111;color:#eee}}
 h1{{color:#7cf}}table{{border-collapse:collapse;width:100%}}
 td,th{{padding:6px 12px;border:1px solid #333;text-align:left}}
-th{{background:#222}}a{{color:#7cf}}</style></head>
+th{{background:#222}}a{{color:#7cf}}.trust-warning{{border:1px solid #d99b32;padding:12px;color:#ffd27a}}</style></head>
 <body>
 <h1>間 Runtime</h1>
 <table>
@@ -177,6 +178,7 @@ th{{background:#222}}a{{color:#7cf}}</style></head>
 <tr><td>VmData</td><td>{vm_data}</td></tr>
 <tr><td>VmPeak</td><td>{vm_peak}</td></tr>
 </table>
+{zion_trust_html}
 <p><a href="/status.json">status.json</a> &bull; <a href="/bootstrap.yaml">bootstrap.yaml</a></p>
 </body></html>"#,
         pid = process.pid,
@@ -283,6 +285,14 @@ async fn manifest_config_string(
 
 fn default_config_string(key: &str) -> Option<String> {
     (key == ZION_CONFIG_KEY).then(|| DEFAULT_ZION_SOURCE.to_string())
+}
+
+fn zion_source_trust_notice(source: Option<&str>) -> &'static str {
+    if source == Some(DEFAULT_ZION_SOURCE) {
+        r#"<p class="trust-warning"><strong>Bootstrap trust:</strong> This default Zion copy is controlled by the ma maintainer's IPNS key. Do not treat that key as a trust root. Publish Zion under an IPNS key you control, then replace <code>/config/zion</code> with your own <code>/ipns/...</code> source.</p>"#
+    } else {
+        ""
+    }
 }
 
 fn normalize_zion_source(value: &str) -> Option<String> {
@@ -749,7 +759,7 @@ pub async fn bootstrap_minimal_manifest(
 mod tests {
     use super::{
         default_config_string, kubo_block_get_ipld_path, normalize_zion_source, zion_asset_path,
-        ZION_CONFIG_KEY,
+        zion_source_trust_notice, ZION_CONFIG_KEY,
     };
     use crate::crud::config::DEFAULT_ZION_SOURCE;
 
@@ -763,6 +773,8 @@ mod tests {
             normalize_zion_source(DEFAULT_ZION_SOURCE).as_deref(),
             Some(DEFAULT_ZION_SOURCE)
         );
+        assert!(zion_source_trust_notice(Some(DEFAULT_ZION_SOURCE)).contains("trust root"));
+        assert!(zion_source_trust_notice(Some("/ipns/user-controlled")).is_empty());
     }
 
     #[test]

@@ -662,7 +662,11 @@ never be removed via CRUD), never resolved specially.
 For a first local setup, start IPFS Desktop, start `ma`, then visit
 `http://localhost:5003/zion`. This is the recommended path because the browser
 app is loaded through the runtime's local-only status server instead of a remote
-web origin.
+web origin. The default `/config/zion` value is still an IPNS name controlled by
+the ma maintainer. It is bootstrap help, not a trust root. Operators should
+publish Zion under their own IPNS key and set `/config/zion` to that
+`/ipns/<key-id>` path. The status page displays a warning while the default
+source remains active.
 
 ### CORS policy (default-deny except allowlist)
 
