@@ -138,7 +138,7 @@ axum = { version = "0.7", default-features = false, features = ["http1", "tokio"
 ciborium = "0.2"
 clap = { version = "4", features = ["derive"] }
 directories = "5"
-ma-core = { version = "0.13", default-features = false, features = ["config", "kubo", "iroh", "acl"] }
+ma-core = { version = "^0.14.4", default-features = false, features = ["config", "kubo", "iroh", "acl"] }
 serde_json = "1"
 serde_yaml = "0.9"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "sync"] }
@@ -146,8 +146,20 @@ tracing = "0.1"
 zeroize = "1"
 ```
 
-`ma-core 0.13` exposes everything this daemon uses for DID handling, so no
+`ma-core 0.14.4` exposes everything this daemon uses for DID handling, so no
 direct `ma-did` dependency is required.
+
+### DID document publication
+
+- Keep `ma-core` at `^0.14.4` or newer and use the published crate, never a
+  committed path dependency.
+- Build runtime documents with `SecretBundle::build_document` after
+  canonicalising legacy bundle `created_at` values to RFC 3339 UTC whole
+  seconds.
+- Every direct Kubo publication path must decode, `validate()`, and `verify()`
+  the final signed document before calling `IpfsDidPublisher::publish_document`.
+- `createdAt` and `updatedAt` in published documents must use RFC 3339 UTC
+  whole-second form such as `2026-08-08T12:34:56Z`.
 
 ## Configuration
 

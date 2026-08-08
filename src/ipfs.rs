@@ -203,6 +203,9 @@ pub async fn do_publish_own_document(
     pin_overwrite: bool,
 ) -> Result<()> {
     let ipns_secret_key = Zeroizing::new(ipns_secret_key);
+    let document = Document::decode(&doc_cbor).context("decode own DID document")?;
+    document.validate().context("validate own DID document")?;
+    document.verify().context("verify own DID document proof")?;
     let publisher = IpfsDidPublisher::new(&kubo_url)?;
     publisher.wait_until_ready(10).await?;
 
@@ -1085,8 +1088,27 @@ async fn handle_ipfs_store(
 
 #[cfg(test)]
 mod tests {
-    use super::{record_inbound_contact, OutboxCache};
+    use super::{
+        do_publish_own_document, record_inbound_contact, IpnsPublishSettings, OutboxCache,
+    };
     use std::sync::Arc;
+
+    #[tokio::test]
+    async fn direct_publish_rejects_invalid_did_document_before_kubo() {
+        let error = do_publish_own_document(
+            "http://127.0.0.1:1".to_string(),
+            "test".to_string(),
+            vec![0xff],
+            vec![1; 32],
+            IpnsPublishSettings::default(),
+            None,
+            false,
+        )
+        .await
+        .expect_err("invalid DID document must be rejected");
+
+        assert!(error.to_string().contains("decode own DID document"));
+    }
 
     #[tokio::test]
     async fn inbound_contact_resets_outbox_backoff_for_sender_base_did() {
