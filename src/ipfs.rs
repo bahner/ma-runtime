@@ -1090,16 +1090,20 @@ mod tests {
     #[tokio::test]
     async fn inbound_contact_resets_outbox_backoff_for_sender_base_did() {
         let cache = Arc::new(OutboxCache::new(30));
-        cache.mark_unreachable("did:ma:test", "/ma/rpc/0.0.1").await;
+        let sender = format!(
+            "did:ma:{}",
+            ma_core::ipns_from_secret([1; 32]).expect("test IPNS identifier")
+        );
+        cache.mark_unreachable(&sender, "/ma/rpc/0.0.1").await;
         assert!(cache
-            .unreachable_for("did:ma:test", "/ma/rpc/0.0.1")
+            .unreachable_for(&sender, "/ma/rpc/0.0.1")
             .await
             .is_some());
 
-        record_inbound_contact(&cache, "did:ma:test#rpc").await;
+        record_inbound_contact(&cache, &format!("{sender}#rpc")).await;
 
         assert!(cache
-            .unreachable_for("did:ma:test", "/ma/rpc/0.0.1")
+            .unreachable_for(&sender, "/ma/rpc/0.0.1")
             .await
             .is_none());
     }

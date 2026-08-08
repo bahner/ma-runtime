@@ -819,6 +819,13 @@ mod tests {
 
     use super::{insert_if_absent, local_actor_url, local_target_fragment};
 
+    fn test_did(seed: u8) -> String {
+        format!(
+            "did:ma:{}",
+            ma_core::ipns_from_secret([seed; 32]).expect("test IPNS identifier")
+        )
+    }
+
     #[test]
     fn concurrent_entity_creation_keeps_first_registered_entity() {
         let mut registry = HashMap::new();
@@ -834,30 +841,35 @@ mod tests {
 
     #[test]
     fn local_target_fragment_accepts_local_forms_only() {
-        let our_did = "did:ma:local";
+        let our_did = test_did(1);
+        let remote_did = test_did(2);
 
-        assert_eq!(local_target_fragment("#room", our_did), None);
-        assert_eq!(local_target_fragment("room", our_did), None);
+        assert_eq!(local_target_fragment("#room", &our_did), None);
+        assert_eq!(local_target_fragment("room", &our_did), None);
         assert_eq!(
-            local_target_fragment("did:ma:local#room", our_did),
+            local_target_fragment(&format!("{our_did}#room"), &our_did),
             Some("room".to_string())
         );
         assert_eq!(
-            local_target_fragment("did:ma:local#room", "did:ma:local#root"),
+            local_target_fragment(&format!("{our_did}#room"), &format!("{our_did}#root")),
             Some("room".to_string())
         );
 
-        assert_eq!(local_target_fragment("did:ma:local", our_did), None);
-        assert_eq!(local_target_fragment("did:ma:remote#room", our_did), None);
-        assert_eq!(local_target_fragment("/entities/room", our_did), None);
+        assert_eq!(local_target_fragment(&our_did, &our_did), None);
+        assert_eq!(
+            local_target_fragment(&format!("{remote_did}#room"), &our_did),
+            None
+        );
+        assert_eq!(local_target_fragment("/entities/room", &our_did), None);
     }
 
     #[test]
     fn local_actor_url_always_uses_own_base_did() {
-        assert_eq!(local_actor_url("did:ma:local", "rms"), "did:ma:local#rms");
+        let our_did = test_did(1);
+        assert_eq!(local_actor_url(&our_did, "rms"), format!("{our_did}#rms"));
         assert_eq!(
-            local_actor_url("did:ma:local#root", "rms"),
-            "did:ma:local#rms"
+            local_actor_url(&format!("{our_did}#root"), "rms"),
+            format!("{our_did}#rms")
         );
     }
 }

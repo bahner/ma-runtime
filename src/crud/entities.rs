@@ -549,13 +549,15 @@ mod tests {
         let entity_registry = new_entity_registry();
         let (envelope_tx, _envelope_rx) = tokio::sync::mpsc::channel::<(String, SendEnvelope)>(16);
 
-        let runtime_did = ma_core::Did::new_url("k51qzi5uqu5runtime", None::<String>).unwrap();
+        let runtime_ipns = ma_core::ipns_from_secret([1; 32]).unwrap();
+        let sender_ipns = ma_core::ipns_from_secret([2; 32]).unwrap();
+        let runtime_did = ma_core::Did::new_url(&runtime_ipns, None::<String>).unwrap();
         let runtime_signing = ma_core::SigningKey::generate(
-            ma_core::Did::new_url("k51qzi5uqu5runtime", Some("sign")).unwrap(),
+            ma_core::Did::new_url(&runtime_ipns, Some("sign")).unwrap(),
         )
         .unwrap();
         let sender_signing = ma_core::SigningKey::generate(
-            ma_core::Did::new_url("k51qzi5uqu5sender", Some("sign")).unwrap(),
+            ma_core::Did::new_url(&sender_ipns, Some("sign")).unwrap(),
         )
         .unwrap();
 
@@ -585,7 +587,7 @@ mod tests {
 
         let mut endpoint = ma_core::new_ma_endpoint([3u8; 32], false).await.unwrap();
         let _crud_inbox = endpoint.service(ma_core::CRUD_PROTOCOL_ID);
-        let sender_did = ma_core::Did::new_url("k51qzi5uqu5sender", None::<String>).unwrap();
+        let sender_did = ma_core::Did::new_url(&sender_ipns, None::<String>).unwrap();
         let mut sender_doc = ma_core::Document::new(&sender_did, &sender_did);
         let assertion_vm = ma_core::VerificationMethod::try_from(&sender_signing).unwrap();
         sender_doc.verification_method.push(assertion_vm.clone());
@@ -689,13 +691,15 @@ mod tests {
         let entity_registry = new_entity_registry();
         let (envelope_tx, _envelope_rx) = tokio::sync::mpsc::channel::<(String, SendEnvelope)>(16);
 
-        let runtime_did = ma_core::Did::new_url("k51qzi5uqu5runtime", None::<String>).unwrap();
+        let runtime_ipns = ma_core::ipns_from_secret([1; 32]).unwrap();
+        let sender_ipns = ma_core::ipns_from_secret([2; 32]).unwrap();
+        let runtime_did = ma_core::Did::new_url(&runtime_ipns, None::<String>).unwrap();
         let runtime_signing = ma_core::SigningKey::generate(
-            ma_core::Did::new_url("k51qzi5uqu5runtime", Some("sign")).unwrap(),
+            ma_core::Did::new_url(&runtime_ipns, Some("sign")).unwrap(),
         )
         .unwrap();
         let sender_signing = ma_core::SigningKey::generate(
-            ma_core::Did::new_url("k51qzi5uqu5sender", Some("sign")).unwrap(),
+            ma_core::Did::new_url(&sender_ipns, Some("sign")).unwrap(),
         )
         .unwrap();
 
@@ -725,7 +729,7 @@ mod tests {
 
         let mut endpoint = ma_core::new_ma_endpoint([3u8; 32], false).await.unwrap();
         let _crud_inbox = endpoint.service(ma_core::CRUD_PROTOCOL_ID);
-        let sender_did = ma_core::Did::new_url("k51qzi5uqu5sender", None::<String>).unwrap();
+        let sender_did = ma_core::Did::new_url(&sender_ipns, None::<String>).unwrap();
         let mut sender_doc = ma_core::Document::new(&sender_did, &sender_did);
         let assertion_vm = ma_core::VerificationMethod::try_from(&sender_signing).unwrap();
         sender_doc.verification_method.push(assertion_vm.clone());

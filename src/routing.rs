@@ -43,51 +43,59 @@ fn local_base_did(our_did: &str) -> String {
 mod tests {
     use super::{classify_target, local_actor_url, local_target_fragment, TargetRoute};
 
+    fn test_did(seed: u8) -> String {
+        format!(
+            "did:ma:{}",
+            ma_core::ipns_from_secret([seed; 32]).expect("test IPNS identifier")
+        )
+    }
+
     #[test]
     fn classifies_local_fragment_target() {
+        let local = test_did(1);
         assert_eq!(
-            classify_target("did:ma:abc#construct", "did:ma:abc"),
+            classify_target(&format!("{local}#construct"), &local),
             TargetRoute::LocalFragment("construct".to_string())
         );
     }
 
     #[test]
     fn classifies_local_runtime_target_without_fragment() {
-        assert_eq!(
-            classify_target("did:ma:abc", "did:ma:abc"),
-            TargetRoute::LocalRuntime
-        );
+        let local = test_did(1);
+        assert_eq!(classify_target(&local, &local), TargetRoute::LocalRuntime);
     }
 
     #[test]
     fn classifies_remote_target() {
+        let local = test_did(1);
+        let remote = test_did(2);
         assert!(matches!(
-            classify_target("did:ma:xyz#construct", "did:ma:abc"),
+            classify_target(&format!("{remote}#construct"), &local),
             TargetRoute::Remote(_)
         ));
     }
 
     #[test]
     fn rejects_bare_fragment_target() {
-        assert_eq!(
-            classify_target("#construct", "did:ma:abc"),
-            TargetRoute::Invalid
-        );
+        let local = test_did(1);
+        assert_eq!(classify_target("#construct", &local), TargetRoute::Invalid);
     }
 
     #[test]
     fn extracts_local_target_fragment() {
+        let local = test_did(1);
         assert_eq!(
-            local_target_fragment("did:ma:abc#rms", "did:ma:abc").as_deref(),
+            local_target_fragment(&format!("{local}#rms"), &local).as_deref(),
             Some("rms")
         );
     }
 
     #[test]
     fn local_actor_url_uses_base_did() {
+        let local = test_did(1);
         assert_eq!(
-            local_actor_url("did:ma:abc#root", "room"),
-            "did:ma:abc#room"
+            local_actor_url(&format!("{local}#root"), "room"),
+            format!("{local}#room")
         );
     }
 }

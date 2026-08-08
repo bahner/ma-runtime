@@ -931,14 +931,16 @@ mod tests {
         let (envelope_tx, _envelope_rx) =
             tokio::sync::mpsc::channel::<(String, crate::entity::SendEnvelope)>(16);
 
-        let runtime_did = ma_core::Did::new_url("k51qzi5uqu5runtime", None::<String>).unwrap();
+        let runtime_ipns = ma_core::ipns_from_secret([1; 32]).unwrap();
+        let sender_ipns = ma_core::ipns_from_secret([2; 32]).unwrap();
+        let runtime_did = ma_core::Did::new_url(&runtime_ipns, None::<String>).unwrap();
         let runtime_signing = ma_core::SigningKey::generate(
-            ma_core::Did::new_url("k51qzi5uqu5runtime", Some("sign")).unwrap(),
+            ma_core::Did::new_url(&runtime_ipns, Some("sign")).unwrap(),
         )
         .unwrap();
-        let sender_did = ma_core::Did::new_url("k51qzi5uqu5sender", None::<String>).unwrap();
+        let sender_did = ma_core::Did::new_url(&sender_ipns, None::<String>).unwrap();
         let sender_signing = ma_core::SigningKey::generate(
-            ma_core::Did::new_url("k51qzi5uqu5sender", Some("sign")).unwrap(),
+            ma_core::Did::new_url(&sender_ipns, Some("sign")).unwrap(),
         )
         .unwrap();
 
