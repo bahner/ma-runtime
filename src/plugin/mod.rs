@@ -346,41 +346,41 @@ async fn resolve_wasm_and_behaviour(
         entity_behaviour_cid = ?entity_behaviour_cid,
         "resolved entity behaviour chain"
     );
-    let behaviour_text: Option<Vec<u8>> = if kind_behaviours.is_empty() && entity_behaviour_cid.is_none()
-    {
-        None
-    } else {
-        let mut parts = Vec::new();
-        for link in &kind_behaviours {
-            parts.push(
-                crate::behaviour::fetch_behaviour(kubo_url, &link.cid)
-                    .await
-                    .with_context(|| {
-                        format!("fetching kind behaviour for '{fragment}' from {}", link.cid)
-                    })?,
-            );
-        }
-        if let Some(cid) = &entity_behaviour_cid {
-            parts.push(
-                crate::behaviour::fetch_behaviour(kubo_url, cid)
-                    .await
-                    .with_context(|| {
-                        format!("fetching entity behaviour for '{fragment}' from {cid}")
-                    })?,
-            );
-        }
-        let mut combined = Vec::new();
-        for part in parts {
-            if !combined.is_empty() && !combined.ends_with(b"\n") {
-                combined.push(b'\n');
+    let behaviour_text: Option<Vec<u8>> =
+        if kind_behaviours.is_empty() && entity_behaviour_cid.is_none() {
+            None
+        } else {
+            let mut parts = Vec::new();
+            for link in &kind_behaviours {
+                parts.push(
+                    crate::behaviour::fetch_behaviour(kubo_url, &link.cid)
+                        .await
+                        .with_context(|| {
+                            format!("fetching kind behaviour for '{fragment}' from {}", link.cid)
+                        })?,
+                );
             }
-            combined.extend_from_slice(&part);
-            if !combined.ends_with(b"\n") {
-                combined.push(b'\n');
+            if let Some(cid) = &entity_behaviour_cid {
+                parts.push(
+                    crate::behaviour::fetch_behaviour(kubo_url, cid)
+                        .await
+                        .with_context(|| {
+                            format!("fetching entity behaviour for '{fragment}' from {cid}")
+                        })?,
+                );
             }
-        }
-        Some(combined)
-    };
+            let mut combined = Vec::new();
+            for part in parts {
+                if !combined.is_empty() && !combined.ends_with(b"\n") {
+                    combined.push(b'\n');
+                }
+                combined.extend_from_slice(&part);
+                if !combined.ends_with(b"\n") {
+                    combined.push(b'\n');
+                }
+            }
+            Some(combined)
+        };
     Ok((wasm_cid, wasm_bytes, entity_behaviour_cid, behaviour_text))
 }
 
@@ -1417,8 +1417,13 @@ mod hostile {
 
         assert_garbage_load_fails_fast(&kubo, &garbage_cid, envelope_tx.clone(), registry.clone())
             .await;
-        assert_evil_init_load_fails_bounded(&kubo, &evil_cid, envelope_tx.clone(), registry.clone())
-            .await;
+        assert_evil_init_load_fails_bounded(
+            &kubo,
+            &evil_cid,
+            envelope_tx.clone(),
+            registry.clone(),
+        )
+        .await;
 
         let (evil, good) = load_evil_and_good(
             &kubo,

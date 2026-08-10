@@ -136,8 +136,8 @@ async fn apply_behaviour_request(req: SetBehaviourRequest, ctx: &RpcHandlerCtx) 
         warn!(error = %e, "ma_set_behaviour: failed to build public plugin config; continuing with entity-local config only");
         std::collections::BTreeMap::new()
     });
-    let (plugin, lifecycle) = crate::plugin::EntityPlugin::load_with_fibonacci_backoff(
-        crate::plugin::LoadArgs {
+    let (plugin, lifecycle) =
+        crate::plugin::EntityPlugin::load_with_fibonacci_backoff(crate::plugin::LoadArgs {
             fragment: req.fragment.clone(),
             node: &updated_node,
             kind_node: &kind_node,
@@ -149,9 +149,8 @@ async fn apply_behaviour_request(req: SetBehaviourRequest, ctx: &RpcHandlerCtx) 
             started_at,
             runtime_config,
             init_payload: None,
-        },
-    )
-    .await?;
+        })
+        .await?;
     let plugin = Arc::new(plugin);
     let state_bytes = plugin.trigger_save(&ctx.kubo_rpc_url).await.ok().flatten();
 
@@ -940,8 +939,12 @@ mod tests {
 
     /// Deterministic runtime + sender DIDs and signing keys for the scheduler
     /// dispatch fixture.
-    fn build_scheduler_test_identities()
-    -> (ma_core::Did, ma_core::SigningKey, ma_core::Did, ma_core::SigningKey) {
+    fn build_scheduler_test_identities() -> (
+        ma_core::Did,
+        ma_core::SigningKey,
+        ma_core::Did,
+        ma_core::SigningKey,
+    ) {
         let runtime_ipns = ma_core::ipns_from_secret([1; 32]).unwrap();
         let sender_ipns = ma_core::ipns_from_secret([2; 32]).unwrap();
         let runtime_did = ma_core::Did::new_url(&runtime_ipns, None::<String>).unwrap();
@@ -1044,8 +1047,7 @@ mod tests {
         let _runtime_rpc_inbox = runtime_endpoint_box.service(RPC_PROTOCOL_ID);
         let runtime_endpoint: Arc<dyn ma_core::MaEndpoint> = Arc::from(runtime_endpoint_box);
 
-        register_scheduler_entity(&kind_registry, &entity_registry, kubo.url(), &runtime_did)
-            .await;
+        register_scheduler_entity(&kind_registry, &entity_registry, kubo.url(), &runtime_did).await;
 
         let acl_cache = new_acl_cache();
         acl_cache

@@ -124,11 +124,7 @@ async fn dispatch_local_plugin_envelope(args: LocalDispatchArgs) {
 
     let mut entity = None;
     for attempt in 0..40 {
-        entity = entity_registry
-            .read()
-            .await
-            .get(&target_fragment)
-            .cloned();
+        entity = entity_registry.read().await.get(&target_fragment).cloned();
         if entity.is_some() {
             break;
         }
@@ -288,8 +284,8 @@ async fn handle_create_request(
             std::collections::BTreeMap::new()
         });
 
-    let load_result = crate::plugin::EntityPlugin::load_with_fibonacci_backoff(
-        crate::plugin::LoadArgs {
+    let load_result =
+        crate::plugin::EntityPlugin::load_with_fibonacci_backoff(crate::plugin::LoadArgs {
             fragment: req.fragment.clone(),
             node: &entity_node,
             kind_node: &kind_node,
@@ -301,9 +297,8 @@ async fn handle_create_request(
             started_at,
             runtime_config,
             init_payload: req.init_payload.clone(),
-        },
-    )
-    .await;
+        })
+        .await;
 
     finish_create_request(load_result, &req, entity_node, ctx).await;
 }
@@ -740,7 +735,10 @@ impl EventLoopState {
             self.dispatch_envelope_remotely(fragment, env, &msg_type);
         }
         if drained_plugin_envelopes == PLUGIN_OUTBOX_DRAIN_BUDGET {
-            warn!(budget = PLUGIN_OUTBOX_DRAIN_BUDGET, "plugin outbox drain budget exhausted; deferring remaining envelopes");
+            warn!(
+                budget = PLUGIN_OUTBOX_DRAIN_BUDGET,
+                "plugin outbox drain budget exhausted; deferring remaining envelopes"
+            );
         }
     }
 
@@ -950,8 +948,12 @@ impl EventLoopState {
             Ok(Ok(_)) => {
                 info!(runtime_cid = %latest_root_cid, "shutdown runtime_ipns publish succeeded");
             }
-            Ok(Err(err)) => error!(runtime_cid = %latest_root_cid, error = %format!("{err:#}"), "shutdown runtime_ipns publish failed"),
-            Err(_) => error!(runtime_cid = %latest_root_cid, "shutdown runtime_ipns publish timed out"),
+            Ok(Err(err)) => {
+                error!(runtime_cid = %latest_root_cid, error = %format!("{err:#}"), "shutdown runtime_ipns publish failed");
+            }
+            Err(_) => {
+                error!(runtime_cid = %latest_root_cid, "shutdown runtime_ipns publish timed out");
+            }
         }
 
         true

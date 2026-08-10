@@ -659,13 +659,8 @@ mod tests {
             let entity_registry = new_entity_registry();
 
             let ids = test_identities();
-            let envelope_tx = spawn_room_plugin(
-                &kubo,
-                &kind,
-                &ids.runtime_did.base_id(),
-                &entity_registry,
-            )
-            .await;
+            let envelope_tx =
+                spawn_room_plugin(&kubo, &kind, &ids.runtime_did.base_id(), &entity_registry).await;
 
             let mut endpoint = crate::testkubo::test_endpoint([3u8; 32]).await;
             let _crud_inbox = endpoint.service(ma_core::CRUD_PROTOCOL_ID);

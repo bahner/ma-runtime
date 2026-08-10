@@ -395,8 +395,8 @@ pub(super) fn spawn_entity_reload(name: String, entity_node: EntityNode, ctx: En
         }
 
         let init_payload = entity_node.init.as_ref().map(|s| s.as_bytes().to_vec());
-        let load_result = crate::plugin::EntityPlugin::load_with_fibonacci_backoff(
-            crate::plugin::LoadArgs {
+        let load_result =
+            crate::plugin::EntityPlugin::load_with_fibonacci_backoff(crate::plugin::LoadArgs {
                 fragment: name.clone(),
                 node: &entity_node,
                 kind_node: &kind_node,
@@ -408,9 +408,8 @@ pub(super) fn spawn_entity_reload(name: String, entity_node: EntityNode, ctx: En
                 started_at,
                 runtime_config: ctx.runtime_config.clone(),
                 init_payload, // EntityNode.init (§ genesis-via-CRUD), only fires if genesis
-            },
-        )
-        .await;
+            })
+            .await;
 
         finish_reload(&ctx, &name, current_entity, load_result).await;
     });
@@ -438,8 +437,7 @@ async fn resolve_kind_node_for_reload(
         return Err(());
     };
 
-    let manifest: RuntimeManifest = match crate::kubo::dag_get(&ctx.kubo_rpc_url, &root_cid).await
-    {
+    let manifest: RuntimeManifest = match crate::kubo::dag_get(&ctx.kubo_rpc_url, &root_cid).await {
         Ok(m) => m,
         Err(e) => {
             let reason = format!("failed to load manifest for kind lookup: {e}");
