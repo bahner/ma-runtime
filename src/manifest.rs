@@ -126,10 +126,15 @@ impl ManifestWriter {
         crate::kubo::dag_get(&inner.kubo_url, &entity_link.cid).await
     }
 
-    /// Publish an updated entity node whose `state` points at `state_cid`, then
-    /// publish a manifest that points at that updated entity node.
+    /// Load the entity node at `fragment`, apply `mutate` to it, and publish
+    /// both the updated node and a manifest pointing at its new CID.
+    /// `mutate` returns `false` to signal "nothing changed", which skips the
+    /// publish entirely and returns the unchanged root CID.
     #[allow(clippy::significant_drop_tightening)]
-    pub async fn set_entity_state(&self, fragment: &str, state_cid: &str) -> Result<String> {
+    async fn update_entity_node<F>(&self, fragment: &str, mutate: F) -> Result<String>
+    where
+        F: FnOnce(&mut EntityNode) -> bool,
+    {
         let inner = &self.inner;
         let mut guard = inner.current.lock().await;
         let old_cid = guard.clone();
@@ -142,7 +147,11 @@ impl ManifestWriter {
             .ok_or_else(|| anyhow::anyhow!("entity '{fragment}' is not in the manifest"))?;
         let mut entity_node: EntityNode =
             crate::kubo::dag_get(&inner.kubo_url, &entity_link.cid).await?;
-        entity_node.state = Some(IpldLink::new(state_cid));
+
+        if !mutate(&mut entity_node) {
+            return Ok(old_cid);
+        }
+
         let entity_cid = crate::kubo::dag_put(&inner.kubo_url, &entity_node).await?;
         manifest
             .entities
@@ -152,104 +161,66 @@ impl ManifestWriter {
             .await
     }
 
+    /// Publish an updated entity node whose `state` points at `state_cid`, then
+    /// publish a manifest that points at that updated entity node.
+    pub async fn set_entity_state(&self, fragment: &str, state_cid: &str) -> Result<String> {
+        self.update_entity_node(fragment, |node| {
+            node.state = Some(IpldLink::new(state_cid));
+            true
+        })
+        .await
+    }
+
     /// Record a successful reload against the latest entity node, preserving
     /// fields that may have changed while the replacement was loading.
-    #[allow(clippy::significant_drop_tightening)]
     pub async fn complete_entity_reload(
         &self,
         fragment: &str,
         state_cid: Option<&str>,
     ) -> Result<String> {
-        let inner = &self.inner;
-        let mut guard = inner.current.lock().await;
-        let old_cid = guard.clone();
-
-        let mut manifest: RuntimeManifest = crate::kubo::dag_get(&inner.kubo_url, &old_cid).await?;
-        let entity_link = manifest
-            .entities
-            .get(fragment)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("entity '{fragment}' is not in the manifest"))?;
-        let mut entity_node: EntityNode =
-            crate::kubo::dag_get(&inner.kubo_url, &entity_link.cid).await?;
-        if let Some(state_cid) = state_cid {
-            entity_node.state = Some(IpldLink::new(state_cid));
-        }
-        entity_node.initialised = true;
-        entity_node.reload_error = None;
-        let entity_cid = crate::kubo::dag_put(&inner.kubo_url, &entity_node).await?;
-        manifest
-            .entities
-            .insert(fragment.to_string(), IpldLink::new(&entity_cid));
-
-        self.publish_manifest_update(&mut guard, old_cid, &manifest)
-            .await
+        self.update_entity_node(fragment, |node| {
+            if let Some(state_cid) = state_cid {
+                node.state = Some(IpldLink::new(state_cid));
+            }
+            node.initialised = true;
+            node.reload_error = None;
+            true
+        })
+        .await
     }
 
     /// Publish an updated entity node with a new per-entity behaviour link,
     /// then publish a manifest that points at that updated entity node.
-    #[allow(clippy::significant_drop_tightening)]
     pub async fn set_entity_behaviour(
         &self,
         fragment: &str,
         behaviour_cid: Option<&str>,
     ) -> Result<String> {
-        let inner = &self.inner;
-        let mut guard = inner.current.lock().await;
-        let old_cid = guard.clone();
-
-        let mut manifest: RuntimeManifest = crate::kubo::dag_get(&inner.kubo_url, &old_cid).await?;
-        let entity_link = manifest
-            .entities
-            .get(fragment)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("entity '{fragment}' is not in the manifest"))?;
-        let mut entity_node: EntityNode =
-            crate::kubo::dag_get(&inner.kubo_url, &entity_link.cid).await?;
-        entity_node.behaviour = behaviour_cid.map(IpldLink::new);
-        entity_node.initialised = true;
-        let entity_cid = crate::kubo::dag_put(&inner.kubo_url, &entity_node).await?;
-        manifest
-            .entities
-            .insert(fragment.to_string(), IpldLink::new(&entity_cid));
-
-        self.publish_manifest_update(&mut guard, old_cid, &manifest)
-            .await
+        self.update_entity_node(fragment, |node| {
+            node.behaviour = behaviour_cid.map(IpldLink::new);
+            node.initialised = true;
+            true
+        })
+        .await
     }
 
     /// Publish an updated entity node carrying the latest recoverable reload
     /// error. `None` clears a previous reload error after a later successful
     /// reload.
-    #[allow(clippy::significant_drop_tightening)]
     pub async fn set_entity_reload_error(
         &self,
         fragment: &str,
         reason: Option<&str>,
     ) -> Result<String> {
-        let inner = &self.inner;
-        let mut guard = inner.current.lock().await;
-        let old_cid = guard.clone();
-
-        let mut manifest: RuntimeManifest = crate::kubo::dag_get(&inner.kubo_url, &old_cid).await?;
-        let entity_link = manifest
-            .entities
-            .get(fragment)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("entity '{fragment}' is not in the manifest"))?;
-        let mut entity_node: EntityNode =
-            crate::kubo::dag_get(&inner.kubo_url, &entity_link.cid).await?;
-        let next_error = reason.map(ToString::to_string);
-        if entity_node.reload_error == next_error {
-            return Ok(old_cid);
-        }
-        entity_node.reload_error = next_error;
-        let entity_cid = crate::kubo::dag_put(&inner.kubo_url, &entity_node).await?;
-        manifest
-            .entities
-            .insert(fragment.to_string(), IpldLink::new(&entity_cid));
-
-        self.publish_manifest_update(&mut guard, old_cid, &manifest)
-            .await
+        self.update_entity_node(fragment, |node| {
+            let next_error = reason.map(ToString::to_string);
+            if node.reload_error == next_error {
+                return false;
+            }
+            node.reload_error = next_error;
+            true
+        })
+        .await
     }
 
     /// Publish `entity_node` to Kubo and insert it at `fragment` in the manifest.
