@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use ciborium::Value as CborValue;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tracing::info;
@@ -10,7 +11,7 @@ use crate::entity::{EntityNode, IpldLink};
 use super::helpers::{
     cidv1_ref, load_manifest, runtime_config_snapshot, send_crud_data_cbor, send_crud_error,
     send_crud_i18n_error, send_crud_i18n_errorf, send_crud_ok, send_crud_ok_cid,
-    send_crud_reply_cbor, spawn_entity_reload, with_manifest_crud,
+    send_crud_reply_cbor, spawn_entity_reload, with_manifest_crud, EntityReloadCtx,
 };
 use super::CrudHandlerCtx;
 
@@ -19,8 +20,25 @@ async fn reload_shutdown_timeout(ctx: &CrudHandlerCtx) -> std::time::Duration {
     super::config::wasm_reload_shutdown_timeout(&cfg)
 }
 
-fn single_entity_reload_gate() -> Arc<Semaphore> {
-    Arc::new(Semaphore::new(1))
+/// Build a reload context gated to a single concurrent reload, for CRUD paths
+/// that reload exactly one entity (as opposed to a kind-wide overlay reload).
+fn single_entity_reload_ctx(
+    ctx: &CrudHandlerCtx,
+    runtime_config: BTreeMap<String, String>,
+    reload_shutdown_timeout: std::time::Duration,
+) -> EntityReloadCtx {
+    EntityReloadCtx {
+        kind_registry: ctx.kind_registry.clone(),
+        stats: ctx.stats.clone(),
+        kubo_rpc_url: Arc::clone(&ctx.kubo_rpc_url),
+        our_did: Arc::clone(&ctx.our_did),
+        envelope_tx: ctx.envelope_tx.clone(),
+        entity_registry: ctx.entity_registry.clone(),
+        manifest_writer: ctx.manifest_writer.clone(),
+        runtime_config,
+        reload_shutdown_timeout,
+        reload_gate: Arc::new(Semaphore::new(1)),
+    }
 }
 
 // ── Management capability helpers ─────────────────────────────────────────────
@@ -210,16 +228,7 @@ async fn handle_single_entity(
             spawn_entity_reload(
                 name.to_string(),
                 entity_node,
-                ctx.kind_registry.clone(),
-                ctx.stats.clone(),
-                Arc::clone(&ctx.kubo_rpc_url),
-                Arc::clone(&ctx.our_did),
-                ctx.envelope_tx.clone(),
-                ctx.entity_registry.clone(),
-                ctx.manifest_writer.clone(),
-                runtime_config,
-                reload_shutdown_timeout,
-                single_entity_reload_gate(),
+                single_entity_reload_ctx(ctx, runtime_config, reload_shutdown_timeout),
             );
             info!(name = %name, cid = %cid, "{}", crate::i18n::t("entity-created"));
             send_crud_ok_cid(message, reply_type, ctx, cid).await
@@ -340,16 +349,7 @@ async fn handle_entity_acl_field(
             spawn_entity_reload(
                 name.clone(),
                 entity.clone(),
-                ctx.kind_registry.clone(),
-                ctx.stats.clone(),
-                Arc::clone(&ctx.kubo_rpc_url),
-                Arc::clone(&ctx.our_did),
-                ctx.envelope_tx.clone(),
-                ctx.entity_registry.clone(),
-                ctx.manifest_writer.clone(),
-                runtime_config,
-                reload_shutdown_timeout,
-                single_entity_reload_gate(),
+                single_entity_reload_ctx(ctx, runtime_config, reload_shutdown_timeout),
             );
             info!(name = %name, acl_name = %acl_name, entity_cid = %entity_cid, "entity ACL name set");
             send_crud_ok_cid(message, reply_type, ctx, &entity_cid).await
@@ -363,16 +363,7 @@ async fn handle_entity_acl_field(
             spawn_entity_reload(
                 name.clone(),
                 entity.clone(),
-                ctx.kind_registry.clone(),
-                ctx.stats.clone(),
-                Arc::clone(&ctx.kubo_rpc_url),
-                Arc::clone(&ctx.our_did),
-                ctx.envelope_tx.clone(),
-                ctx.entity_registry.clone(),
-                ctx.manifest_writer.clone(),
-                runtime_config,
-                reload_shutdown_timeout,
-                single_entity_reload_gate(),
+                single_entity_reload_ctx(ctx, runtime_config, reload_shutdown_timeout),
             );
             info!(name = %name, entity_cid = %entity_cid, "entity ACL cleared");
             send_crud_ok_cid(message, reply_type, ctx, &entity_cid).await

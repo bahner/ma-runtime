@@ -273,6 +273,26 @@ async fn hydrate_affected_kind_registry(
     }
 }
 
+/// Bundled dependencies for spawning one or more entity reload tasks.
+///
+/// Grouping these lets [`spawn_entity_reload`] take a single argument instead
+/// of a long, error-prone parameter list. All fields are cheaply `Clone`able
+/// (`Arc`-backed), so callers build one `EntityReloadCtx` and `.clone()` it
+/// per entity.
+#[derive(Clone)]
+pub(super) struct EntityReloadCtx {
+    pub(super) kind_registry: crate::entity::KindRegistry,
+    pub(super) stats: crate::status::SharedStats,
+    pub(super) kubo_rpc_url: Arc<str>,
+    pub(super) our_did: Arc<str>,
+    pub(super) envelope_tx: tokio::sync::mpsc::Sender<(String, crate::entity::SendEnvelope)>,
+    pub(super) entity_registry: crate::plugin::EntityRegistry,
+    pub(super) manifest_writer: crate::manifest::ManifestWriter,
+    pub(super) runtime_config: BTreeMap<String, String>,
+    pub(super) reload_shutdown_timeout: std::time::Duration,
+    pub(super) reload_gate: Arc<Semaphore>,
+}
+
 pub(super) async fn spawn_kind_dependency_reloads(
     updated_protocol: &str,
     ctx: &CrudHandlerCtx,
@@ -290,13 +310,24 @@ pub(super) async fn spawn_kind_dependency_reloads_for(
     let raw_kinds = load_raw_kind_nodes(ctx, &manifest).await;
     let affected = affected_kind_protocols_for(updated_protocols, &raw_kinds);
     hydrate_affected_kind_registry(ctx, &manifest, &raw_kinds, &affected).await;
-    let mut reload_count = 0usize;
     let reload_shutdown_timeout = {
         let cfg = ctx.shared_config.read().await;
         super::config::wasm_reload_shutdown_timeout(&cfg)
     };
-    let reload_gate = Arc::new(Semaphore::new(MAX_CONCURRENT_KIND_RELOADS));
+    let reload_ctx = EntityReloadCtx {
+        kind_registry: ctx.kind_registry.clone(),
+        stats: ctx.stats.clone(),
+        kubo_rpc_url: Arc::clone(&ctx.kubo_rpc_url),
+        our_did: Arc::clone(&ctx.our_did),
+        envelope_tx: ctx.envelope_tx.clone(),
+        entity_registry: ctx.entity_registry.clone(),
+        manifest_writer: ctx.manifest_writer.clone(),
+        runtime_config,
+        reload_shutdown_timeout,
+        reload_gate: Arc::new(Semaphore::new(MAX_CONCURRENT_KIND_RELOADS)),
+    };
 
+    let mut reload_count = 0usize;
     for (name, link) in manifest.entities {
         let entity_node: EntityNode = match crate::kubo::dag_get(&ctx.kubo_rpc_url, &link.cid).await
         {
@@ -309,20 +340,7 @@ pub(super) async fn spawn_kind_dependency_reloads_for(
         if !affected.contains(&entity_node.kind) {
             continue;
         }
-        spawn_entity_reload(
-            name,
-            entity_node,
-            ctx.kind_registry.clone(),
-            ctx.stats.clone(),
-            Arc::clone(&ctx.kubo_rpc_url),
-            Arc::clone(&ctx.our_did),
-            ctx.envelope_tx.clone(),
-            ctx.entity_registry.clone(),
-            ctx.manifest_writer.clone(),
-            runtime_config.clone(),
-            reload_shutdown_timeout,
-            Arc::clone(&reload_gate),
-        );
+        spawn_entity_reload(name, entity_node, reload_ctx.clone());
         reload_count += 1;
     }
 
@@ -333,9 +351,9 @@ pub(super) async fn spawn_kind_dependency_reloads_for(
 /// it into the entity registry (replacing any existing version).
 ///
 /// Returns immediately — the reload happens asynchronously so the CRUD event
-/// loop is never blocked by WASM fetching, instantiation, or `init()`. The
-/// caller supplies a shared semaphore so a broad kind overlay queues reloads
-/// instead of starting unbounded concurrent Kubo/Wasm work.
+/// loop is never blocked by WASM fetching, instantiation, or `init()`. `ctx`
+/// supplies a shared semaphore so a broad kind overlay queues reloads instead
+/// of starting unbounded concurrent Kubo/Wasm work.
 ///
 /// Mirrors `bootstrap::load_entities`'s lifecycle-persistence step: if the
 /// load transitions `lifecycle` (typically `new` → `running` on first
@@ -343,23 +361,9 @@ pub(super) async fn spawn_kind_dependency_reloads_for(
 /// manifest is updated to point at the new CID — otherwise a later daemon
 /// restart would re-read the stale `lifecycle: new` node and incorrectly
 /// re-fire the `:init` signal a second time.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-pub(super) fn spawn_entity_reload(
-    name: String,
-    entity_node: EntityNode,
-    kind_registry: crate::entity::KindRegistry,
-    stats: crate::status::SharedStats,
-    kubo_rpc_url: Arc<str>,
-    our_did: Arc<str>,
-    envelope_tx: tokio::sync::mpsc::Sender<(String, crate::entity::SendEnvelope)>,
-    entity_registry: crate::plugin::EntityRegistry,
-    manifest_writer: crate::manifest::ManifestWriter,
-    runtime_config: std::collections::BTreeMap<String, String>,
-    reload_shutdown_timeout: std::time::Duration,
-    reload_gate: Arc<Semaphore>,
-) {
+pub(super) fn spawn_entity_reload(name: String, entity_node: EntityNode, ctx: EntityReloadCtx) {
     tokio::spawn(async move {
-        let Ok(_permit) = reload_gate.acquire_owned().await else {
+        let Ok(_permit) = Arc::clone(&ctx.reload_gate).acquire_owned().await else {
             warn!(name = %name, kind = %entity_node.kind, "entity reload skipped because reload gate closed");
             return;
         };
@@ -371,189 +375,217 @@ pub(super) fn spawn_entity_reload(
             "entity reload started"
         );
 
-        // Prefer the hydrated in-memory kind registry, with a manifest/IPFS
-        // fallback for stale or externally-mutated roots.
-        let kind_node: Arc<KindNode> = {
-            let registry = kind_registry.read().await;
-            if let Some(k) = registry.get(&entity_node.kind).cloned() {
-                k
-            } else {
-                drop(registry);
-                let root_cid = stats.read().await.root_cid.clone();
-                let Some(root_cid) = root_cid else {
-                    let reason = "no root CID available; cannot reload entity";
-                    warn!(name = %name, kind = %entity_node.kind, reason);
-                    mark_entity_reload_failed(&manifest_writer, &name, reason).await;
-                    return;
-                };
-                let manifest: crate::entity::RuntimeManifest = match crate::kubo::dag_get(
-                    &kubo_rpc_url,
-                    &root_cid,
-                )
-                .await
-                {
-                    Ok(m) => m,
-                    Err(e) => {
-                        let reason = format!("failed to load manifest for kind lookup: {e}");
-                        warn!(name = %name, kind = %entity_node.kind, error = %e, "failed to load manifest for kind lookup");
-                        mark_entity_reload_failed(&manifest_writer, &name, &reason).await;
-                        return;
-                    }
-                };
-                let kind_link = if let Some(l) = manifest.kinds.get_protocol(&entity_node.kind) {
-                    l.clone()
-                } else {
-                    let reason = format!(
-                        "kind '{}' is not in manifest; cannot reload entity",
-                        entity_node.kind
-                    );
-                    warn!(name = %name, kind = %entity_node.kind, "kind not in manifest; cannot reload entity");
-                    mark_entity_reload_failed(&manifest_writer, &name, &reason).await;
-                    return;
-                };
-                let raw_kind: KindNode = match crate::kubo::dag_get(&kubo_rpc_url, &kind_link.cid)
-                    .await
-                {
-                    Ok(k) => k,
-                    Err(e) => {
-                        let reason = format!("failed to fetch kind node: {e}");
-                        warn!(name = %name, kind = %entity_node.kind, error = %e, "failed to fetch kind node; cannot reload entity");
-                        mark_entity_reload_failed(&manifest_writer, &name, &reason).await;
-                        return;
-                    }
-                };
-                let resolved = if raw_kind.extends.is_some() {
-                    match crate::entity::resolve_kind_extends(&kubo_rpc_url, &manifest, raw_kind)
-                        .await
-                    {
-                        Ok(k) => k,
-                        Err(e) => {
-                            let reason = format!("failed to resolve kind extends chain: {e}");
-                            warn!(name = %name, kind = %entity_node.kind, error = %e, "failed to resolve kind extends chain; cannot reload entity");
-                            mark_entity_reload_failed(&manifest_writer, &name, &reason).await;
-                            return;
-                        }
-                    }
-                } else {
-                    raw_kind
-                };
-                Arc::new(resolved)
-            }
+        let Ok(kind_node) = resolve_kind_node_for_reload(&ctx, &name, &entity_node.kind).await
+        else {
+            return;
         };
 
         let (iroh_node_id, started_at) = {
-            let s = stats.read().await;
+            let s = ctx.stats.read().await;
             (s.endpoint_id.clone(), s.started_at)
         };
 
+        let current_entity = ctx.entity_registry.read().await.get(&name).cloned();
         let mut entity_node = entity_node;
-        let current_entity = entity_registry.read().await.get(&name).cloned();
-        let had_current_entity = current_entity.is_some();
         if let Some(current) = current_entity.as_ref() {
-            match current
-                .prepare_reload_save(&kubo_rpc_url, reload_shutdown_timeout)
-                .await
-            {
-                Ok(Some(cid)) => {
-                    if let Err(e) = manifest_writer.set_entity_state(&name, &cid).await {
-                        let reason = format!("failed to publish current state before reload: {e}");
-                        warn!(name = %name, cid = %cid, error = %e, "failed to update manifest with current state before reload; keeping current plugin");
-                        mark_entity_reload_failed(&manifest_writer, &name, &reason).await;
-                        return;
-                    }
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    let reason = format!("failed to persist current state before reload: {e}");
-                    warn!(name = %name, timeout_ms = reload_shutdown_timeout.as_millis(), error = %e, "failed to persist current state before reload; keeping current plugin");
-                    mark_entity_reload_failed(&manifest_writer, &name, &reason).await;
-                    return;
-                }
+            match refresh_entity_before_reload(&ctx, &name, current).await {
+                Ok(refreshed) => entity_node = refreshed,
+                Err(()) => return,
             }
-
-            entity_node = match manifest_writer.entity_node(&name).await {
-                Ok(node) => node,
-                Err(e) => {
-                    let reason =
-                        format!("failed to reload current entity node after saving state: {e}");
-                    warn!(name = %name, error = %e, "failed to load current entity node before reload; keeping current plugin");
-                    mark_entity_reload_failed(&manifest_writer, &name, &reason).await;
-                    return;
-                }
-            };
         }
 
         let init_payload = entity_node.init.as_ref().map(|s| s.as_bytes().to_vec());
-        match crate::plugin::EntityPlugin::load_with_fibonacci_backoff(
+        let load_result = crate::plugin::EntityPlugin::load_with_fibonacci_backoff(
             name.clone(),
             &entity_node,
             &kind_node,
-            &our_did,
-            &kubo_rpc_url,
-            envelope_tx,
-            entity_registry.clone(),
+            &ctx.our_did,
+            &ctx.kubo_rpc_url,
+            ctx.envelope_tx.clone(),
+            ctx.entity_registry.clone(),
             &iroh_node_id,
             started_at,
-            runtime_config,
+            ctx.runtime_config.clone(),
             init_payload, // EntityNode.init (§ genesis-via-CRUD), only fires if genesis
         )
-        .await
-        {
-            Ok((ep, lifecycle)) => {
-                if lifecycle == crate::entity::Lifecycle::Error && had_current_entity {
-                    let reason = "plugin lifecycle returned error during reload";
-                    error!(name = %name, reason, "entity failed to reload; unloading until next reload");
-                    entity_registry.write().await.remove(&name);
-                    if let Some(current) = current_entity {
-                        current.terminate_worker();
-                    }
-                    mark_entity_reload_failed(&manifest_writer, &name, reason).await;
-                    return;
-                }
-                let replacement_state_cid = match ep.trigger_save(&kubo_rpc_url).await {
-                    Ok(cid) => cid,
-                    Err(e) => {
-                        warn!(name = %name, error = %e, "failed to persist state produced during reload");
-                        None
-                    }
-                };
-                entity_registry
-                    .write()
-                    .await
-                    .insert(name.clone(), Arc::new(ep));
-                if let Some(current) = current_entity {
-                    current.terminate_worker();
-                }
-                info!(name = %name, lifecycle = %lifecycle, "{}", crate::i18n::t("entity-reloaded"));
-                if lifecycle == crate::entity::Lifecycle::Running {
-                    match manifest_writer
-                        .complete_entity_reload(&name, replacement_state_cid.as_deref())
-                        .await
-                    {
-                        Ok(root_cid) => {
-                            info!(name = %name, root_cid = %root_cid, "updated reloaded entity in manifest");
-                        }
-                        Err(e) => {
-                            warn!(name = %name, error = %e, "failed to update reloaded entity in manifest");
-                        }
-                    }
-                }
-            }
+        .await;
+
+        finish_reload(&ctx, &name, current_entity, load_result).await;
+    });
+}
+
+/// Resolve the [`KindNode`] needed to reload `entity_kind`: prefer the
+/// hydrated in-memory kind registry, with a manifest/IPFS fallback for stale
+/// or externally-mutated roots. On any failure the reload error is persisted
+/// to the manifest and `Err(())` is returned so the caller can bail out.
+async fn resolve_kind_node_for_reload(
+    ctx: &EntityReloadCtx,
+    name: &str,
+    entity_kind: &str,
+) -> Result<Arc<KindNode>, ()> {
+    if let Some(kind_node) = ctx.kind_registry.read().await.get(entity_kind).cloned() {
+        return Ok(kind_node);
+    }
+
+    let root_cid = ctx.stats.read().await.root_cid.clone();
+    let Some(root_cid) = root_cid else {
+        let reason = "no root CID available; cannot reload entity";
+        warn!(name = %name, kind = %entity_kind, reason);
+        mark_entity_reload_failed(&ctx.manifest_writer, name, reason).await;
+        return Err(());
+    };
+
+    let manifest: RuntimeManifest = match crate::kubo::dag_get(&ctx.kubo_rpc_url, &root_cid).await
+    {
+        Ok(m) => m,
+        Err(e) => {
+            let reason = format!("failed to load manifest for kind lookup: {e}");
+            warn!(name = %name, kind = %entity_kind, error = %e, "failed to load manifest for kind lookup");
+            mark_entity_reload_failed(&ctx.manifest_writer, name, &reason).await;
+            return Err(());
+        }
+    };
+
+    let Some(kind_link) = manifest.kinds.get_protocol(entity_kind).cloned() else {
+        let reason = format!("kind '{entity_kind}' is not in manifest; cannot reload entity");
+        warn!(name = %name, kind = %entity_kind, "kind not in manifest; cannot reload entity");
+        mark_entity_reload_failed(&ctx.manifest_writer, name, &reason).await;
+        return Err(());
+    };
+
+    let raw_kind: KindNode = match crate::kubo::dag_get(&ctx.kubo_rpc_url, &kind_link.cid).await {
+        Ok(k) => k,
+        Err(e) => {
+            let reason = format!("failed to fetch kind node: {e}");
+            warn!(name = %name, kind = %entity_kind, error = %e, "failed to fetch kind node; cannot reload entity");
+            mark_entity_reload_failed(&ctx.manifest_writer, name, &reason).await;
+            return Err(());
+        }
+    };
+
+    let resolved = if raw_kind.extends.is_some() {
+        match crate::entity::resolve_kind_extends(&ctx.kubo_rpc_url, &manifest, raw_kind).await {
+            Ok(k) => k,
             Err(e) => {
-                let reason = format!("failed to load entity plugin: {e}");
-                error!(
-                    name = %name,
-                    error = %e,
-                    "entity failed to reload; unloading until next reload"
-                );
-                entity_registry.write().await.remove(&name);
-                if let Some(current) = current_entity {
-                    current.terminate_worker();
-                }
-                mark_entity_reload_failed(&manifest_writer, &name, &reason).await;
+                let reason = format!("failed to resolve kind extends chain: {e}");
+                warn!(name = %name, kind = %entity_kind, error = %e, "failed to resolve kind extends chain; cannot reload entity");
+                mark_entity_reload_failed(&ctx.manifest_writer, name, &reason).await;
+                return Err(());
             }
         }
-    });
+    } else {
+        raw_kind
+    };
+
+    Ok(Arc::new(resolved))
+}
+
+/// Persist the current entity's pending state (if any) before it is
+/// replaced, then re-read its `EntityNode` so the reload sees that state
+/// CID. On any failure the reload error is persisted and `Err(())` is
+/// returned so the caller can bail out and keep the current plugin running.
+async fn refresh_entity_before_reload(
+    ctx: &EntityReloadCtx,
+    name: &str,
+    current: &crate::plugin::EntityPlugin,
+) -> Result<EntityNode, ()> {
+    match current
+        .prepare_reload_save(&ctx.kubo_rpc_url, ctx.reload_shutdown_timeout)
+        .await
+    {
+        Ok(Some(cid)) => {
+            if let Err(e) = ctx.manifest_writer.set_entity_state(name, &cid).await {
+                let reason = format!("failed to publish current state before reload: {e}");
+                warn!(name = %name, cid = %cid, error = %e, "failed to update manifest with current state before reload; keeping current plugin");
+                mark_entity_reload_failed(&ctx.manifest_writer, name, &reason).await;
+                return Err(());
+            }
+        }
+        Ok(None) => {}
+        Err(e) => {
+            let reason = format!("failed to persist current state before reload: {e}");
+            warn!(name = %name, timeout_ms = ctx.reload_shutdown_timeout.as_millis(), error = %e, "failed to persist current state before reload; keeping current plugin");
+            mark_entity_reload_failed(&ctx.manifest_writer, name, &reason).await;
+            return Err(());
+        }
+    }
+
+    match ctx.manifest_writer.entity_node(name).await {
+        Ok(node) => Ok(node),
+        Err(e) => {
+            let reason = format!("failed to reload current entity node after saving state: {e}");
+            warn!(name = %name, error = %e, "failed to load current entity node before reload; keeping current plugin");
+            mark_entity_reload_failed(&ctx.manifest_writer, name, &reason).await;
+            Err(())
+        }
+    }
+}
+
+/// Apply the outcome of `EntityPlugin::load_with_fibonacci_backoff` to the
+/// entity registry and manifest: install the new plugin (or roll back on
+/// failure), terminate the superseded worker, and record success/failure.
+async fn finish_reload(
+    ctx: &EntityReloadCtx,
+    name: &str,
+    current_entity: Option<Arc<crate::plugin::EntityPlugin>>,
+    result: Result<(crate::plugin::EntityPlugin, crate::entity::Lifecycle)>,
+) {
+    match result {
+        Ok((ep, lifecycle)) => {
+            if lifecycle == crate::entity::Lifecycle::Error && current_entity.is_some() {
+                let reason = "plugin lifecycle returned error during reload";
+                error!(name = %name, reason, "entity failed to reload; unloading until next reload");
+                ctx.entity_registry.write().await.remove(name);
+                if let Some(current) = current_entity {
+                    current.terminate_worker();
+                }
+                mark_entity_reload_failed(&ctx.manifest_writer, name, reason).await;
+                return;
+            }
+            let replacement_state_cid = match ep.trigger_save(&ctx.kubo_rpc_url).await {
+                Ok(cid) => cid,
+                Err(e) => {
+                    warn!(name = %name, error = %e, "failed to persist state produced during reload");
+                    None
+                }
+            };
+            ctx.entity_registry
+                .write()
+                .await
+                .insert(name.to_string(), Arc::new(ep));
+            if let Some(current) = current_entity {
+                current.terminate_worker();
+            }
+            info!(name = %name, lifecycle = %lifecycle, "{}", crate::i18n::t("entity-reloaded"));
+            if lifecycle == crate::entity::Lifecycle::Running {
+                match ctx
+                    .manifest_writer
+                    .complete_entity_reload(name, replacement_state_cid.as_deref())
+                    .await
+                {
+                    Ok(root_cid) => {
+                        info!(name = %name, root_cid = %root_cid, "updated reloaded entity in manifest");
+                    }
+                    Err(e) => {
+                        warn!(name = %name, error = %e, "failed to update reloaded entity in manifest");
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            let reason = format!("failed to load entity plugin: {e}");
+            error!(
+                name = %name,
+                error = %e,
+                "entity failed to reload; unloading until next reload"
+            );
+            ctx.entity_registry.write().await.remove(name);
+            if let Some(current) = current_entity {
+                current.terminate_worker();
+            }
+            mark_entity_reload_failed(&ctx.manifest_writer, name, &reason).await;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -564,7 +596,7 @@ mod reload_tests {
 
     use tokio::sync::{RwLock, Semaphore};
 
-    use super::spawn_entity_reload;
+    use super::{spawn_entity_reload, EntityReloadCtx};
     use crate::entity::{EntityNode, Evaluator, IpldLink, KindNode, RuntimeManifest, SendEnvelope};
     use crate::manifest::ManifestWriter;
     use crate::plugin::{new_entity_registry, DispatchResult, EntityPlugin, NativeActor};
@@ -671,16 +703,18 @@ mod reload_tests {
         spawn_entity_reload(
             "room".to_string(),
             node,
-            kind_registry,
-            stats.clone(),
-            Arc::from(kubo.url().to_string()),
-            Arc::from("did:ma:test"),
-            envelope_tx,
-            entity_registry.clone(),
-            manifest_writer,
-            BTreeMap::new(),
-            Duration::from_secs(1),
-            Arc::new(Semaphore::new(1)),
+            EntityReloadCtx {
+                kind_registry,
+                stats: stats.clone(),
+                kubo_rpc_url: Arc::from(kubo.url().to_string()),
+                our_did: Arc::from("did:ma:test"),
+                envelope_tx,
+                entity_registry: entity_registry.clone(),
+                manifest_writer,
+                runtime_config: BTreeMap::new(),
+                reload_shutdown_timeout: Duration::from_secs(1),
+                reload_gate: Arc::new(Semaphore::new(1)),
+            },
         );
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);

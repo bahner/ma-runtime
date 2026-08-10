@@ -3,6 +3,8 @@
 ## Agent rules
 
 - **Never modify files outside the current workspace without explicit user approval.** Always ask first.
+- Write DRY, KISS code: avoid duplicated logic and prefer the simplest
+  implementation that meets the requirement.
 
 ---
 
