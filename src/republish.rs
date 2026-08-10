@@ -17,19 +17,19 @@ use tracing::{error, info, warn};
 use crate::ipfs;
 use crate::status::SharedStats;
 
-pub(crate) struct PeriodicDidPublishContext {
-    pub(crate) stats: SharedStats,
-    pub(crate) shared_config: std::sync::Arc<RwLock<Config>>,
-    pub(crate) kubo_url: String,
-    pub(crate) runtime_slug: String,
-    pub(crate) ma_base: MaExtension,
-    pub(crate) runtime_ipns_key: [u8; 32],
-    pub(crate) bundle_path: PathBuf,
-    pub(crate) passphrase: String,
-    pub(crate) interval: Duration,
-    pub(crate) cache_warm: Duration,
-    pub(crate) timeout: Duration,
-    pub(crate) ipns_publish: ipfs::IpnsPublishSettings,
+pub struct PeriodicDidPublishContext {
+    pub stats: SharedStats,
+    pub shared_config: std::sync::Arc<RwLock<Config>>,
+    pub kubo_url: String,
+    pub runtime_slug: String,
+    pub ma_base: MaExtension,
+    pub runtime_ipns_key: [u8; 32],
+    pub bundle_path: PathBuf,
+    pub passphrase: String,
+    pub interval: Duration,
+    pub cache_warm: Duration,
+    pub timeout: Duration,
+    pub ipns_publish: ipfs::IpnsPublishSettings,
 }
 
 pub fn spawn_periodic_did_publish(context: PeriodicDidPublishContext) {

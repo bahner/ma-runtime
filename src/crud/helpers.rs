@@ -423,7 +423,8 @@ async fn resolve_kind_node_for_reload(
     name: &str,
     entity_kind: &str,
 ) -> Result<Arc<KindNode>, ()> {
-    if let Some(kind_node) = ctx.kind_registry.read().await.get(entity_kind).cloned() {
+    let cached = ctx.kind_registry.read().await.get(entity_kind).cloned();
+    if let Some(kind_node) = cached {
         return Ok(kind_node);
     }
 

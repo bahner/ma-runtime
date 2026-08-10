@@ -597,17 +597,17 @@ pub async fn export_bootstrap_yaml(root_cid: &str, kubo_url: &str) -> Result<Str
 /// for every successfully loaded entity whose stored lifecycle differs.
 /// Returns `(count, Some(new_root_cid))` when any entity nodes were updated,
 /// or `(count, None)` when nothing changed.
-pub(crate) struct LoadEntitiesArgs<'a> {
-    pub(crate) root_cid: &'a str,
-    pub(crate) kubo_url: &'a str,
-    pub(crate) daemon_config: &'a ma_core::Config,
-    pub(crate) our_did: &'a str,
-    pub(crate) registry: &'a plugin::EntityRegistry,
-    pub(crate) kind_registry: &'a KindRegistry,
-    pub(crate) native_factories: &'a plugin::NativeFactories,
-    pub(crate) envelope_tx: tokio::sync::mpsc::Sender<(String, crate::entity::SendEnvelope)>,
-    pub(crate) iroh_node_id: &'a str,
-    pub(crate) started_at: u64,
+pub struct LoadEntitiesArgs<'a> {
+    pub root_cid: &'a str,
+    pub kubo_url: &'a str,
+    pub daemon_config: &'a ma_core::Config,
+    pub our_did: &'a str,
+    pub registry: &'a plugin::EntityRegistry,
+    pub kind_registry: &'a KindRegistry,
+    pub native_factories: &'a plugin::NativeFactories,
+    pub envelope_tx: tokio::sync::mpsc::Sender<(String, crate::entity::SendEnvelope)>,
+    pub iroh_node_id: &'a str,
+    pub started_at: u64,
 }
 
 pub async fn load_entities(args: LoadEntitiesArgs<'_>) -> (usize, Option<String>) {
