@@ -102,7 +102,6 @@ pub(super) async fn handle_entities_ns(
     }
 }
 
-#[allow(clippy::too_many_lines)]
 async fn handle_single_entity(
     message: &ma_core::Message,
     name: &String,
@@ -112,129 +111,145 @@ async fn handle_single_entity(
     ctx: &CrudHandlerCtx,
 ) -> Result<()> {
     match (tail, args.as_slice()) {
-        (None, []) => {
-            let manifest = load_manifest(ctx).await?;
-            let Some(link) = manifest.entities.get(name.as_str()) else {
-                return send_crud_error(message, reply_type, ctx, "entity-not-found").await;
-            };
-            let entity: EntityNode = crate::kubo::dag_get(&ctx.kubo_rpc_url, &link.cid).await?;
-            send_crud_data_cbor(message, reply_type, ctx, &entity).await
-        }
-        (Some(""), []) => {
-            // Delete entity — requires `delete` + `entities` in root ACL.
-            check_entity_management_cap(message, ctx, &["delete", "entities"]).await?;
-            let name = name.as_str();
-            let manifest = load_manifest(ctx).await?;
-            if !manifest.entities.contains_key(name) {
-                return send_crud_error(message, reply_type, ctx, "entity-not-found").await;
-            }
-            let removed = ctx.entity_registry.write().await.remove(name);
-            if let Some(entity) = removed {
-                entity.terminate_worker();
-            }
-            let new_root = with_manifest_crud(ctx, |m| {
-                m.entities.remove(name);
-                Ok(())
-            })
-            .await?;
-            info!(name = %name, cid = %new_root, "{}", crate::i18n::t("entity-deleted"));
-            send_crud_ok(message, reply_type, ctx).await
-        }
+        (None, []) => handle_entity_get(message, name, reply_type, ctx).await,
+        (Some(""), []) => handle_entity_delete(message, name, reply_type, ctx).await,
         (Some(""), [CborValue::Text(raw)]) => {
-            // Upsert entity — caller needs the entity's `kind` as a capability in root ACL.
-            // The kind is read from the EntityNode itself; no separate state required.
-            let name = name.as_str();
-            if name.chars().any(char::is_control) {
-                return send_crud_i18n_error(message, reply_type, ctx, "entity-name-invalid").await;
-            }
-            if crate::entity::RESERVED_ENTITY_NAMES.contains(&name) {
-                return send_crud_i18n_errorf(
-                    message,
-                    reply_type,
-                    ctx,
-                    "reserved-entity-name",
-                    &[("name", name)],
-                )
-                .await;
-            }
-            let Some(cid) = cidv1_ref(raw) else {
-                return send_crud_i18n_error(message, reply_type, ctx, "cidv1-required").await;
-            };
-            let cid = cid.as_str();
-            let mut entity_node: EntityNode = crate::kubo::dag_get(&ctx.kubo_rpc_url, cid)
-                .await
-                .with_context(|| format!("fetching entity node from {cid}"))?;
-            // ACL gate: caller must hold the entity's kind protocol ID as a capability.
-            check_entity_management_cap(message, ctx, &[entity_node.kind.as_str()]).await?;
-            // Genesis rule (hardcoded, cross-cutting — see
-            // `entity::is_genesis_entity`'s doc comment): entity-level
-            // `attributes.genesis` overrides the kind's own, merged at
-            // read time. Either way it's true, only owners may create the
-            // instance, and it always gets `parent: None`, regardless of
-            // what the caller's published EntityNode requested.
-            //
-            // Prefer the hydrated in-memory kind registry, with a manifest/IPFS
-            // fallback for stale or externally-mutated roots.
-            let cached_kind = ctx
-                .kind_registry
-                .read()
-                .await
-                .get(entity_node.kind.as_str())
-                .cloned();
-            let kind_node = if let Some(k) = cached_kind {
-                Some(k.as_ref().clone())
-            } else {
-                let manifest = load_manifest(ctx).await?;
-                if let Some(link) = manifest.kinds.get_protocol(entity_node.kind.as_str()) {
-                    let raw_kind: crate::entity::KindNode =
-                        crate::kubo::dag_get(&ctx.kubo_rpc_url, &link.cid)
-                            .await
-                            .with_context(|| {
-                                format!("fetching kind node for '{}'", entity_node.kind)
-                            })?;
-                    let resolved = if raw_kind.extends.is_some() {
-                        crate::entity::resolve_kind_extends(&ctx.kubo_rpc_url, &manifest, raw_kind)
-                            .await?
-                    } else {
-                        raw_kind
-                    };
-                    Some(resolved)
-                } else {
-                    None
-                }
-            };
-            if let Some(kind_node) = &kind_node {
-                if crate::entity::is_genesis_entity(kind_node, &entity_node) {
-                    let owners = ctx.stats.read().await.owners.clone();
-                    if !crate::acl::is_owner(&owners, &message.from) {
-                        return send_crud_i18n_error(
-                            message,
-                            reply_type,
-                            ctx,
-                            "genesis-kind-owner-only",
-                        )
-                        .await;
-                    }
-                    entity_node.parent = None;
-                }
-            }
-            with_manifest_crud(ctx, |m| {
-                m.entities.insert(name.to_string(), IpldLink::new(cid));
-                Ok(())
-            })
-            .await?;
-            let runtime_config = runtime_config_snapshot(ctx).await?;
-            let reload_shutdown_timeout = reload_shutdown_timeout(ctx).await;
-            spawn_entity_reload(
-                name.to_string(),
-                entity_node,
-                single_entity_reload_ctx(ctx, runtime_config, reload_shutdown_timeout),
-            );
-            info!(name = %name, cid = %cid, "{}", crate::i18n::t("entity-created"));
-            send_crud_ok_cid(message, reply_type, ctx, cid).await
+            handle_entity_upsert(message, name, raw, reply_type, ctx).await
         }
         _ => Err(anyhow!("unknown entities.{name} operation")),
     }
+}
+
+async fn handle_entity_get(
+    message: &ma_core::Message,
+    name: &str,
+    reply_type: &str,
+    ctx: &CrudHandlerCtx,
+) -> Result<()> {
+    let manifest = load_manifest(ctx).await?;
+    let Some(link) = manifest.entities.get(name) else {
+        return send_crud_error(message, reply_type, ctx, "entity-not-found").await;
+    };
+    let entity: EntityNode = crate::kubo::dag_get(&ctx.kubo_rpc_url, &link.cid).await?;
+    send_crud_data_cbor(message, reply_type, ctx, &entity).await
+}
+
+async fn handle_entity_delete(
+    message: &ma_core::Message,
+    name: &str,
+    reply_type: &str,
+    ctx: &CrudHandlerCtx,
+) -> Result<()> {
+    // Delete entity — requires `delete` + `entities` in root ACL.
+    check_entity_management_cap(message, ctx, &["delete", "entities"]).await?;
+    let manifest = load_manifest(ctx).await?;
+    if !manifest.entities.contains_key(name) {
+        return send_crud_error(message, reply_type, ctx, "entity-not-found").await;
+    }
+    let removed = ctx.entity_registry.write().await.remove(name);
+    if let Some(entity) = removed {
+        entity.terminate_worker();
+    }
+    let new_root = with_manifest_crud(ctx, |m| {
+        m.entities.remove(name);
+        Ok(())
+    })
+    .await?;
+    info!(name = %name, cid = %new_root, "{}", crate::i18n::t("entity-deleted"));
+    send_crud_ok(message, reply_type, ctx).await
+}
+
+/// Resolve the kind node needed to evaluate an upserted entity's genesis
+/// rule, preferring the hydrated in-memory kind registry with a
+/// manifest/IPFS fallback for stale or externally-mutated roots.
+async fn resolve_kind_node_for_upsert(
+    ctx: &CrudHandlerCtx,
+    entity_kind: &str,
+) -> Result<Option<crate::entity::KindNode>> {
+    let cached_kind = ctx.kind_registry.read().await.get(entity_kind).cloned();
+    if let Some(k) = cached_kind {
+        return Ok(Some(k.as_ref().clone()));
+    }
+
+    let manifest = load_manifest(ctx).await?;
+    let Some(link) = manifest.kinds.get_protocol(entity_kind) else {
+        return Ok(None);
+    };
+    let raw_kind: crate::entity::KindNode = crate::kubo::dag_get(&ctx.kubo_rpc_url, &link.cid)
+        .await
+        .with_context(|| format!("fetching kind node for '{entity_kind}'"))?;
+    let resolved = if raw_kind.extends.is_some() {
+        crate::entity::resolve_kind_extends(&ctx.kubo_rpc_url, &manifest, raw_kind).await?
+    } else {
+        raw_kind
+    };
+    Ok(Some(resolved))
+}
+
+async fn handle_entity_upsert(
+    message: &ma_core::Message,
+    name: &str,
+    raw: &str,
+    reply_type: &str,
+    ctx: &CrudHandlerCtx,
+) -> Result<()> {
+    // Upsert entity — caller needs the entity's `kind` as a capability in root ACL.
+    // The kind is read from the EntityNode itself; no separate state required.
+    if name.chars().any(char::is_control) {
+        return send_crud_i18n_error(message, reply_type, ctx, "entity-name-invalid").await;
+    }
+    if crate::entity::RESERVED_ENTITY_NAMES.contains(&name) {
+        return send_crud_i18n_errorf(
+            message,
+            reply_type,
+            ctx,
+            "reserved-entity-name",
+            &[("name", name)],
+        )
+        .await;
+    }
+    let Some(cid) = cidv1_ref(raw) else {
+        return send_crud_i18n_error(message, reply_type, ctx, "cidv1-required").await;
+    };
+    let cid = cid.as_str();
+    let mut entity_node: EntityNode = crate::kubo::dag_get(&ctx.kubo_rpc_url, cid)
+        .await
+        .with_context(|| format!("fetching entity node from {cid}"))?;
+    // ACL gate: caller must hold the entity's kind protocol ID as a capability.
+    check_entity_management_cap(message, ctx, &[entity_node.kind.as_str()]).await?;
+    let kind_node = resolve_kind_node_for_upsert(ctx, entity_node.kind.as_str()).await?;
+
+    // Genesis rule (hardcoded, cross-cutting — see
+    // `entity::is_genesis_entity`'s doc comment): entity-level
+    // `attributes.genesis` overrides the kind's own, merged at
+    // read time. Either way it's true, only owners may create the
+    // instance, and it always gets `parent: None`, regardless of
+    // what the caller's published EntityNode requested.
+    if let Some(kind_node) = &kind_node {
+        if crate::entity::is_genesis_entity(kind_node, &entity_node) {
+            let owners = ctx.stats.read().await.owners.clone();
+            if !crate::acl::is_owner(&owners, &message.from) {
+                return send_crud_i18n_error(message, reply_type, ctx, "genesis-kind-owner-only")
+                    .await;
+            }
+            entity_node.parent = None;
+        }
+    }
+
+    with_manifest_crud(ctx, |m| {
+        m.entities.insert(name.to_string(), IpldLink::new(cid));
+        Ok(())
+    })
+    .await?;
+    let runtime_config = runtime_config_snapshot(ctx).await?;
+    let reload_shutdown_timeout = reload_shutdown_timeout(ctx).await;
+    spawn_entity_reload(
+        name.to_string(),
+        entity_node,
+        single_entity_reload_ctx(ctx, runtime_config, reload_shutdown_timeout),
+    );
+    info!(name = %name, cid = %cid, "{}", crate::i18n::t("entity-created"));
+    send_crud_ok_cid(message, reply_type, ctx, cid).await
 }
 
 // ── Entity field helpers ───────────────────────────────────────────────────────
@@ -497,49 +512,62 @@ mod tests {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn entity_acl_crud_set_reloads_running_plugin_acl() {
-        let kubo = MockKubo::start().await;
+    /// Shared scaffolding for the ACL-reload tests below: a mock Kubo, a
+    /// running `room` entity plugin with ACL `"open"`, and a
+    /// `CrudHandlerCtx` wired to it. `extra_acls` are additional named ACLs
+    /// (beyond `"open"`) published into the manifest before the root CID is
+    /// computed, so `handle_entity_acl_field` can resolve them.
+    struct AclReloadFixture {
+        ctx: super::CrudHandlerCtx,
+        entity_registry: crate::plugin::EntityRegistry,
+        stats: Arc<RwLock<Stats>>,
+        kubo: MockKubo,
+        sender_did: ma_core::Did,
+        sender_signing: ma_core::SigningKey,
+        runtime_did: ma_core::Did,
+    }
+
+    /// Publishes the `open` ACL (plus any `extra_acls`) and a `room` entity
+    /// into a fresh manifest, returning the entity's kind and the new root
+    /// CID.
+    async fn seed_manifest(kubo: &MockKubo, extra_acls: &[&str]) -> (KindNode, String) {
         let wasm_cid = kubo.add_bytes(wat::parse_str(GOOD_WAT).unwrap()).await;
         let kind = kind_node(&wasm_cid);
 
         let open_acl_cid = crate::kubo::dag_put(kubo.url(), &AclMap::new())
             .await
             .unwrap();
-        let locked_acl_cid = crate::kubo::dag_put(kubo.url(), &AclMap::new())
-            .await
-            .unwrap();
-        let entity_cid = crate::kubo::dag_put(kubo.url(), &entity_node("open"))
-            .await
-            .unwrap();
-
         let mut manifest = RuntimeManifest::default();
         manifest
             .acls
             .insert("open".to_string(), IpldLink::new(open_acl_cid));
-        manifest
-            .acls
-            .insert("locked".to_string(), IpldLink::new(locked_acl_cid));
+        for name in extra_acls {
+            let acl_cid = crate::kubo::dag_put(kubo.url(), &AclMap::new())
+                .await
+                .unwrap();
+            manifest
+                .acls
+                .insert((*name).to_string(), IpldLink::new(acl_cid));
+        }
+        let entity_cid = crate::kubo::dag_put(kubo.url(), &entity_node("open"))
+            .await
+            .unwrap();
         manifest
             .entities
             .insert("room".to_string(), IpldLink::new(entity_cid));
         let root_cid = crate::kubo::dag_put(kubo.url(), &manifest).await.unwrap();
+        (kind, root_cid)
+    }
 
-        let stats = Arc::new(RwLock::new(Stats {
-            root_cid: Some(root_cid.clone()),
-            ..Default::default()
-        }));
-        let manifest_writer = ManifestWriter::new(root_cid, kubo.url().to_string(), stats.clone());
+    /// A runtime + sender DID/signing-key pair for the ACL-reload tests.
+    struct TestIdentities {
+        runtime_did: ma_core::Did,
+        runtime_signing: ma_core::SigningKey,
+        sender_did: ma_core::Did,
+        sender_signing: ma_core::SigningKey,
+    }
 
-        let kind_registry = new_kind_registry();
-        kind_registry
-            .write()
-            .await
-            .insert(kind.protocol.clone(), Arc::new(kind.clone()));
-        let entity_registry = new_entity_registry();
-        let (envelope_tx, _envelope_rx) = tokio::sync::mpsc::channel::<(String, SendEnvelope)>(16);
-
+    fn test_identities() -> TestIdentities {
         let runtime_ipns = ma_core::ipns_from_secret([1; 32]).unwrap();
         let sender_ipns = ma_core::ipns_from_secret([2; 32]).unwrap();
         let runtime_did = ma_core::Did::new_url(&runtime_ipns, None::<String>).unwrap();
@@ -547,16 +575,33 @@ mod tests {
             ma_core::Did::new_url(&runtime_ipns, Some("sign")).unwrap(),
         )
         .unwrap();
+        let sender_did = ma_core::Did::new_url(&sender_ipns, None::<String>).unwrap();
         let sender_signing = ma_core::SigningKey::generate(
             ma_core::Did::new_url(&sender_ipns, Some("sign")).unwrap(),
         )
         .unwrap();
+        TestIdentities {
+            runtime_did,
+            runtime_signing,
+            sender_did,
+            sender_signing,
+        }
+    }
 
+    /// Loads the `room` plugin (ACL `"open"`) into `entity_registry` and
+    /// returns the envelope sender it was wired up with.
+    async fn spawn_room_plugin(
+        kubo: &MockKubo,
+        kind: &KindNode,
+        runtime_base_id: &str,
+        entity_registry: &crate::plugin::EntityRegistry,
+    ) -> tokio::sync::mpsc::Sender<(String, SendEnvelope)> {
+        let (envelope_tx, _envelope_rx) = tokio::sync::mpsc::channel::<(String, SendEnvelope)>(16);
         let (plugin, _) = EntityPlugin::load(
             "room",
             &entity_node("open"),
-            &kind,
-            &runtime_did.base_id(),
+            kind,
+            runtime_base_id,
             kubo.url(),
             envelope_tx.clone(),
             entity_registry.clone(),
@@ -575,46 +620,119 @@ mod tests {
             entity_registry.read().await.get("room").unwrap().acl,
             "open"
         );
+        envelope_tx
+    }
 
-        let mut endpoint = crate::testkubo::test_endpoint([3u8; 32]).await;
-        let _crud_inbox = endpoint.service(ma_core::CRUD_PROTOCOL_ID);
-        let sender_did = ma_core::Did::new_url(&sender_ipns, None::<String>).unwrap();
-        let mut sender_doc = ma_core::Document::new(&sender_did, &sender_did);
-        let assertion_vm = ma_core::VerificationMethod::try_from(&sender_signing).unwrap();
+    /// Publishes a signed DID document for `sender_did` and serves it from a
+    /// throwaway HTTP gateway, returning the gateway's base URL.
+    async fn spawn_sender_gateway(
+        endpoint: &dyn ma_core::MaEndpoint,
+        sender_did: &ma_core::Did,
+        sender_signing: &ma_core::SigningKey,
+    ) -> String {
+        let mut sender_doc = ma_core::Document::new(sender_did, sender_did);
+        let assertion_vm = ma_core::VerificationMethod::try_from(sender_signing).unwrap();
         sender_doc.verification_method.push(assertion_vm.clone());
         sender_doc.assertion_method.push(assertion_vm.id.clone());
         sender_doc.set_ma_extension(endpoint.ma_extension());
-        sender_doc.sign(&sender_signing, &assertion_vm).unwrap();
-        let gateway_url = spawn_did_gateway(sender_doc.encode().unwrap()).await;
+        sender_doc.sign(sender_signing, &assertion_vm).unwrap();
+        spawn_did_gateway(sender_doc.encode().unwrap()).await
+    }
 
-        let ctx = super::CrudHandlerCtx {
-            our_did: Arc::from(runtime_did.base_id()),
-            signing_key: Arc::new(runtime_signing),
-            endpoint: Arc::from(endpoint),
-            kubo_rpc_url: Arc::from(kubo.url().to_string()),
-            resolver: Arc::new(ma_core::IpfsGatewayResolver::new(gateway_url)),
-            doc_cache: None,
-            did_resolve: crate::ipfs::DidResolveSettings::default(),
-            stats: stats.clone(),
-            entity_registry: entity_registry.clone(),
-            kind_registry: kind_registry.clone(),
-            shared_config: Arc::new(RwLock::new(test_config(kubo.url()))),
-            acl_cache: new_acl_cache(),
-            group_cache: new_group_cache(),
-            root_acl: new_shared_acl(AclMap::new()),
-            envelope_tx,
-            manifest_writer: manifest_writer.clone(),
-        };
+    impl AclReloadFixture {
+        async fn build(extra_acls: &[&str]) -> Self {
+            let kubo = MockKubo::start().await;
+            let (kind, root_cid) = seed_manifest(&kubo, extra_acls).await;
 
-        let incoming = ma_core::Message::new(
-            format!("{}#crud", sender_did.base_id()),
-            format!("{}#root", runtime_did.base_id()),
-            ma_core::MESSAGE_TYPE_CRUD,
-            ma_core::CONTENT_TYPE_TERM,
-            b"set acl",
-            &sender_signing,
-        )
-        .unwrap();
+            let stats = Arc::new(RwLock::new(Stats {
+                root_cid: Some(root_cid.clone()),
+                ..Default::default()
+            }));
+            let manifest_writer =
+                ManifestWriter::new(root_cid, kubo.url().to_string(), stats.clone());
+
+            let kind_registry = new_kind_registry();
+            kind_registry
+                .write()
+                .await
+                .insert(kind.protocol.clone(), Arc::new(kind.clone()));
+            let entity_registry = new_entity_registry();
+
+            let ids = test_identities();
+            let envelope_tx = spawn_room_plugin(
+                &kubo,
+                &kind,
+                &ids.runtime_did.base_id(),
+                &entity_registry,
+            )
+            .await;
+
+            let mut endpoint = crate::testkubo::test_endpoint([3u8; 32]).await;
+            let _crud_inbox = endpoint.service(ma_core::CRUD_PROTOCOL_ID);
+            let gateway_url =
+                spawn_sender_gateway(&*endpoint, &ids.sender_did, &ids.sender_signing).await;
+
+            let ctx = super::CrudHandlerCtx {
+                our_did: Arc::from(ids.runtime_did.base_id()),
+                signing_key: Arc::new(ids.runtime_signing),
+                endpoint: Arc::from(endpoint),
+                kubo_rpc_url: Arc::from(kubo.url().to_string()),
+                resolver: Arc::new(ma_core::IpfsGatewayResolver::new(gateway_url)),
+                doc_cache: None,
+                did_resolve: crate::ipfs::DidResolveSettings::default(),
+                stats: stats.clone(),
+                entity_registry: entity_registry.clone(),
+                kind_registry,
+                shared_config: Arc::new(RwLock::new(test_config(kubo.url()))),
+                acl_cache: new_acl_cache(),
+                group_cache: new_group_cache(),
+                root_acl: new_shared_acl(AclMap::new()),
+                envelope_tx,
+                manifest_writer,
+            };
+
+            Self {
+                ctx,
+                entity_registry,
+                stats,
+                kubo,
+                sender_did: ids.sender_did,
+                sender_signing: ids.sender_signing,
+                runtime_did: ids.runtime_did,
+            }
+        }
+
+        fn crud_message(&self, body: &'static [u8]) -> ma_core::Message {
+            ma_core::Message::new(
+                format!("{}#crud", self.sender_did.base_id()),
+                format!("{}#root", self.runtime_did.base_id()),
+                ma_core::MESSAGE_TYPE_CRUD,
+                ma_core::CONTENT_TYPE_TERM,
+                body,
+                &self.sender_signing,
+            )
+            .unwrap()
+        }
+
+        async fn updated_entity_acl(&self) -> String {
+            let updated_root = self.stats.read().await.root_cid.clone().unwrap();
+            let updated_manifest: RuntimeManifest =
+                crate::kubo::dag_get(self.kubo.url(), &updated_root)
+                    .await
+                    .unwrap();
+            let updated_link = updated_manifest.entities.get("room").unwrap();
+            let updated_entity: EntityNode =
+                crate::kubo::dag_get(self.kubo.url(), &updated_link.cid)
+                    .await
+                    .unwrap();
+            updated_entity.acl
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn entity_acl_crud_set_reloads_running_plugin_acl() {
+        let fixture = AclReloadFixture::build(&["locked"]).await;
+        let incoming = fixture.crud_message(b"set acl");
 
         handle_entity_acl_field(
             &incoming,
@@ -623,140 +741,30 @@ mod tests {
             Some(""),
             vec![CborValue::Text("locked".to_string())],
             ma_core::MESSAGE_TYPE_CRUD_REPLY,
-            &ctx,
+            &fixture.ctx,
         )
         .await
         .unwrap();
 
-        wait_for_entity_acl(&entity_registry, "room", "locked").await;
+        wait_for_entity_acl(&fixture.entity_registry, "room", "locked").await;
 
-        let updated_root = stats.read().await.root_cid.clone().unwrap();
-        let updated_manifest: RuntimeManifest = crate::kubo::dag_get(kubo.url(), &updated_root)
-            .await
-            .unwrap();
-        let updated_link = updated_manifest.entities.get("room").unwrap();
-        let updated_entity: EntityNode = crate::kubo::dag_get(kubo.url(), &updated_link.cid)
-            .await
-            .unwrap();
-        assert_eq!(updated_entity.acl, "locked");
+        assert_eq!(fixture.updated_entity_acl().await, "locked");
         assert_eq!(
-            entity_registry.read().await.get("room").unwrap().acl,
+            fixture
+                .entity_registry
+                .read()
+                .await
+                .get("room")
+                .unwrap()
+                .acl,
             "locked"
         );
     }
 
-    #[allow(clippy::too_many_lines)]
     #[tokio::test(flavor = "multi_thread")]
     async fn entity_acl_crud_clear_reloads_running_plugin_acl() {
-        let kubo = MockKubo::start().await;
-        let wasm_cid = kubo.add_bytes(wat::parse_str(GOOD_WAT).unwrap()).await;
-        let kind = kind_node(&wasm_cid);
-
-        let open_acl_cid = crate::kubo::dag_put(kubo.url(), &AclMap::new())
-            .await
-            .unwrap();
-        let entity_cid = crate::kubo::dag_put(kubo.url(), &entity_node("open"))
-            .await
-            .unwrap();
-
-        let mut manifest = RuntimeManifest::default();
-        manifest
-            .acls
-            .insert("open".to_string(), IpldLink::new(open_acl_cid));
-        manifest
-            .entities
-            .insert("room".to_string(), IpldLink::new(entity_cid));
-        let root_cid = crate::kubo::dag_put(kubo.url(), &manifest).await.unwrap();
-
-        let stats = Arc::new(RwLock::new(Stats {
-            root_cid: Some(root_cid.clone()),
-            ..Default::default()
-        }));
-        let manifest_writer = ManifestWriter::new(root_cid, kubo.url().to_string(), stats.clone());
-
-        let kind_registry = new_kind_registry();
-        kind_registry
-            .write()
-            .await
-            .insert(kind.protocol.clone(), Arc::new(kind.clone()));
-        let entity_registry = new_entity_registry();
-        let (envelope_tx, _envelope_rx) = tokio::sync::mpsc::channel::<(String, SendEnvelope)>(16);
-
-        let runtime_ipns = ma_core::ipns_from_secret([1; 32]).unwrap();
-        let sender_ipns = ma_core::ipns_from_secret([2; 32]).unwrap();
-        let runtime_did = ma_core::Did::new_url(&runtime_ipns, None::<String>).unwrap();
-        let runtime_signing = ma_core::SigningKey::generate(
-            ma_core::Did::new_url(&runtime_ipns, Some("sign")).unwrap(),
-        )
-        .unwrap();
-        let sender_signing = ma_core::SigningKey::generate(
-            ma_core::Did::new_url(&sender_ipns, Some("sign")).unwrap(),
-        )
-        .unwrap();
-
-        let (plugin, _) = EntityPlugin::load(
-            "room",
-            &entity_node("open"),
-            &kind,
-            &runtime_did.base_id(),
-            kubo.url(),
-            envelope_tx.clone(),
-            entity_registry.clone(),
-            "",
-            0,
-            BTreeMap::new(),
-            None,
-        )
-        .await
-        .unwrap();
-        entity_registry
-            .write()
-            .await
-            .insert("room".to_string(), Arc::new(plugin));
-        assert_eq!(
-            entity_registry.read().await.get("room").unwrap().acl,
-            "open"
-        );
-
-        let mut endpoint = crate::testkubo::test_endpoint([3u8; 32]).await;
-        let _crud_inbox = endpoint.service(ma_core::CRUD_PROTOCOL_ID);
-        let sender_did = ma_core::Did::new_url(&sender_ipns, None::<String>).unwrap();
-        let mut sender_doc = ma_core::Document::new(&sender_did, &sender_did);
-        let assertion_vm = ma_core::VerificationMethod::try_from(&sender_signing).unwrap();
-        sender_doc.verification_method.push(assertion_vm.clone());
-        sender_doc.assertion_method.push(assertion_vm.id.clone());
-        sender_doc.set_ma_extension(endpoint.ma_extension());
-        sender_doc.sign(&sender_signing, &assertion_vm).unwrap();
-        let gateway_url = spawn_did_gateway(sender_doc.encode().unwrap()).await;
-
-        let ctx = super::CrudHandlerCtx {
-            our_did: Arc::from(runtime_did.base_id()),
-            signing_key: Arc::new(runtime_signing),
-            endpoint: Arc::from(endpoint),
-            kubo_rpc_url: Arc::from(kubo.url().to_string()),
-            resolver: Arc::new(ma_core::IpfsGatewayResolver::new(gateway_url)),
-            doc_cache: None,
-            did_resolve: crate::ipfs::DidResolveSettings::default(),
-            stats: stats.clone(),
-            entity_registry: entity_registry.clone(),
-            kind_registry: kind_registry.clone(),
-            shared_config: Arc::new(RwLock::new(test_config(kubo.url()))),
-            acl_cache: new_acl_cache(),
-            group_cache: new_group_cache(),
-            root_acl: new_shared_acl(AclMap::new()),
-            envelope_tx,
-            manifest_writer: manifest_writer.clone(),
-        };
-
-        let incoming = ma_core::Message::new(
-            format!("{}#crud", sender_did.base_id()),
-            format!("{}#root", runtime_did.base_id()),
-            ma_core::MESSAGE_TYPE_CRUD,
-            ma_core::CONTENT_TYPE_TERM,
-            b"clear acl",
-            &sender_signing,
-        )
-        .unwrap();
+        let fixture = AclReloadFixture::build(&[]).await;
+        let incoming = fixture.crud_message(b"clear acl");
 
         handle_entity_acl_field(
             &incoming,
@@ -765,22 +773,23 @@ mod tests {
             Some(""),
             vec![],
             ma_core::MESSAGE_TYPE_CRUD_REPLY,
-            &ctx,
+            &fixture.ctx,
         )
         .await
         .unwrap();
 
-        wait_for_entity_acl(&entity_registry, "room", "").await;
+        wait_for_entity_acl(&fixture.entity_registry, "room", "").await;
 
-        let updated_root = stats.read().await.root_cid.clone().unwrap();
-        let updated_manifest: RuntimeManifest = crate::kubo::dag_get(kubo.url(), &updated_root)
-            .await
-            .unwrap();
-        let updated_link = updated_manifest.entities.get("room").unwrap();
-        let updated_entity: EntityNode = crate::kubo::dag_get(kubo.url(), &updated_link.cid)
-            .await
-            .unwrap();
-        assert_eq!(updated_entity.acl, "");
-        assert_eq!(entity_registry.read().await.get("room").unwrap().acl, "");
+        assert_eq!(fixture.updated_entity_acl().await, "");
+        assert_eq!(
+            fixture
+                .entity_registry
+                .read()
+                .await
+                .get("room")
+                .unwrap()
+                .acl,
+            ""
+        );
     }
 }
