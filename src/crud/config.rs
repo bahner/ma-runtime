@@ -347,7 +347,205 @@ fn cbor_to_yaml(val: &CborValue) -> serde_yaml::Value {
 
 // ── Config handler ───────────────────────────────────────────────────────────
 
-#[allow(clippy::too_many_lines)]
+/// Handle `.config` (no key segment): GET the combined config root, or
+/// reject deletion of the root.
+async fn handle_config_root(
+    message: &ma_core::Message,
+    tail: Option<&str>,
+    args: &[CborValue],
+    reply_type: &str,
+    ctx: &CrudHandlerCtx,
+) -> Result<()> {
+    match (tail, args) {
+        (None, []) => {
+            let manifest = load_manifest(ctx).await?;
+            let mut combined = manifest.config.clone();
+            for key in [
+                "zion",
+                "name",
+                "description",
+                "plugin_envelope_queue_capacity",
+            ] {
+                if let Some(default_value) = default_manifest_config_value(key) {
+                    combined.entry(key.to_string()).or_insert(default_value);
+                }
+            }
+            {
+                let cfg = ctx.shared_config.read().await;
+                for key in DAEMON_CONFIG_KEYS {
+                    let val = daemon_config_key_value_pub(&cfg, key);
+                    if !val.is_null() {
+                        combined.insert(key.to_string(), val);
+                    }
+                }
+                drop(cfg);
+            }
+            send_crud_data_yaml(message, reply_type, ctx, &combined).await
+        }
+        (Some(""), _) => send_crud_i18n_error(message, reply_type, ctx, "refuse-delete-root").await,
+        _ => Err(anyhow!("unknown config operation")),
+    }
+}
+
+/// GET `.config.<key>`.
+async fn handle_config_key_get(
+    message: &ma_core::Message,
+    key: &str,
+    is_daemon_key: bool,
+    reply_type: &str,
+    ctx: &CrudHandlerCtx,
+) -> Result<()> {
+    let val = if is_daemon_key {
+        let cfg = ctx.shared_config.read().await;
+        daemon_config_key_value_pub(&cfg, key)
+    } else {
+        let manifest = load_manifest(ctx).await?;
+        match manifest.config.get(key) {
+            Some(v) => v.clone(),
+            None => match default_manifest_config_value(key) {
+                Some(default_value) => default_value,
+                None => {
+                    return send_crud_error(message, reply_type, ctx, "config-not-found").await;
+                }
+            },
+        }
+    };
+    if let serde_yaml::Value::String(ref s) = val {
+        if let Some(cid) = cidv1_ref(s) {
+            return send_crud_reply_cbor(message, reply_type, ctx, &CborValue::Text(cid)).await;
+        }
+    }
+    send_crud_data_yaml(message, reply_type, ctx, &val).await
+}
+
+/// DELETE `.config.<key>:`.
+async fn handle_config_key_delete(
+    message: &ma_core::Message,
+    key: &str,
+    is_daemon_key: bool,
+    reply_type: &str,
+    ctx: &CrudHandlerCtx,
+) -> Result<()> {
+    if is_daemon_key {
+        return send_crud_i18n_errorf(
+            message,
+            reply_type,
+            ctx,
+            "config-key-no-delete",
+            &[("key", key)],
+        )
+        .await;
+    }
+    let key = key.to_string();
+    let manifest = load_manifest(ctx).await?;
+    if !manifest.config.contains_key(&key) {
+        return send_crud_error(message, reply_type, ctx, "config-not-found").await;
+    }
+    with_manifest_crud(ctx, |m| {
+        m.config.remove(&key);
+        Ok(())
+    })
+    .await?;
+    send_crud_ok(message, reply_type, ctx).await
+}
+
+/// SET `.config.<key>: <value>`.
+async fn handle_config_key_set(
+    message: &ma_core::Message,
+    key: &str,
+    yaml_val: serde_yaml::Value,
+    is_daemon_key: bool,
+    reply_type: &str,
+    ctx: &CrudHandlerCtx,
+) -> Result<()> {
+    let key = key.to_string();
+    // ipv6_enable is stored in config.extra; detect changes and
+    // require a restart for the new value to take effect.
+    if key == "ipv6_enable" {
+        let new_val = yaml_val.as_bool().unwrap_or(true);
+        let current_val = ctx
+            .shared_config
+            .read()
+            .await
+            .extra
+            .get("ipv6_enable")
+            .and_then(serde_yaml::Value::as_bool)
+            .unwrap_or(true);
+        if new_val == current_val {
+            return send_crud_ok_path(
+                message,
+                reply_type,
+                ctx,
+                &crate::i18n::t("ipv6-enable-unchanged"),
+            )
+            .await;
+        }
+        set_daemon_config_key(&mut *ctx.shared_config.write().await, &key, &yaml_val);
+        let save_result = ctx.shared_config.read().await.save();
+        if let Err(e) = save_result {
+            warn!(key = %key, error = %e, "failed to save config.yaml after CRUD update");
+        }
+        return send_crud_ok_path(
+            message,
+            reply_type,
+            ctx,
+            &crate::i18n::t("ipv6-enable-restart-required"),
+        )
+        .await;
+    }
+    if is_daemon_key {
+        if key == "outbox_backoff_attempts" {
+            let attempts = outbox_backoff_attempts(Some(&yaml_val))?;
+            if let Some(doc_cache) = &ctx.doc_cache {
+                doc_cache.set_backoff_attempts(attempts);
+            }
+        }
+        set_daemon_config_key(&mut *ctx.shared_config.write().await, &key, &yaml_val);
+        let save_result = ctx.shared_config.read().await.save();
+        if let Err(e) = save_result {
+            warn!(key = %key, error = %e, "failed to save config.yaml after CRUD update");
+        }
+        return send_crud_ok(message, reply_type, ctx).await;
+    }
+    // Manifest config key — only known keys may be written.
+    if !MANIFEST_CONFIG_KEYS.contains(&key.as_str()) {
+        return send_crud_i18n_errorf(
+            message,
+            reply_type,
+            ctx,
+            "config-key-not-manifest",
+            &[("key", key.as_str())],
+        )
+        .await;
+    }
+    if key == "plugin_envelope_queue_capacity" {
+        plugin_envelope_queue_capacity(Some(&yaml_val))?;
+    }
+    let link_cid = if let serde_yaml::Value::String(ref s) = yaml_val {
+        cidv1_ref(s)
+    } else {
+        None
+    };
+    let new_root = with_manifest_crud(ctx, |m| {
+        m.config.insert(key.clone(), yaml_val.clone());
+        Ok(())
+    })
+    .await?;
+    // Language hot-swap: reload FTL messages immediately.
+    if key == "i18n" {
+        if let serde_yaml::Value::String(ref lang) = yaml_val {
+            crate::i18n::switch_lang(lang, &ctx.kubo_rpc_url).await;
+        }
+    }
+    send_crud_ok_cid(
+        message,
+        reply_type,
+        ctx,
+        link_cid.as_deref().unwrap_or(&new_root),
+    )
+    .await
+}
+
 pub(super) async fn handle_config_ns(
     message: &ma_core::Message,
     rest: &[String],
@@ -358,37 +556,7 @@ pub(super) async fn handle_config_ns(
 ) -> Result<()> {
     // No key segment — operate on config root.
     if rest.is_empty() {
-        return match (tail, args.as_slice()) {
-            (None, []) => {
-                let manifest = load_manifest(ctx).await?;
-                let mut combined = manifest.config.clone();
-                for key in [
-                    "zion",
-                    "name",
-                    "description",
-                    "plugin_envelope_queue_capacity",
-                ] {
-                    if let Some(default_value) = default_manifest_config_value(key) {
-                        combined.entry(key.to_string()).or_insert(default_value);
-                    }
-                }
-                {
-                    let cfg = ctx.shared_config.read().await;
-                    for key in DAEMON_CONFIG_KEYS {
-                        let val = daemon_config_key_value_pub(&cfg, key);
-                        if !val.is_null() {
-                            combined.insert(key.to_string(), val);
-                        }
-                    }
-                    drop(cfg);
-                }
-                send_crud_data_yaml(message, reply_type, ctx, &combined).await
-            }
-            (Some(""), _) => {
-                send_crud_i18n_error(message, reply_type, ctx, "refuse-delete-root").await
-            }
-            _ => Err(anyhow!("unknown config operation")),
-        };
+        return handle_config_root(message, tail, &args, reply_type, ctx).await;
     }
 
     let [key] = rest else {
@@ -408,142 +576,13 @@ pub(super) async fn handle_config_ns(
 
     let is_daemon_key = DAEMON_CONFIG_KEYS.contains(&key.as_str());
     match (tail, args.as_slice()) {
-        (None, []) => {
-            let val = if is_daemon_key {
-                let cfg = ctx.shared_config.read().await;
-                daemon_config_key_value_pub(&cfg, key.as_str())
-            } else {
-                let manifest = load_manifest(ctx).await?;
-                match manifest.config.get(key.as_str()) {
-                    Some(v) => v.clone(),
-                    None => match default_manifest_config_value(key) {
-                        Some(default_value) => default_value,
-                        None => {
-                            return send_crud_error(message, reply_type, ctx, "config-not-found")
-                                .await;
-                        }
-                    },
-                }
-            };
-            if let serde_yaml::Value::String(ref s) = val {
-                if let Some(cid) = cidv1_ref(s) {
-                    return send_crud_reply_cbor(message, reply_type, ctx, &CborValue::Text(cid))
-                        .await;
-                }
-            }
-            send_crud_data_yaml(message, reply_type, ctx, &val).await
-        }
+        (None, []) => handle_config_key_get(message, key, is_daemon_key, reply_type, ctx).await,
         (Some(""), []) => {
-            if is_daemon_key {
-                return send_crud_i18n_errorf(
-                    message,
-                    reply_type,
-                    ctx,
-                    "config-key-no-delete",
-                    &[("key", key.as_str())],
-                )
-                .await;
-            }
-            let key = key.as_str().to_string();
-            let manifest = load_manifest(ctx).await?;
-            if !manifest.config.contains_key(&key) {
-                return send_crud_error(message, reply_type, ctx, "config-not-found").await;
-            }
-            with_manifest_crud(ctx, |m| {
-                m.config.remove(&key);
-                Ok(())
-            })
-            .await?;
-            send_crud_ok(message, reply_type, ctx).await
+            handle_config_key_delete(message, key, is_daemon_key, reply_type, ctx).await
         }
         (Some(""), [value]) => {
-            let key = key.as_str().to_string();
             let yaml_val = cbor_to_yaml(value);
-            // ipv6_enable is stored in config.extra; detect changes and
-            // require a restart for the new value to take effect.
-            if key == "ipv6_enable" {
-                let new_val = yaml_val.as_bool().unwrap_or(true);
-                let current_val = ctx
-                    .shared_config
-                    .read()
-                    .await
-                    .extra
-                    .get("ipv6_enable")
-                    .and_then(serde_yaml::Value::as_bool)
-                    .unwrap_or(true);
-                if new_val == current_val {
-                    return send_crud_ok_path(
-                        message,
-                        reply_type,
-                        ctx,
-                        &crate::i18n::t("ipv6-enable-unchanged"),
-                    )
-                    .await;
-                }
-                set_daemon_config_key(&mut *ctx.shared_config.write().await, &key, &yaml_val);
-                let save_result = ctx.shared_config.read().await.save();
-                if let Err(e) = save_result {
-                    warn!(key = %key, error = %e, "failed to save config.yaml after CRUD update");
-                }
-                return send_crud_ok_path(
-                    message,
-                    reply_type,
-                    ctx,
-                    &crate::i18n::t("ipv6-enable-restart-required"),
-                )
-                .await;
-            }
-            if is_daemon_key {
-                if key == "outbox_backoff_attempts" {
-                    let attempts = outbox_backoff_attempts(Some(&yaml_val))?;
-                    if let Some(doc_cache) = &ctx.doc_cache {
-                        doc_cache.set_backoff_attempts(attempts);
-                    }
-                }
-                set_daemon_config_key(&mut *ctx.shared_config.write().await, &key, &yaml_val);
-                let save_result = ctx.shared_config.read().await.save();
-                if let Err(e) = save_result {
-                    warn!(key = %key, error = %e, "failed to save config.yaml after CRUD update");
-                }
-                return send_crud_ok(message, reply_type, ctx).await;
-            }
-            // Manifest config key — only known keys may be written.
-            if !MANIFEST_CONFIG_KEYS.contains(&key.as_str()) {
-                return send_crud_i18n_errorf(
-                    message,
-                    reply_type,
-                    ctx,
-                    "config-key-not-manifest",
-                    &[("key", key.as_str())],
-                )
-                .await;
-            }
-            if key == "plugin_envelope_queue_capacity" {
-                plugin_envelope_queue_capacity(Some(&yaml_val))?;
-            }
-            let link_cid = if let serde_yaml::Value::String(ref s) = yaml_val {
-                cidv1_ref(s)
-            } else {
-                None
-            };
-            let new_root = with_manifest_crud(ctx, |m| {
-                m.config.insert(key.clone(), yaml_val.clone());
-                Ok(())
-            })
-            .await?;
-            // Language hot-swap: reload FTL messages immediately.
-            if key == "i18n" {
-                if let serde_yaml::Value::String(ref lang) = yaml_val {
-                    crate::i18n::switch_lang(lang, &ctx.kubo_rpc_url).await;
-                }
-            }
-            send_crud_ok_cid(
-                message,
-                reply_type,
-                ctx,
-                link_cid.as_deref().unwrap_or(&new_root),
-            )
-            .await
+            handle_config_key_set(message, key, yaml_val, is_daemon_key, reply_type, ctx).await
         }
         _ => Err(anyhow!("unknown config.{key} operation")),
     }

@@ -644,12 +644,23 @@ mod reload_tests {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn kind_reload_publishes_pre_reload_state_to_manifest() {
+    /// Everything needed to drive `spawn_entity_reload` once and observe its
+    /// outcome, bundled to keep the test itself short.
+    struct ReloadFixture {
+        kubo: MockKubo,
+        node: EntityNode,
+        stats: Arc<RwLock<Stats>>,
+        entity_registry: crate::plugin::EntityRegistry,
+        current: Arc<EntityPlugin>,
+        reload_ctx: EntityReloadCtx,
+    }
+
+    /// Build a stateful "room" entity backed by a native actor, register a
+    /// replacement Wasm kind for its protocol, and assemble the
+    /// `EntityReloadCtx` needed to reload it.
+    async fn build_reload_fixture(protocol: &str) -> ReloadFixture {
         let kubo = MockKubo::start().await;
         let wasm_cid = kubo.add_bytes(wat::parse_str(GOOD_WAT).unwrap()).await;
-        let protocol = "/ma/test/reload-state/0.0.1";
         let replacement_kind = stateful_kind(protocol, Evaluator::Extism, Some(&wasm_cid));
         let old_state_cid = kubo.add_bytes(b"old room state".to_vec()).await;
         let node = entity_node(protocol, &old_state_cid);
@@ -703,27 +714,39 @@ mod reload_tests {
             .insert(protocol.to_string(), Arc::new(replacement_kind));
         let (envelope_tx, _envelope_rx) = tokio::sync::mpsc::channel::<(String, SendEnvelope)>(16);
 
-        spawn_entity_reload(
-            "room".to_string(),
-            node,
-            EntityReloadCtx {
-                kind_registry,
-                stats: stats.clone(),
-                kubo_rpc_url: Arc::from(kubo.url().to_string()),
-                our_did: Arc::from("did:ma:test"),
-                envelope_tx,
-                entity_registry: entity_registry.clone(),
-                manifest_writer,
-                runtime_config: BTreeMap::new(),
-                reload_shutdown_timeout: Duration::from_secs(1),
-                reload_gate: Arc::new(Semaphore::new(1)),
-            },
-        );
+        let reload_ctx = EntityReloadCtx {
+            kind_registry,
+            stats: stats.clone(),
+            kubo_rpc_url: Arc::from(kubo.url().to_string()),
+            our_did: Arc::from("did:ma:test"),
+            envelope_tx,
+            entity_registry: entity_registry.clone(),
+            manifest_writer,
+            runtime_config: BTreeMap::new(),
+            reload_shutdown_timeout: Duration::from_secs(1),
+            reload_gate: Arc::new(Semaphore::new(1)),
+        };
 
+        ReloadFixture {
+            kubo,
+            node,
+            stats,
+            entity_registry,
+            current,
+            reload_ctx,
+        }
+    }
+
+    /// Wait until the registry entry for "room" no longer points at
+    /// `current` (i.e. the reload has installed its replacement).
+    async fn wait_for_reload_replacement(
+        entity_registry: &crate::plugin::EntityRegistry,
+        current: &Arc<EntityPlugin>,
+    ) {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         loop {
             let replacement = entity_registry.read().await.get("room").cloned();
-            if replacement.is_some_and(|replacement| !Arc::ptr_eq(&replacement, &current)) {
+            if replacement.is_some_and(|replacement| !Arc::ptr_eq(&replacement, current)) {
                 break;
             }
             assert!(
@@ -732,7 +755,11 @@ mod reload_tests {
             );
             tokio::task::yield_now().await;
         }
+    }
 
+    /// Assert the pre-reload pending state was published to the manifest's
+    /// "room" entity node.
+    async fn assert_reloaded_state_persisted(kubo: &MockKubo, stats: &Arc<RwLock<Stats>>) {
         let latest_root = stats.read().await.root_cid.clone().unwrap();
         let latest_manifest: RuntimeManifest = crate::kubo::dag_get(kubo.url(), &latest_root)
             .await
@@ -753,6 +780,17 @@ mod reload_tests {
             saved_state,
             br#"{"children":{"did:ma:test#lamp":{"kind":"thing"}}}"#
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn kind_reload_publishes_pre_reload_state_to_manifest() {
+        let protocol = "/ma/test/reload-state/0.0.1";
+        let fixture = build_reload_fixture(protocol).await;
+
+        spawn_entity_reload("room".to_string(), fixture.node, fixture.reload_ctx);
+
+        wait_for_reload_replacement(&fixture.entity_registry, &fixture.current).await;
+        assert_reloaded_state_persisted(&fixture.kubo, &fixture.stats).await;
     }
 }
 

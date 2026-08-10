@@ -189,12 +189,9 @@ pub fn persist_root_cid(config: &mut Config, root_cid: &str) -> Result<()> {
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)]
-pub fn runtime_manifest_config(
-    config: &Config,
-) -> std::collections::BTreeMap<String, serde_yaml::Value> {
-    let mut out = std::collections::BTreeMap::new();
+type ManifestConfigMap = std::collections::BTreeMap<String, serde_yaml::Value>;
 
+fn insert_static_manifest_defaults(out: &mut ManifestConfigMap) {
     out.insert(
         "name".to_string(),
         serde_yaml::Value::String(crate::crud::config::DEFAULT_RUNTIME_NAME.to_string()),
@@ -207,7 +204,9 @@ pub fn runtime_manifest_config(
         "plugin_envelope_queue_capacity".to_string(),
         serde_yaml::Value::from(crate::crud::config::DEFAULT_PLUGIN_ENVELOPE_QUEUE_CAPACITY as u64),
     );
+}
 
+fn insert_did_resolver_manifest_settings(out: &mut ManifestConfigMap, config: &Config) {
     out.insert(
         "did_resolver_positive_ttl_secs".to_string(),
         serde_yaml::Value::from(get_u64_setting(
@@ -236,6 +235,9 @@ pub fn runtime_manifest_config(
             60,
         )),
     );
+}
+
+fn insert_did_publish_manifest_settings(out: &mut ManifestConfigMap, config: &Config) {
     out.insert(
         "wasm_reload_shutdown_timeout_ms".to_string(),
         serde_yaml::Value::from(get_u64_setting(
@@ -272,6 +274,9 @@ pub fn runtime_manifest_config(
             8760,
         )),
     );
+}
+
+fn insert_ipns_publish_manifest_settings(out: &mut ManifestConfigMap, config: &Config) {
     out.insert(
         "ipns_publish_lifetime_hours".to_string(),
         serde_yaml::Value::from(get_u64_setting(config, "ipns_publish_lifetime_hours", 8760)),
@@ -304,6 +309,14 @@ pub fn runtime_manifest_config(
                 .unwrap_or(true),
         ),
     );
+}
+
+pub fn runtime_manifest_config(config: &Config) -> ManifestConfigMap {
+    let mut out = ManifestConfigMap::new();
+    insert_static_manifest_defaults(&mut out);
+    insert_did_resolver_manifest_settings(&mut out, config);
+    insert_did_publish_manifest_settings(&mut out, config);
+    insert_ipns_publish_manifest_settings(&mut out, config);
     out
 }
 
