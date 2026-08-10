@@ -779,7 +779,7 @@ async fn main() -> Result<()> {
     let remote_pin = bootstrap::runtime_remote_pin_config(&config);
 
     // ── Main event loop + graceful shutdown ─────────────────────────────────────
-    eventloop::run(
+    eventloop::run(eventloop::RunArgs {
         endpoint,
         rpc_messages,
         inbox_messages,
@@ -799,13 +799,13 @@ async fn main() -> Result<()> {
         our_did,
         signing_key,
         runtime_ipns_key,
-        config.slug.clone(),
+        runtime_slug: config.slug.clone(),
         remote_pin,
         did_publish_timeout_secs,
         ipns_publish,
         did_resolve,
         poll_ms,
-    )
+    })
     .await
 }
 
