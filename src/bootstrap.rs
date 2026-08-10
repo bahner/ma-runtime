@@ -788,19 +788,19 @@ struct LoadedEntity {
 
 async fn load_wasm_entity(args: LoadEntityArgs<'_>) -> Option<LoadedEntity> {
     let init_payload = args.node.init.as_ref().map(|s| s.as_bytes().to_vec());
-    match plugin::EntityPlugin::load_with_fibonacci_backoff(
-        args.name.to_string(),
-        args.node,
-        args.kind_node,
-        args.our_did,
-        args.kubo_url,
-        args.envelope_tx.clone(),
-        args.registry.clone(),
-        args.iroh_node_id,
-        args.started_at,
-        args.runtime_config.clone(),
+    match plugin::EntityPlugin::load_with_fibonacci_backoff(plugin::LoadArgs {
+        fragment: args.name.to_string(),
+        node: args.node,
+        kind_node: args.kind_node,
+        our_did: args.our_did,
+        kubo_url: args.kubo_url,
+        envelope_tx: args.envelope_tx.clone(),
+        entity_registry: args.registry.clone(),
+        iroh_node_id: args.iroh_node_id,
+        started_at: args.started_at,
+        runtime_config: args.runtime_config.clone(),
         init_payload,
-    )
+    })
     .await
     {
         Ok((ep, lifecycle)) => {

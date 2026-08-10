@@ -396,17 +396,19 @@ pub(super) fn spawn_entity_reload(name: String, entity_node: EntityNode, ctx: En
 
         let init_payload = entity_node.init.as_ref().map(|s| s.as_bytes().to_vec());
         let load_result = crate::plugin::EntityPlugin::load_with_fibonacci_backoff(
-            name.clone(),
-            &entity_node,
-            &kind_node,
-            &ctx.our_did,
-            &ctx.kubo_rpc_url,
-            ctx.envelope_tx.clone(),
-            ctx.entity_registry.clone(),
-            &iroh_node_id,
-            started_at,
-            ctx.runtime_config.clone(),
-            init_payload, // EntityNode.init (§ genesis-via-CRUD), only fires if genesis
+            crate::plugin::LoadArgs {
+                fragment: name.clone(),
+                node: &entity_node,
+                kind_node: &kind_node,
+                our_did: &ctx.our_did,
+                kubo_url: &ctx.kubo_rpc_url,
+                envelope_tx: ctx.envelope_tx.clone(),
+                entity_registry: ctx.entity_registry.clone(),
+                iroh_node_id: &iroh_node_id,
+                started_at,
+                runtime_config: ctx.runtime_config.clone(),
+                init_payload, // EntityNode.init (§ genesis-via-CRUD), only fires if genesis
+            },
         )
         .await;
 

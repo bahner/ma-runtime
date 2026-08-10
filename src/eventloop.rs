@@ -289,17 +289,19 @@ async fn handle_create_request(
         });
 
     let load_result = crate::plugin::EntityPlugin::load_with_fibonacci_backoff(
-        req.fragment.clone(),
-        &entity_node,
-        &kind_node,
-        ctx.our_did,
-        ctx.kubo_url,
-        side_effects.envelope_tx.clone(),
-        entity_registry.clone(),
-        &iroh_node_id,
-        started_at,
-        runtime_config,
-        req.init_payload.clone(),
+        crate::plugin::LoadArgs {
+            fragment: req.fragment.clone(),
+            node: &entity_node,
+            kind_node: &kind_node,
+            our_did: ctx.our_did,
+            kubo_url: ctx.kubo_url,
+            envelope_tx: side_effects.envelope_tx.clone(),
+            entity_registry: entity_registry.clone(),
+            iroh_node_id: &iroh_node_id,
+            started_at,
+            runtime_config,
+            init_payload: req.init_payload.clone(),
+        },
     )
     .await;
 

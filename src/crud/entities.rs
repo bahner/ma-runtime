@@ -597,19 +597,19 @@ mod tests {
         entity_registry: &crate::plugin::EntityRegistry,
     ) -> tokio::sync::mpsc::Sender<(String, SendEnvelope)> {
         let (envelope_tx, _envelope_rx) = tokio::sync::mpsc::channel::<(String, SendEnvelope)>(16);
-        let (plugin, _) = EntityPlugin::load(
-            "room",
-            &entity_node("open"),
-            kind,
-            runtime_base_id,
-            kubo.url(),
-            envelope_tx.clone(),
-            entity_registry.clone(),
-            "",
-            0,
-            BTreeMap::new(),
-            None,
-        )
+        let (plugin, _) = EntityPlugin::load(crate::plugin::LoadArgs {
+            fragment: "room".to_string(),
+            node: &entity_node("open"),
+            kind_node: kind,
+            our_did: runtime_base_id,
+            kubo_url: kubo.url(),
+            envelope_tx: envelope_tx.clone(),
+            entity_registry: entity_registry.clone(),
+            iroh_node_id: "",
+            started_at: 0,
+            runtime_config: BTreeMap::new(),
+            init_payload: None,
+        })
         .await
         .unwrap();
         entity_registry

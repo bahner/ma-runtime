@@ -265,6 +265,125 @@ pub struct EntityPlugin {
     tx: Sender<EntityMsg>,
 }
 
+/// Arguments for [`EntityPlugin::load`] and
+/// [`EntityPlugin::load_with_fibonacci_backoff`], bundled to stay under
+/// clippy's argument-count limit. `Clone` so the backoff retry loop can pass
+/// the same borrowed `node`/`kind_node` to each attempt.
+#[derive(Clone)]
+pub struct LoadArgs<'a> {
+    pub fragment: String,
+    pub node: &'a EntityNode,
+    pub kind_node: &'a KindNode,
+    pub our_did: &'a str,
+    pub kubo_url: &'a str,
+    pub envelope_tx: Sender<(String, SendEnvelope)>,
+    pub entity_registry: EntityRegistry,
+    pub iroh_node_id: &'a str,
+    pub started_at: u64,
+    pub runtime_config: std::collections::BTreeMap<String, String>,
+    pub init_payload: Option<Vec<u8>>,
+}
+
+/// Resolve the Wasm bytes and combined behaviour source for
+/// [`EntityPlugin::load`]: either a kind-shared binary (concatenating the
+/// kind's behaviour chain with the entity's own) or the entity's own binary
+/// supplied via `EntityNode.behaviour`.
+async fn resolve_wasm_and_behaviour(
+    fragment: &str,
+    node: &EntityNode,
+    kind_node: &KindNode,
+    kubo_url: &str,
+) -> Result<(String, Vec<u8>, Option<String>, Option<Vec<u8>>)> {
+    let kind = kind_node.plugin_kind();
+    let wasi = kind_node.wasi();
+
+    // Wasm bytes source depends on whether this kind shares one binary
+    // across all its entities (`cid` present) or lets each entity supply
+    // its own (`cid` absent — the entity's own Wasm bytes live on
+    // `EntityNode.behaviour` instead, instantiated as-is, never resolved
+    // as interpreted text).
+    let Some(shared_cid) = &kind_node.cid else {
+        // No shared binary for this kind — the entity must supply its
+        // own Wasm bytes via `behaviour`.
+        let entity_cid = node.behaviour.as_ref().map(|l| l.cid.clone()).ok_or_else(|| {
+                anyhow!(
+                    "entity '{fragment}' has kind '{}' with no shared cid: entity must supply its own Wasm via behaviour",
+                    kind_node.protocol
+                )
+            })?;
+        info!(fragment = %fragment, cid = %entity_cid, kind = ?kind, wasi = wasi, "loading entity plugin (own binary via behaviour)");
+        let wasm_bytes = cat_bytes(kubo_url, &entity_cid)
+            .await
+            .with_context(|| format!("fetching wasm for '{fragment}' from {entity_cid}"))?;
+        return Ok((entity_cid, wasm_bytes, None, None));
+    };
+
+    let wasm_cid = shared_cid.cid.clone();
+    info!(fragment = %fragment, cid = %wasm_cid, kind = ?kind, wasi = wasi, "loading entity plugin (shared binary)");
+    let wasm_bytes = cat_bytes(kubo_url, &wasm_cid)
+        .await
+        .with_context(|| format!("fetching wasm for '{fragment}' from {wasm_cid}"))?;
+
+    // Compose kind-level behaviour (base-first, when `extends` was
+    // resolved) followed by the entity's own source. The runtime only
+    // concatenates bytes; parsing/evaluation still happens inside the
+    // actor host via `:set-behaviour`.
+    let entity_behaviour_cid = node.behaviour.as_ref().map(|l| l.cid.clone());
+    let kind_behaviours = if kind_node.behaviour_chain.is_empty() {
+        kind_node.behaviour.iter().cloned().collect::<Vec<_>>()
+    } else {
+        kind_node.behaviour_chain.clone()
+    };
+    let kind_behaviour_cids = kind_behaviours
+        .iter()
+        .map(|link| link.cid.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
+    info!(
+        fragment = %fragment,
+        kind = %kind_node.protocol,
+        kind_behaviour_cids = %kind_behaviour_cids,
+        entity_behaviour_cid = ?entity_behaviour_cid,
+        "resolved entity behaviour chain"
+    );
+    let behaviour_text: Option<Vec<u8>> = if kind_behaviours.is_empty() && entity_behaviour_cid.is_none()
+    {
+        None
+    } else {
+        let mut parts = Vec::new();
+        for link in &kind_behaviours {
+            parts.push(
+                crate::behaviour::fetch_behaviour(kubo_url, &link.cid)
+                    .await
+                    .with_context(|| {
+                        format!("fetching kind behaviour for '{fragment}' from {}", link.cid)
+                    })?,
+            );
+        }
+        if let Some(cid) = &entity_behaviour_cid {
+            parts.push(
+                crate::behaviour::fetch_behaviour(kubo_url, cid)
+                    .await
+                    .with_context(|| {
+                        format!("fetching entity behaviour for '{fragment}' from {cid}")
+                    })?,
+            );
+        }
+        let mut combined = Vec::new();
+        for part in parts {
+            if !combined.is_empty() && !combined.ends_with(b"\n") {
+                combined.push(b'\n');
+            }
+            combined.extend_from_slice(&part);
+            if !combined.ends_with(b"\n") {
+                combined.push(b'\n');
+            }
+        }
+        Some(combined)
+    };
+    Ok((wasm_cid, wasm_bytes, entity_behaviour_cid, behaviour_text))
+}
+
 impl EntityPlugin {
     /// Create a native entity plugin backed by a compiled-in Rust closure.
     ///
@@ -337,21 +456,20 @@ impl EntityPlugin {
     /// Returns `Err` for fatal errors (Wasm fetch / plugin instantiation), or
     /// when `kind_node.kind_type == Evaluator::Native` (use
     /// [`EntityPlugin::new_native`] instead).
-    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
-    pub async fn load(
-        fragment: impl Into<String>,
-        node: &EntityNode,
-        kind_node: &KindNode,
-        our_did: &str,
-        kubo_url: &str,
-        envelope_tx: Sender<(String, SendEnvelope)>,
-        entity_registry: EntityRegistry,
-        iroh_node_id: &str,
-        started_at: u64,
-        runtime_config: std::collections::BTreeMap<String, String>,
-        init_payload: Option<Vec<u8>>,
-    ) -> Result<(Self, Lifecycle)> {
-        let fragment = fragment.into();
+    pub async fn load(args: LoadArgs<'_>) -> Result<(Self, Lifecycle)> {
+        let LoadArgs {
+            fragment,
+            node,
+            kind_node,
+            our_did,
+            kubo_url,
+            envelope_tx,
+            entity_registry,
+            iroh_node_id,
+            started_at,
+            runtime_config,
+            init_payload,
+        } = args;
         let kind = kind_node.plugin_kind();
         let wasi = kind_node.wasi();
 
@@ -370,96 +488,8 @@ impl EntityPlugin {
             ));
         }
 
-        // Wasm bytes source depends on whether this kind shares one binary
-        // across all its entities (`cid` present) or lets each entity supply
-        // its own (`cid` absent — the entity's own Wasm bytes live on
-        // `EntityNode.behaviour` instead, instantiated as-is, never resolved
-        // as interpreted text).
-        let (wasm_cid, wasm_bytes, entity_behaviour_cid, behaviour_text) = if let Some(shared_cid) =
-            &kind_node.cid
-        {
-            let wasm_cid = shared_cid.cid.clone();
-            info!(fragment = %fragment, cid = %wasm_cid, kind = ?kind, wasi = wasi, "loading entity plugin (shared binary)");
-            let wasm_bytes = cat_bytes(kubo_url, &wasm_cid)
-                .await
-                .with_context(|| format!("fetching wasm for '{fragment}' from {wasm_cid}"))?;
-
-            // Compose kind-level behaviour (base-first, when `extends` was
-            // resolved) followed by the entity's own source. The runtime only
-            // concatenates bytes; parsing/evaluation still happens inside the
-            // actor host via `:set-behaviour`.
-            let entity_behaviour_cid = node.behaviour.as_ref().map(|l| l.cid.clone());
-            let kind_behaviours = if kind_node.behaviour_chain.is_empty() {
-                kind_node.behaviour.iter().cloned().collect::<Vec<_>>()
-            } else {
-                kind_node.behaviour_chain.clone()
-            };
-            let kind_behaviour_cids = kind_behaviours
-                .iter()
-                .map(|link| link.cid.as_str())
-                .collect::<Vec<_>>()
-                .join(",");
-            info!(
-                fragment = %fragment,
-                kind = %kind_node.protocol,
-                kind_behaviour_cids = %kind_behaviour_cids,
-                entity_behaviour_cid = ?entity_behaviour_cid,
-                "resolved entity behaviour chain"
-            );
-            let behaviour_text: Option<Vec<u8>> =
-                if kind_behaviours.is_empty() && entity_behaviour_cid.is_none() {
-                    None
-                } else {
-                    let mut parts = Vec::new();
-                    for link in &kind_behaviours {
-                        parts.push(
-                            crate::behaviour::fetch_behaviour(kubo_url, &link.cid)
-                                .await
-                                .with_context(|| {
-                                    format!(
-                                        "fetching kind behaviour for '{fragment}' from {}",
-                                        link.cid
-                                    )
-                                })?,
-                        );
-                    }
-                    if let Some(cid) = &entity_behaviour_cid {
-                        parts.push(
-                            crate::behaviour::fetch_behaviour(kubo_url, cid)
-                                .await
-                                .with_context(|| {
-                                    format!("fetching entity behaviour for '{fragment}' from {cid}")
-                                })?,
-                        );
-                    }
-                    let mut combined = Vec::new();
-                    for part in parts {
-                        if !combined.is_empty() && !combined.ends_with(b"\n") {
-                            combined.push(b'\n');
-                        }
-                        combined.extend_from_slice(&part);
-                        if !combined.ends_with(b"\n") {
-                            combined.push(b'\n');
-                        }
-                    }
-                    Some(combined)
-                };
-            (wasm_cid, wasm_bytes, entity_behaviour_cid, behaviour_text)
-        } else {
-            // No shared binary for this kind — the entity must supply its
-            // own Wasm bytes via `behaviour`.
-            let entity_cid = node.behaviour.as_ref().map(|l| l.cid.clone()).ok_or_else(|| {
-                    anyhow!(
-                        "entity '{fragment}' has kind '{}' with no shared cid: entity must supply its own Wasm via behaviour",
-                        kind_node.protocol
-                    )
-                })?;
-            info!(fragment = %fragment, cid = %entity_cid, kind = ?kind, wasi = wasi, "loading entity plugin (own binary via behaviour)");
-            let wasm_bytes = cat_bytes(kubo_url, &entity_cid)
-                .await
-                .with_context(|| format!("fetching wasm for '{fragment}' from {entity_cid}"))?;
-            (entity_cid, wasm_bytes, None, None)
-        };
+        let (wasm_cid, wasm_bytes, entity_behaviour_cid, behaviour_text) =
+            resolve_wasm_and_behaviour(&fragment, node, kind_node, kubo_url).await?;
 
         // For stateful plugins: fetch persisted state so StateCtx has the
         // correct baseline and set_state can restore it.  Stateless plugins
@@ -549,39 +579,12 @@ impl EntityPlugin {
     /// A malformed or temporarily unavailable entity must not trigger a tight
     /// reload loop. After the final attempt, callers should persist the load
     /// error and leave the entity unloaded until the next explicit reload.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn load_with_fibonacci_backoff(
-        fragment: impl Into<String>,
-        node: &EntityNode,
-        kind_node: &KindNode,
-        our_did: &str,
-        kubo_url: &str,
-        envelope_tx: Sender<(String, SendEnvelope)>,
-        entity_registry: EntityRegistry,
-        iroh_node_id: &str,
-        started_at: u64,
-        runtime_config: std::collections::BTreeMap<String, String>,
-        init_payload: Option<Vec<u8>>,
-    ) -> Result<(Self, Lifecycle)> {
-        let fragment = fragment.into();
+    pub async fn load_with_fibonacci_backoff(args: LoadArgs<'_>) -> Result<(Self, Lifecycle)> {
+        let fragment = args.fragment.clone();
         let mut last_error = None;
 
         for (attempt_idx, delay_secs) in ENTITY_LOAD_BACKOFF_SECS.iter().copied().enumerate() {
-            match Self::load(
-                fragment.clone(),
-                node,
-                kind_node,
-                our_did,
-                kubo_url,
-                envelope_tx.clone(),
-                entity_registry.clone(),
-                iroh_node_id,
-                started_at,
-                runtime_config.clone(),
-                init_payload.clone(),
-            )
-            .await
-            {
+            match Self::load(args.clone()).await {
                 Ok(loaded) => return Ok(loaded),
                 Err(err) => {
                     warn!(
@@ -598,21 +601,7 @@ impl EntityPlugin {
             }
         }
 
-        Self::load(
-            fragment,
-            node,
-            kind_node,
-            our_did,
-            kubo_url,
-            envelope_tx,
-            entity_registry,
-            iroh_node_id,
-            started_at,
-            runtime_config,
-            init_payload,
-        )
-        .await
-        .map_err(|err| {
+        Self::load(args).await.map_err(|err| {
             if let Some(previous) = last_error {
                 err.context(format!("previous load error after backoff: {previous}"))
             } else {
@@ -1177,19 +1166,19 @@ mod hostile {
         envelope_tx: tokio::sync::mpsc::Sender<(String, SendEnvelope)>,
         registry: super::EntityRegistry,
     ) -> anyhow::Result<(EntityPlugin, Lifecycle)> {
-        EntityPlugin::load(
-            fragment,
-            &entity_node(),
-            &kind_node(cid),
-            "did:ma:testrunner",
+        EntityPlugin::load(super::LoadArgs {
+            fragment: fragment.to_string(),
+            node: &entity_node(),
+            kind_node: &kind_node(cid),
+            our_did: "did:ma:testrunner",
             kubo_url,
             envelope_tx,
-            registry,
-            "",
-            0,
-            std::collections::BTreeMap::new(),
-            None,
-        )
+            entity_registry: registry,
+            iroh_node_id: "",
+            started_at: 0,
+            runtime_config: std::collections::BTreeMap::new(),
+            init_payload: None,
+        })
         .await
     }
 
@@ -1238,19 +1227,19 @@ mod hostile {
             "ma_set_behaviour".to_string(),
         ];
 
-        let (plugin, _) = EntityPlugin::load(
-            "duckie",
-            &node,
-            &kind,
-            "did:ma:testrunner",
-            kubo.url(),
+        let (plugin, _) = EntityPlugin::load(super::LoadArgs {
+            fragment: "duckie".to_string(),
+            node: &node,
+            kind_node: &kind,
+            our_did: "did:ma:testrunner",
+            kubo_url: kubo.url(),
             envelope_tx,
-            registry,
-            "",
-            1,
-            std::collections::BTreeMap::new(),
-            None,
-        )
+            entity_registry: registry,
+            iroh_node_id: "",
+            started_at: 1,
+            runtime_config: std::collections::BTreeMap::new(),
+            init_payload: None,
+        })
         .await
         .expect("scheme actor wasm must load");
 
@@ -1283,49 +1272,30 @@ mod hostile {
 
     /// One combined test (not parallel-safe pieces): the Wasm timeout env var
     /// is process-global, so all hostile scenarios run under one setting.
-    #[tokio::test(flavor = "multi_thread")]
-    #[allow(clippy::too_many_lines)]
-    async fn hostile_wasm_never_blocks_anything_else() {
-        std::env::set_var("MA_WASM_CALL_TIMEOUT_SECS", "2");
-        let kubo = MockKubo::start().await;
-        let (envelope_tx, _envelope_rx) = tokio::sync::mpsc::channel::<(String, SendEnvelope)>(16);
-        let registry = new_entity_registry();
-
-        let evil_cid = kubo.add_bytes(wat::parse_str(EVIL_WAT).unwrap()).await;
-        let evil_message_cid = kubo
-            .add_bytes(wat::parse_str(EVIL_ON_MESSAGE_ONLY_WAT).unwrap())
-            .await;
-        let good_cid = kubo.add_bytes(wat::parse_str(GOOD_WAT).unwrap()).await;
-        let garbage_cid = kubo.add_bytes(b"this is not wasm at all".to_vec()).await;
-
-        // ── 1. Garbage bytes: load fails cleanly and quickly. ────────────────
+    async fn assert_garbage_load_fails_fast(
+        kubo: &MockKubo,
+        garbage_cid: &str,
+        envelope_tx: tokio::sync::mpsc::Sender<(String, SendEnvelope)>,
+        registry: super::EntityRegistry,
+    ) {
         let t = Instant::now();
-        let res = load(
-            kubo.url(),
-            "garbage",
-            &garbage_cid,
-            envelope_tx.clone(),
-            registry.clone(),
-        )
-        .await;
+        let res = load(kubo.url(), "garbage", garbage_cid, envelope_tx, registry).await;
         assert!(res.is_err(), "garbage wasm must fail to load");
         assert!(
             t.elapsed() < Duration::from_secs(5),
             "garbage load not bounded: {:?}",
             t.elapsed()
         );
+    }
 
-        // ── 2. Infinite loop in on_signal(:start): load fails within the
-        //       bound. `:start` fires unconditionally on every load. ────────
+    async fn assert_evil_init_load_fails_bounded(
+        kubo: &MockKubo,
+        evil_cid: &str,
+        envelope_tx: tokio::sync::mpsc::Sender<(String, SendEnvelope)>,
+        registry: super::EntityRegistry,
+    ) {
         let t = Instant::now();
-        let res = load(
-            kubo.url(),
-            "evil-init",
-            &evil_cid,
-            envelope_tx.clone(),
-            registry.clone(),
-        )
-        .await;
+        let res = load(kubo.url(), "evil-init", evil_cid, envelope_tx, registry).await;
         assert!(
             res.is_err(),
             "infinite on_signal(:start) must fail, not hang"
@@ -1335,34 +1305,41 @@ mod hostile {
             "infinite on_signal(:start) not bounded: {:?}",
             t.elapsed()
         );
+    }
 
-        // ── 3. Infinite loop in on_message only: load succeeds quickly
-        //       (on_signal is fast), dispatch errors within the bound, and a
-        //       healthy entity is fully responsive meanwhile. ────────────────
+    /// Loads the spinning-`on_message` "evil" entity plus a healthy "good"
+    /// one, registering `evil` under `entity_registry` for the reload step.
+    async fn load_evil_and_good(
+        kubo: &MockKubo,
+        evil_message_cid: &str,
+        good_cid: &str,
+        envelope_tx: tokio::sync::mpsc::Sender<(String, SendEnvelope)>,
+        registry: super::EntityRegistry,
+    ) -> (std::sync::Arc<EntityPlugin>, EntityPlugin) {
         let (evil, _) = load(
             kubo.url(),
             "evil",
-            &evil_message_cid,
+            evil_message_cid,
             envelope_tx.clone(),
             registry.clone(),
         )
         .await
         .expect("evil load (fast on_signal, spinning on_message) should succeed");
-        let (good, _) = load(
-            kubo.url(),
-            "good",
-            &good_cid,
-            envelope_tx.clone(),
-            registry.clone(),
-        )
-        .await
-        .expect("good load should succeed");
+        let (good, _) = load(kubo.url(), "good", good_cid, envelope_tx, registry.clone())
+            .await
+            .expect("good load should succeed");
         let evil = std::sync::Arc::new(evil);
         registry
             .write()
             .await
             .insert("evil".to_string(), evil.clone());
+        (evil, good)
+    }
 
+    async fn assert_good_entity_survives_wedged_evil(
+        evil: &std::sync::Arc<EntityPlugin>,
+        good: &EntityPlugin,
+    ) {
         // Kick off the wedging dispatch.
         let evil_clone = evil.clone();
         let wedged =
@@ -1389,8 +1366,9 @@ mod hostile {
             "wedged dispatch not bounded: {:?}",
             t.elapsed()
         );
+    }
 
-        // ── 4. The evil worker survives the epoch abort and stays bounded. ───
+    async fn assert_evil_survives_second_dispatch(evil: &EntityPlugin) {
         let t = Instant::now();
         let res2 = evil.on_message(&cast_input("wedge-2")).await;
         assert!(res2.is_err(), "second dispatch must also error");
@@ -1399,17 +1377,17 @@ mod hostile {
             "second wedged dispatch not bounded: {:?}",
             t.elapsed()
         );
+    }
 
-        // ── 5. Reload over a wedged entity works: replace registry entry. ───
-        let (evil2, _) = load(
-            kubo.url(),
-            "evil",
-            &good_cid, // "fixed" version
-            envelope_tx.clone(),
-            registry.clone(),
-        )
-        .await
-        .expect("reload over wedged entity should succeed");
+    async fn assert_reload_over_wedged_entity_works(
+        kubo: &MockKubo,
+        good_cid: &str, // "fixed" version
+        envelope_tx: tokio::sync::mpsc::Sender<(String, SendEnvelope)>,
+        registry: super::EntityRegistry,
+    ) {
+        let (evil2, _) = load(kubo.url(), "evil", good_cid, envelope_tx, registry.clone())
+            .await
+            .expect("reload over wedged entity should succeed");
         registry
             .write()
             .await
@@ -1419,6 +1397,40 @@ mod hostile {
             .on_message(&cast_input("post-reload"))
             .await
             .expect("reloaded (fixed) entity must dispatch fine");
+    }
+
+    /// One combined test (not parallel-safe pieces): the Wasm timeout env var
+    /// is process-global, so all hostile scenarios run under one setting.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hostile_wasm_never_blocks_anything_else() {
+        std::env::set_var("MA_WASM_CALL_TIMEOUT_SECS", "2");
+        let kubo = MockKubo::start().await;
+        let (envelope_tx, _envelope_rx) = tokio::sync::mpsc::channel::<(String, SendEnvelope)>(16);
+        let registry = new_entity_registry();
+
+        let evil_cid = kubo.add_bytes(wat::parse_str(EVIL_WAT).unwrap()).await;
+        let evil_message_cid = kubo
+            .add_bytes(wat::parse_str(EVIL_ON_MESSAGE_ONLY_WAT).unwrap())
+            .await;
+        let good_cid = kubo.add_bytes(wat::parse_str(GOOD_WAT).unwrap()).await;
+        let garbage_cid = kubo.add_bytes(b"this is not wasm at all".to_vec()).await;
+
+        assert_garbage_load_fails_fast(&kubo, &garbage_cid, envelope_tx.clone(), registry.clone())
+            .await;
+        assert_evil_init_load_fails_bounded(&kubo, &evil_cid, envelope_tx.clone(), registry.clone())
+            .await;
+
+        let (evil, good) = load_evil_and_good(
+            &kubo,
+            &evil_message_cid,
+            &good_cid,
+            envelope_tx.clone(),
+            registry.clone(),
+        )
+        .await;
+        assert_good_entity_survives_wedged_evil(&evil, &good).await;
+        assert_evil_survives_second_dispatch(&evil).await;
+        assert_reload_over_wedged_entity_works(&kubo, &good_cid, envelope_tx, registry).await;
 
         std::env::remove_var("MA_WASM_CALL_TIMEOUT_SECS");
     }

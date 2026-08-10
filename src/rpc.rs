@@ -136,17 +136,19 @@ async fn apply_behaviour_request(req: SetBehaviourRequest, ctx: &RpcHandlerCtx) 
         std::collections::BTreeMap::new()
     });
     let (plugin, lifecycle) = crate::plugin::EntityPlugin::load_with_fibonacci_backoff(
-        req.fragment.clone(),
-        &updated_node,
-        &kind_node,
-        &ctx.our_did,
-        &ctx.kubo_rpc_url,
-        ctx.envelope_tx.clone(),
-        ctx.entity_registry.clone(),
-        &iroh_node_id,
-        started_at,
-        runtime_config,
-        None,
+        crate::plugin::LoadArgs {
+            fragment: req.fragment.clone(),
+            node: &updated_node,
+            kind_node: &kind_node,
+            our_did: &ctx.our_did,
+            kubo_url: &ctx.kubo_rpc_url,
+            envelope_tx: ctx.envelope_tx.clone(),
+            entity_registry: ctx.entity_registry.clone(),
+            iroh_node_id: &iroh_node_id,
+            started_at,
+            runtime_config,
+            init_payload: None,
+        },
     )
     .await?;
     let plugin = Arc::new(plugin);
@@ -596,19 +598,19 @@ async fn handle_entity_plugin_message(
             std::collections::BTreeMap::new()
         });
 
-        match crate::plugin::EntityPlugin::load(
-            req.fragment.clone(),
-            &entity_node,
-            &kind_node,
-            &ctx.our_did,
-            &ctx.kubo_rpc_url,
-            ctx.envelope_tx.clone(),
-            ctx.entity_registry.clone(),
-            &iroh_node_id,
+        match crate::plugin::EntityPlugin::load(crate::plugin::LoadArgs {
+            fragment: req.fragment.clone(),
+            node: &entity_node,
+            kind_node: &kind_node,
+            our_did: &ctx.our_did,
+            kubo_url: &ctx.kubo_rpc_url,
+            envelope_tx: ctx.envelope_tx.clone(),
+            entity_registry: ctx.entity_registry.clone(),
+            iroh_node_id: &iroh_node_id,
             started_at,
             runtime_config,
-            req.init_payload.clone(),
-        )
+            init_payload: req.init_payload.clone(),
+        })
         .await
         {
             Ok((ep, Lifecycle::Running)) => {
