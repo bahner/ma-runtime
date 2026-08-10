@@ -528,18 +528,18 @@ async fn main() -> Result<()> {
     );
 
     if let Some(ref rc) = root_cid {
-        let (count, updated_root) = bootstrap::load_entities(
-            rc,
-            &config.kubo_rpc_url,
-            &config,
-            &our_did,
-            &entity_registry,
-            &kind_registry,
-            &native_factories,
-            envelope_tx.clone(),
-            &startup_iroh_node_id,
-            startup_epoch,
-        )
+        let (count, updated_root) = bootstrap::load_entities(bootstrap::LoadEntitiesArgs {
+            root_cid: rc,
+            kubo_url: &config.kubo_rpc_url,
+            daemon_config: &config,
+            our_did: &our_did,
+            registry: &entity_registry,
+            kind_registry: &kind_registry,
+            native_factories: &native_factories,
+            envelope_tx: envelope_tx.clone(),
+            iroh_node_id: &startup_iroh_node_id,
+            started_at: startup_epoch,
+        })
         .await;
         info!(count = %count, "Entity plugins loaded");
         if let Some(new_rc) = updated_root {
@@ -753,20 +753,20 @@ async fn main() -> Result<()> {
         .secret_bundle_passphrase
         .clone()
         .ok_or_else(|| anyhow!("secret_bundle_passphrase is required for periodic DID publish"))?;
-    republish::spawn_periodic_did_publish(
-        stats.clone(),
-        Arc::clone(&shared_config),
-        config.kubo_rpc_url.clone(),
-        config.slug.clone(),
-        ma_base.clone(),
+    republish::spawn_periodic_did_publish(republish::PeriodicDidPublishContext {
+        stats: stats.clone(),
+        shared_config: Arc::clone(&shared_config),
+        kubo_url: config.kubo_rpc_url.clone(),
+        runtime_slug: config.slug.clone(),
+        ma_base: ma_base.clone(),
         runtime_ipns_key,
-        config.effective_secret_bundle()?,
-        refresh_passphrase,
-        did_publish_interval_secs,
-        did_publish_cache_warm_secs,
-        did_publish_timeout_secs,
+        bundle_path: config.effective_secret_bundle()?,
+        passphrase: refresh_passphrase,
+        interval: std::time::Duration::from_secs(did_publish_interval_secs),
+        cache_warm: std::time::Duration::from_secs(did_publish_cache_warm_secs),
+        timeout: std::time::Duration::from_secs(did_publish_timeout_secs),
         ipns_publish,
-    );
+    });
 
     info!(
         did = %our_did,

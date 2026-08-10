@@ -17,51 +17,23 @@ use tracing::{error, info, warn};
 use crate::ipfs;
 use crate::status::SharedStats;
 
-struct PeriodicDidPublishContext {
-    stats: SharedStats,
-    shared_config: std::sync::Arc<RwLock<Config>>,
-    kubo_url: String,
-    runtime_slug: String,
-    ma_base: MaExtension,
-    runtime_ipns_key: [u8; 32],
-    bundle_path: PathBuf,
-    passphrase: String,
-    interval: Duration,
-    cache_warm: Duration,
-    timeout: Duration,
-    ipns_publish: ipfs::IpnsPublishSettings,
+pub(crate) struct PeriodicDidPublishContext {
+    pub(crate) stats: SharedStats,
+    pub(crate) shared_config: std::sync::Arc<RwLock<Config>>,
+    pub(crate) kubo_url: String,
+    pub(crate) runtime_slug: String,
+    pub(crate) ma_base: MaExtension,
+    pub(crate) runtime_ipns_key: [u8; 32],
+    pub(crate) bundle_path: PathBuf,
+    pub(crate) passphrase: String,
+    pub(crate) interval: Duration,
+    pub(crate) cache_warm: Duration,
+    pub(crate) timeout: Duration,
+    pub(crate) ipns_publish: ipfs::IpnsPublishSettings,
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn spawn_periodic_did_publish(
-    refresh_stats: SharedStats,
-    refresh_config: std::sync::Arc<RwLock<Config>>,
-    refresh_kubo_url: String,
-    refresh_runtime_slug: String,
-    refresh_ma_base: MaExtension,
-    refresh_runtime_ipns_key: [u8; 32],
-    refresh_bundle_path: PathBuf,
-    refresh_passphrase: String,
-    did_publish_interval_secs: u64,
-    did_publish_cache_warm_secs: u64,
-    did_publish_timeout_secs: u64,
-    ipns_publish: ipfs::IpnsPublishSettings,
-) {
+pub fn spawn_periodic_did_publish(context: PeriodicDidPublishContext) {
     tokio::spawn(async move {
-        let context = PeriodicDidPublishContext {
-            stats: refresh_stats,
-            shared_config: refresh_config,
-            kubo_url: refresh_kubo_url,
-            runtime_slug: refresh_runtime_slug,
-            ma_base: refresh_ma_base,
-            runtime_ipns_key: refresh_runtime_ipns_key,
-            bundle_path: refresh_bundle_path,
-            passphrase: refresh_passphrase,
-            interval: Duration::from_secs(did_publish_interval_secs),
-            cache_warm: Duration::from_secs(did_publish_cache_warm_secs),
-            timeout: Duration::from_secs(did_publish_timeout_secs),
-            ipns_publish,
-        };
         let mut ticker = tokio::time::interval(context.interval);
         let mut last_published_cid: Option<String> = None;
         let mut last_published_at = Instant::now()

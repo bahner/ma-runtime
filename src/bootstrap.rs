@@ -597,19 +597,32 @@ pub async fn export_bootstrap_yaml(root_cid: &str, kubo_url: &str) -> Result<Str
 /// for every successfully loaded entity whose stored lifecycle differs.
 /// Returns `(count, Some(new_root_cid))` when any entity nodes were updated,
 /// or `(count, None)` when nothing changed.
-#[allow(clippy::too_many_arguments)]
-pub async fn load_entities(
-    root_cid: &str,
-    kubo_url: &str,
-    daemon_config: &ma_core::Config,
-    our_did: &str,
-    registry: &plugin::EntityRegistry,
-    kind_registry: &KindRegistry,
-    native_factories: &plugin::NativeFactories,
-    envelope_tx: tokio::sync::mpsc::Sender<(String, crate::entity::SendEnvelope)>,
-    iroh_node_id: &str,
-    started_at: u64,
-) -> (usize, Option<String>) {
+pub(crate) struct LoadEntitiesArgs<'a> {
+    pub(crate) root_cid: &'a str,
+    pub(crate) kubo_url: &'a str,
+    pub(crate) daemon_config: &'a ma_core::Config,
+    pub(crate) our_did: &'a str,
+    pub(crate) registry: &'a plugin::EntityRegistry,
+    pub(crate) kind_registry: &'a KindRegistry,
+    pub(crate) native_factories: &'a plugin::NativeFactories,
+    pub(crate) envelope_tx: tokio::sync::mpsc::Sender<(String, crate::entity::SendEnvelope)>,
+    pub(crate) iroh_node_id: &'a str,
+    pub(crate) started_at: u64,
+}
+
+pub async fn load_entities(args: LoadEntitiesArgs<'_>) -> (usize, Option<String>) {
+    let LoadEntitiesArgs {
+        root_cid,
+        kubo_url,
+        daemon_config,
+        our_did,
+        registry,
+        kind_registry,
+        native_factories,
+        envelope_tx,
+        iroh_node_id,
+        started_at,
+    } = args;
     let mut manifest = match kubo::dag_get::<RuntimeManifest>(kubo_url, root_cid).await {
         Ok(m) => m,
         Err(e) => {
