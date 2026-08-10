@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::{collections::hash_map::Entry, collections::HashMap, hash::Hash};
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use ciborium::Value as CborValue;
 use ma_core::config::Config;
 use ma_core::{
@@ -70,17 +70,12 @@ async fn public_plugin_config_for_local(
     kubo_url: &str,
     side_effects: &LocalSideEffectCtx,
 ) -> Result<std::collections::BTreeMap<String, String>> {
-    let root_cid = side_effects
-        .stats
-        .read()
-        .await
-        .root_cid
-        .clone()
-        .ok_or_else(|| anyhow!("no manifest root CID available"))?;
-    let manifest: crate::entity::RuntimeManifest =
-        crate::kubo::dag_get(kubo_url, &root_cid).await?;
-    let cfg = side_effects.shared_config.read().await;
-    Ok(crate::crud::config::public_plugin_config(&manifest, &cfg))
+    crate::crud::config::fetch_public_plugin_config(
+        &side_effects.stats,
+        kubo_url,
+        &side_effects.shared_config,
+    )
+    .await
 }
 
 /// Map a `message_type` string to the iroh delivery protocol.

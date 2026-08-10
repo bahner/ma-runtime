@@ -48,21 +48,12 @@ pub struct RpcHandlerCtx {
 async fn public_plugin_config_for_rpc(
     ctx: &RpcHandlerCtx,
 ) -> Result<std::collections::BTreeMap<String, String>> {
-    let root_cid = ctx
-        .stats
-        .read()
-        .await
-        .root_cid
-        .clone()
-        .ok_or_else(|| anyhow!("no manifest root CID available"))?;
-    let manifest: crate::entity::RuntimeManifest =
-        crate::kubo::dag_get(&ctx.kubo_rpc_url, &root_cid).await?;
-    let cfg = ctx.shared_config.read().await;
-    Ok(crate::crud::config::public_plugin_config(&manifest, &cfg))
-}
-
-fn normalize_behaviour_cid(value: &str) -> Result<String> {
-    crate::entity::normalize_behaviour_cid(value)
+    crate::crud::config::fetch_public_plugin_config(
+        &ctx.stats,
+        &ctx.kubo_rpc_url,
+        &ctx.shared_config,
+    )
+    .await
 }
 
 async fn load_entity_node_for_update(
@@ -93,7 +84,7 @@ async fn apply_behaviour_request(req: SetBehaviourRequest, ctx: &RpcHandlerCtx) 
     let behaviour_cid = req
         .behaviour_cid
         .as_deref()
-        .map(normalize_behaviour_cid)
+        .map(crate::entity::normalize_behaviour_cid)
         .transpose()?;
     let reload_shutdown_timeout = {
         let cfg = ctx.shared_config.read().await;
@@ -511,7 +502,7 @@ async fn create_entity_from_request(
         behaviour: req
             .behaviour_cid
             .as_deref()
-            .map(normalize_behaviour_cid)
+            .map(crate::entity::normalize_behaviour_cid)
             .transpose()?
             .as_deref()
             .map(IpldLink::new),

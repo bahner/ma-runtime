@@ -187,6 +187,26 @@ fn yaml_config_value_to_string(value: &serde_yaml::Value) -> Option<String> {
     }
 }
 
+/// Load the current manifest and merge it with the daemon config to produce
+/// the public plugin config map — the shared body behind both the RPC and
+/// local-dispatch entry points into `public_plugin_config`.
+pub async fn fetch_public_plugin_config(
+    stats: &crate::status::SharedStats,
+    kubo_url: &str,
+    shared_config: &std::sync::Arc<tokio::sync::RwLock<ma_core::Config>>,
+) -> Result<std::collections::BTreeMap<String, String>> {
+    let root_cid = stats
+        .read()
+        .await
+        .root_cid
+        .clone()
+        .ok_or_else(|| anyhow!("no manifest root CID available"))?;
+    let manifest: crate::entity::RuntimeManifest =
+        crate::kubo::dag_get(kubo_url, &root_cid).await?;
+    let cfg = shared_config.read().await;
+    Ok(public_plugin_config(&manifest, &cfg))
+}
+
 pub fn public_plugin_config(
     manifest: &crate::entity::RuntimeManifest,
     cfg: &ma_core::Config,
