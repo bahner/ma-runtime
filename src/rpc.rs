@@ -12,7 +12,8 @@ use tracing::{debug, error, info, warn};
 
 use crate::acl::{check_full, AclCache, AclMap, GroupCache, CAP_RPC};
 use crate::entity::{
-    CastInput, IpldLink, Lifecycle, LocalMessage, PluginMsg, SendEnvelope, SetBehaviourRequest,
+    CastInput, CreateEntityRequest, IpldLink, Lifecycle, LocalMessage, PluginMsg, SendEnvelope,
+    SetBehaviourRequest,
 };
 use crate::plugin::EntityRegistry;
 use crate::routing::local_target_fragment;
@@ -416,11 +417,259 @@ fn rpc_message_kind(message_type: &str) -> RpcMessageKind {
 
 // ── Entity plugin dispatch ────────────────────────────────────────────────────
 
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::too_many_lines
-)]
+/// Enforce the entity's verb-scoped ACL for an incoming RPC dispatch. Empty
+/// or missing ACL is fail-closed (deny-all), matching `EntityNode.acl`'s
+/// documented contract.
+async fn enforce_entity_rpc_acl(
+    entity: &crate::plugin::EntityPlugin,
+    message: &ma_core::Message,
+    verb_str: Option<&str>,
+    ctx: &RpcHandlerCtx,
+) -> Result<()> {
+    if entity.acl.is_empty() {
+        return Err(anyhow!(
+            "entity '{}' has no ACL configured: access denied (fail-closed)",
+            entity.fragment
+        ));
+    }
+    let acl_name = &entity.acl;
+    let acl_key = format!("acls.{acl_name}");
+    let maybe_acl = ctx.acl_cache.read().await.get(&acl_key).cloned();
+    let Some(acl_map) = maybe_acl else {
+        // ACL name set but not in cache → deny (fail-closed).
+        return Err(anyhow!(
+            "entity '{}' ACL '{}' not found in cache: access denied",
+            entity.fragment,
+            acl_name
+        ));
+    };
+    let verb_ref = verb_str.unwrap_or("*");
+    let group_cache = ctx.group_cache.clone();
+    // Pre-normalize caller: `did:ma:<our_did>#fragment` → `#fragment` so
+    // that the `"#"` local-entity wildcard in ACL maps matches intra-runtime
+    // callers.  This is safe because message signatures are cryptographically
+    // verified — a remote peer cannot forge our DID as the sender.
+    let caller_did = message
+        .from
+        .strip_prefix(&format!("{}#", ctx.our_did))
+        .map_or_else(|| message.from.clone(), |frag| format!("#{frag}"));
+    crate::acl::check_full(&acl_map, &caller_did, &[verb_ref, "*"], |key| {
+        let group_cache = group_cache.clone();
+        let name = key.strip_prefix('+').unwrap_or(key).to_string();
+        async move {
+            Ok(group_cache
+                .read()
+                .await
+                .get(&name)
+                .cloned()
+                .unwrap_or_default())
+        }
+    })
+    .await
+    .with_context(|| {
+        format!(
+            "entity '{}' ACL denied {} calling {:?}",
+            entity.fragment, message.from, verb_str
+        )
+    })
+}
+
+/// Process entity creation requests queued by the `ma_create_entity` host
+/// function during this dispatch.
+async fn process_entity_create_requests(
+    create_requests: Vec<CreateEntityRequest>,
+    entity: &crate::plugin::EntityPlugin,
+    ctx: &RpcHandlerCtx,
+) -> Result<()> {
+    for req in create_requests {
+        let maybe_kind = ctx
+            .kind_registry
+            .read()
+            .await
+            .get(&req.kind_protocol)
+            .cloned();
+        let Some(kind_node) = maybe_kind else {
+            warn!(caller = %entity.fragment, kind = %req.kind_protocol,
+                "ma_create_entity: kind not in registry; skipped");
+            continue;
+        };
+        create_entity_from_request(req, &kind_node, entity, ctx).await?;
+    }
+    Ok(())
+}
+
+/// Build the requested `EntityNode`, load its plugin, and dispatch on the
+/// resulting lifecycle. One iteration of `process_entity_create_requests`'s
+/// loop body.
+async fn create_entity_from_request(
+    req: CreateEntityRequest,
+    kind_node: &crate::entity::KindNode,
+    entity: &crate::plugin::EntityPlugin,
+    ctx: &RpcHandlerCtx,
+) -> Result<()> {
+    let entity_node = crate::entity::EntityNode {
+        kind: req.kind_protocol.clone(),
+        behaviour: req
+            .behaviour_cid
+            .as_deref()
+            .map(normalize_behaviour_cid)
+            .transpose()?
+            .as_deref()
+            .map(IpldLink::new),
+        acl: entity.acl.clone(),
+        state: None,
+        parent: Some(entity.fragment.clone()),
+        label: None,
+        attributes: std::collections::BTreeMap::new(),
+        init: None,
+        initialised: false,
+        reload_error: None,
+    };
+
+    let (iroh_node_id, started_at) = {
+        let s = ctx.stats.read().await;
+        (s.endpoint_id.clone(), s.started_at)
+    };
+    let runtime_config = public_plugin_config_for_rpc(ctx).await.unwrap_or_else(|e| {
+        warn!(error = %e, "ma_create_entity: failed to build public plugin config; continuing with entity-local config only");
+        std::collections::BTreeMap::new()
+    });
+
+    match crate::plugin::EntityPlugin::load(crate::plugin::LoadArgs {
+        fragment: req.fragment.clone(),
+        node: &entity_node,
+        kind_node,
+        our_did: &ctx.our_did,
+        kubo_url: &ctx.kubo_rpc_url,
+        envelope_tx: ctx.envelope_tx.clone(),
+        entity_registry: ctx.entity_registry.clone(),
+        iroh_node_id: &iroh_node_id,
+        started_at,
+        runtime_config,
+        init_payload: req.init_payload.clone(),
+    })
+    .await
+    {
+        Ok((ep, Lifecycle::Running)) => finish_created_entity(req, entity_node, ep, ctx).await,
+        Ok((_, Lifecycle::Error)) => {
+            report_create_init_error(&req, ctx);
+            Ok(())
+        }
+        Err(e) => {
+            warn!(fragment = %req.fragment, kind = %req.kind_protocol,
+                error = %e, "ma_create_entity: EntityPlugin::load failed");
+            Ok(())
+        }
+    }
+}
+
+/// `init()` returned `:ok` (or the kind has no `init`): register the plugin
+/// and persist the new entity to the manifest in the background.
+async fn finish_created_entity(
+    req: CreateEntityRequest,
+    entity_node: crate::entity::EntityNode,
+    ep: crate::plugin::EntityPlugin,
+    ctx: &RpcHandlerCtx,
+) -> Result<()> {
+    let mut running_node = entity_node;
+    running_node.initialised = true;
+    if let Ok(Some(cid)) = ep.trigger_save(&ctx.kubo_rpc_url).await {
+        running_node.state = Some(IpldLink::new(cid));
+    }
+    ctx.entity_registry
+        .write()
+        .await
+        .insert(req.fragment.clone(), Arc::new(ep));
+    debug!(fragment = %req.fragment, kind = %req.kind_protocol,
+        parent = %req.parent, "entity created via ma_create_entity");
+    // Persist the updated manifest in the background so the main event loop
+    // is not blocked by the IPFS dag_put. The entity is already live in the
+    // in-memory registry above. The manifest writer serialises this against
+    // all other manifest mutations, so concurrent creates can no longer
+    // clobber each other.
+    let fragment = req.fragment.clone();
+    let writer = ctx.manifest_writer.clone();
+    tokio::spawn(async move {
+        if let Err(e) = writer.insert_entity(&fragment, &running_node).await {
+            warn!(fragment = %fragment, error = %e, "failed to persist new entity to manifest");
+        }
+    });
+    Ok(())
+}
+
+/// `init()` returned `:error`: discard the entity (do NOT persist to the
+/// manifest) and queue an error reply into the parent's outbox.
+fn report_create_init_error(req: &CreateEntityRequest, ctx: &RpcHandlerCtx) {
+    warn!(fragment = %req.fragment, kind = %req.kind_protocol,
+        "ma_create_entity: init() returned :error; entity discarded");
+    let err_content = {
+        let mut buf = Vec::new();
+        let _ = ciborium::ser::into_writer(
+            &CborValue::Array(vec![
+                CborValue::Text(":error".into()),
+                CborValue::Text(format!("init() failed for #{}", req.fragment)),
+                CborValue::Text(req.fragment.clone()),
+            ]),
+            &mut buf,
+        );
+        buf
+    };
+    let _ = crate::plugin::enqueue_envelope(
+        &ctx.envelope_tx,
+        &req.parent,
+        crate::entity::SendEnvelope {
+            to: format!("{}#{}", ctx.our_did, req.parent),
+            content_type: ma_core::CONTENT_TYPE_TERM.to_string(),
+            message_type: None,
+            content: err_content,
+            reply_to: None,
+        },
+    );
+}
+
+/// Process entity deletion requests queued by the `ma_delete_entity` host
+/// function during this dispatch.
+async fn process_entity_delete_requests(
+    delete_requests: Vec<String>,
+    entity: &crate::plugin::EntityPlugin,
+    ctx: &RpcHandlerCtx,
+) {
+    for target_fragment in delete_requests {
+        let reg_read = ctx.entity_registry.read().await;
+        let target = if let Some(e) = reg_read.get(&target_fragment) {
+            e.clone()
+        } else {
+            warn!(caller = %entity.fragment, target = %target_fragment,
+                "ma_delete_entity: target not found; skipped");
+            continue;
+        };
+
+        // Authorisation: caller must be the target's parent (or self-delete).
+        let authorised = target.parent.as_deref() == Some(entity.fragment.as_str())
+            || target_fragment == entity.fragment;
+        if !authorised {
+            warn!(caller = %entity.fragment, target = %target_fragment,
+                "ma_delete_entity: caller is not parent; denied");
+            continue;
+        }
+
+        // Refuse to delete if any entity in the registry has this as its parent.
+        let has_children = reg_read
+            .values()
+            .any(|e| e.parent.as_deref() == Some(target_fragment.as_str()));
+        if has_children {
+            warn!(caller = %entity.fragment, target = %target_fragment,
+                "ma_delete_entity: target has children; denied");
+            continue;
+        }
+        drop(reg_read);
+
+        ctx.entity_registry.write().await.remove(&target_fragment);
+        debug!(caller = %entity.fragment, target = %target_fragment, "entity deleted via ma_delete_entity");
+    }
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 async fn handle_entity_plugin_message(
     message: &ma_core::Message,
     term: CborValue,
@@ -453,54 +702,7 @@ async fn handle_entity_plugin_message(
         "entity RPC dispatch"
     );
 
-    // Empty acl field → deny-all (fail-closed). Matches EntityNode.acl doc contract.
-    if entity.acl.is_empty() {
-        return Err(anyhow!(
-            "entity '{}' has no ACL configured: access denied (fail-closed)",
-            entity.fragment
-        ));
-    }
-    let acl_name = &entity.acl;
-    let acl_key = format!("acls.{acl_name}");
-    let maybe_acl = ctx.acl_cache.read().await.get(&acl_key).cloned();
-    if let Some(ref acl_map) = maybe_acl {
-        let verb_ref = verb_str.as_deref().unwrap_or("*");
-        let group_cache = ctx.group_cache.clone();
-        // Pre-normalize caller: `did:ma:<our_did>#fragment` → `#fragment` so
-        // that the `"#"` local-entity wildcard in ACL maps matches intra-runtime
-        // callers.  This is safe because message signatures are cryptographically
-        // verified — a remote peer cannot forge our DID as the sender.
-        let caller_did = message
-            .from
-            .strip_prefix(&format!("{}#", ctx.our_did))
-            .map_or_else(|| message.from.clone(), |frag| format!("#{frag}"));
-        crate::acl::check_full(acl_map, &caller_did, &[verb_ref, "*"], |key| {
-            let group_cache = group_cache.clone();
-            let name = key.strip_prefix('+').unwrap_or(key).to_string();
-            async move {
-                Ok(group_cache
-                    .read()
-                    .await
-                    .get(&name)
-                    .cloned()
-                    .unwrap_or_default())
-            }
-        })
-        .await
-        .with_context(|| {
-            format!(
-                "entity '{}' ACL denied {} calling {:?}",
-                entity.fragment, message.from, verb_str
-            )
-        })?;
-    } else {
-        // ACL name set but not in cache → deny (fail-closed).
-        return Err(anyhow!(
-            "entity '{}' ACL '{}' not found in cache: access denied",
-            entity.fragment,
-            acl_name
-        ));
-    }
+    enforce_entity_rpc_acl(&entity, message, verb_str.as_deref(), ctx).await?;
 
     let mut content_bytes = Vec::new();
     ciborium::ser::into_writer(&term, &mut content_bytes)
@@ -556,159 +758,8 @@ async fn handle_entity_plugin_message(
         entity.spawn_state_persist(kubo_url, writer, state_bytes, "rpc");
     }
 
-    // Process entity creation requests queued by `ma_create_entity` host function.
-    for req in result.create_requests {
-        let maybe_kind = ctx
-            .kind_registry
-            .read()
-            .await
-            .get(&req.kind_protocol)
-            .cloned();
-        let Some(kind_node) = maybe_kind else {
-            warn!(caller = %entity.fragment, kind = %req.kind_protocol,
-                "ma_create_entity: kind not in registry; skipped");
-            continue;
-        };
-
-        let entity_node = crate::entity::EntityNode {
-            kind: req.kind_protocol.clone(),
-            behaviour: req
-                .behaviour_cid
-                .as_deref()
-                .map(normalize_behaviour_cid)
-                .transpose()?
-                .as_deref()
-                .map(IpldLink::new),
-            acl: entity.acl.clone(),
-            state: None,
-            parent: Some(entity.fragment.clone()),
-            label: None,
-            attributes: std::collections::BTreeMap::new(),
-            init: None,
-            initialised: false,
-            reload_error: None,
-        };
-
-        let (iroh_node_id, started_at) = {
-            let s = ctx.stats.read().await;
-            (s.endpoint_id.clone(), s.started_at)
-        };
-        let runtime_config = public_plugin_config_for_rpc(ctx).await.unwrap_or_else(|e| {
-            warn!(error = %e, "ma_create_entity: failed to build public plugin config; continuing with entity-local config only");
-            std::collections::BTreeMap::new()
-        });
-
-        match crate::plugin::EntityPlugin::load(crate::plugin::LoadArgs {
-            fragment: req.fragment.clone(),
-            node: &entity_node,
-            kind_node: &kind_node,
-            our_did: &ctx.our_did,
-            kubo_url: &ctx.kubo_rpc_url,
-            envelope_tx: ctx.envelope_tx.clone(),
-            entity_registry: ctx.entity_registry.clone(),
-            iroh_node_id: &iroh_node_id,
-            started_at,
-            runtime_config,
-            init_payload: req.init_payload.clone(),
-        })
-        .await
-        {
-            Ok((ep, Lifecycle::Running)) => {
-                let mut running_node = entity_node.clone();
-                running_node.initialised = true;
-                if let Ok(Some(cid)) = ep.trigger_save(&ctx.kubo_rpc_url).await {
-                    running_node.state = Some(IpldLink::new(cid));
-                }
-                ctx.entity_registry
-                    .write()
-                    .await
-                    .insert(req.fragment.clone(), Arc::new(ep));
-                debug!(fragment = %req.fragment, kind = %req.kind_protocol,
-                    parent = %req.parent, "entity created via ma_create_entity");
-                // Persist the updated manifest in the background so the main
-                // event loop is not blocked by the IPFS dag_put.  The entity is
-                // already live in the in-memory registry above.  The manifest
-                // writer serialises this against all other manifest mutations,
-                // so concurrent creates can no longer clobber each other.
-                let fragment = req.fragment.clone();
-                let writer = ctx.manifest_writer.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = writer.insert_entity(&fragment, &running_node).await {
-                        warn!(fragment = %fragment, error = %e, "failed to persist new entity to manifest");
-                    }
-                });
-            }
-            Ok((_, Lifecycle::Error)) => {
-                // New entity — init() failed: send error back to parent plugin,
-                // do NOT persist to manifest.
-                warn!(fragment = %req.fragment, kind = %req.kind_protocol,
-                    "ma_create_entity: init() returned :error; entity discarded");
-                // Queue error reply into parent's outbox via envelope_tx.
-                let err_content = {
-                    let mut buf = Vec::new();
-                    let _ = ciborium::ser::into_writer(
-                        &CborValue::Array(vec![
-                            CborValue::Text(":error".into()),
-                            CborValue::Text(format!("init() failed for #{}", req.fragment)),
-                            CborValue::Text(req.fragment.clone()),
-                        ]),
-                        &mut buf,
-                    );
-                    buf
-                };
-                let _ = crate::plugin::enqueue_envelope(
-                    &ctx.envelope_tx,
-                    &req.parent,
-                    crate::entity::SendEnvelope {
-                        to: format!("{}#{}", ctx.our_did, req.parent),
-                        content_type: ma_core::CONTENT_TYPE_TERM.to_string(),
-                        message_type: None,
-                        content: err_content,
-                        reply_to: None,
-                    },
-                );
-            }
-            Err(e) => {
-                warn!(fragment = %req.fragment, kind = %req.kind_protocol,
-                    error = %e, "ma_create_entity: EntityPlugin::load failed");
-            }
-        }
-    }
-
-    // Process entity deletion requests queued by `ma_delete_entity` host function.
-    for target_fragment in result.delete_requests {
-        let reg_read = ctx.entity_registry.read().await;
-        let target = if let Some(e) = reg_read.get(&target_fragment) {
-            e.clone()
-        } else {
-            warn!(caller = %entity.fragment, target = %target_fragment,
-                "ma_delete_entity: target not found; skipped");
-            continue;
-        };
-
-        // Authorisation: caller must be the target's parent (or self-delete).
-        let authorised = target.parent.as_deref() == Some(entity.fragment.as_str())
-            || target_fragment == entity.fragment;
-        if !authorised {
-            warn!(caller = %entity.fragment, target = %target_fragment,
-                "ma_delete_entity: caller is not parent; denied");
-            continue;
-        }
-
-        // Refuse to delete if any entity in the registry has this as its parent.
-        let has_children = reg_read
-            .values()
-            .any(|e| e.parent.as_deref() == Some(target_fragment.as_str()));
-        if has_children {
-            warn!(caller = %entity.fragment, target = %target_fragment,
-                "ma_delete_entity: target has children; denied");
-            continue;
-        }
-        drop(reg_read);
-
-        ctx.entity_registry.write().await.remove(&target_fragment);
-        debug!(caller = %entity.fragment, target = %target_fragment, "entity deleted via ma_delete_entity");
-    }
+    process_entity_create_requests(result.create_requests, &entity, ctx).await?;
+    process_entity_delete_requests(result.delete_requests, &entity, ctx).await;
 
     for req in result.behaviour_requests {
         apply_behaviour_request(req, ctx).await?;
@@ -876,28 +927,21 @@ mod tests {
         assert_eq!(rpc_verb(&CborValue::Array(vec![])), None);
     }
 
-    #[allow(clippy::too_many_lines)]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn scheduler_help_native_output_is_exposed_to_reply_layer() {
-        let kubo = MockKubo::start().await;
-        let initial_root = crate::kubo::dag_put(kubo.url(), &RuntimeManifest::default())
-            .await
-            .unwrap();
-        let stats = Arc::new(RwLock::new(Stats {
-            root_cid: Some(initial_root.clone()),
-            ..Default::default()
-        }));
-        let manifest_writer =
-            ManifestWriter::new(initial_root, kubo.url().to_string(), stats.clone());
+    /// Fixture bundling the state needed to dispatch a native scheduler RPC
+    /// message: a running `#scheduler` entity registered in an
+    /// `RpcHandlerCtx`, its ACL, and the sender identity used to sign the
+    /// incoming message.
+    struct SchedulerHelpFixture {
+        ctx: super::RpcHandlerCtx,
+        runtime_did: ma_core::Did,
+        sender_did: ma_core::Did,
+        sender_signing: ma_core::SigningKey,
+    }
 
-        let mut scheduler_acl = AclMap::new();
-        scheduler_acl.insert("*".to_string(), CapabilityEntry::from_caps([":help"]));
-
-        let kind_registry = new_kind_registry();
-        let entity_registry = new_entity_registry();
-        let (envelope_tx, _envelope_rx) =
-            tokio::sync::mpsc::channel::<(String, crate::entity::SendEnvelope)>(16);
-
+    /// Deterministic runtime + sender DIDs and signing keys for the scheduler
+    /// dispatch fixture.
+    fn build_scheduler_test_identities()
+    -> (ma_core::Did, ma_core::SigningKey, ma_core::Did, ma_core::SigningKey) {
         let runtime_ipns = ma_core::ipns_from_secret([1; 32]).unwrap();
         let sender_ipns = ma_core::ipns_from_secret([2; 32]).unwrap();
         let runtime_did = ma_core::Did::new_url(&runtime_ipns, None::<String>).unwrap();
@@ -910,11 +954,17 @@ mod tests {
             ma_core::Did::new_url(&sender_ipns, Some("sign")).unwrap(),
         )
         .unwrap();
+        (runtime_did, runtime_signing, sender_did, sender_signing)
+    }
 
-        let mut runtime_endpoint_box = crate::testkubo::test_endpoint([11u8; 32]).await;
-        let _runtime_rpc_inbox = runtime_endpoint_box.service(RPC_PROTOCOL_ID);
-        let runtime_endpoint: Arc<dyn ma_core::MaEndpoint> = Arc::from(runtime_endpoint_box);
-
+    /// Register a running native `#scheduler` entity (and its kind) in the
+    /// given registries.
+    async fn register_scheduler_entity(
+        kind_registry: &crate::entity::KindRegistry,
+        entity_registry: &crate::plugin::EntityRegistry,
+        kubo_url: &str,
+        runtime_did: &ma_core::Did,
+    ) {
         let scheduler_kind = KindNode {
             protocol: scheduler_actor::SCHEDULER_KIND.to_string(),
             cid: None,
@@ -948,7 +998,7 @@ mod tests {
             SchedulerCtx {
                 entity_registry: entity_registry.clone(),
                 manifest_writer: Arc::new(tokio::sync::RwLock::new(None)),
-                kubo_rpc_url: kubo.url().to_string(),
+                kubo_rpc_url: kubo_url.to_string(),
                 our_did: runtime_did.base_id(),
             },
         );
@@ -965,6 +1015,37 @@ mod tests {
             .write()
             .await
             .insert("scheduler".to_string(), Arc::new(scheduler_plugin));
+    }
+
+    async fn build_scheduler_help_fixture() -> SchedulerHelpFixture {
+        let kubo = MockKubo::start().await;
+        let initial_root = crate::kubo::dag_put(kubo.url(), &RuntimeManifest::default())
+            .await
+            .unwrap();
+        let stats = Arc::new(RwLock::new(Stats {
+            root_cid: Some(initial_root.clone()),
+            ..Default::default()
+        }));
+        let manifest_writer =
+            ManifestWriter::new(initial_root, kubo.url().to_string(), stats.clone());
+
+        let mut scheduler_acl = AclMap::new();
+        scheduler_acl.insert("*".to_string(), CapabilityEntry::from_caps([":help"]));
+
+        let kind_registry = new_kind_registry();
+        let entity_registry = new_entity_registry();
+        let (envelope_tx, _envelope_rx) =
+            tokio::sync::mpsc::channel::<(String, crate::entity::SendEnvelope)>(16);
+
+        let (runtime_did, runtime_signing, sender_did, sender_signing) =
+            build_scheduler_test_identities();
+
+        let mut runtime_endpoint_box = crate::testkubo::test_endpoint([11u8; 32]).await;
+        let _runtime_rpc_inbox = runtime_endpoint_box.service(RPC_PROTOCOL_ID);
+        let runtime_endpoint: Arc<dyn ma_core::MaEndpoint> = Arc::from(runtime_endpoint_box);
+
+        register_scheduler_entity(&kind_registry, &entity_registry, kubo.url(), &runtime_did)
+            .await;
 
         let acl_cache = new_acl_cache();
         acl_cache
@@ -980,7 +1061,7 @@ mod tests {
             resolver: Arc::new(ma_core::IpfsGatewayResolver::new("http://127.0.0.1:9")),
             doc_cache: None,
             did_resolve: crate::ipfs::DidResolveSettings::default(),
-            entity_registry: entity_registry.clone(),
+            entity_registry,
             kind_registry,
             envelope_tx,
             stats,
@@ -1011,29 +1092,45 @@ mod tests {
             did_publish_timeout_secs: 120,
         };
 
+        SchedulerHelpFixture {
+            ctx,
+            runtime_did,
+            sender_did,
+            sender_signing,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scheduler_help_native_output_is_exposed_to_reply_layer() {
+        let fixture = build_scheduler_help_fixture().await;
+
         let mut payload = Vec::new();
         ciborium::ser::into_writer(&ciborium::Value::Text(":help".to_string()), &mut payload)
             .unwrap();
         let incoming = ma_core::Message::new(
-            sender_did.base_id(),
-            format!("{}#scheduler", runtime_did.base_id()),
+            fixture.sender_did.base_id(),
+            format!("{}#scheduler", fixture.runtime_did.base_id()),
             MESSAGE_TYPE_RPC,
             ma_core::CONTENT_TYPE_TERM,
             &payload,
-            &sender_signing,
+            &fixture.sender_signing,
         )
         .unwrap();
+
+        let scheduler_entity = fixture
+            .ctx
+            .entity_registry
+            .read()
+            .await
+            .get("scheduler")
+            .unwrap()
+            .clone();
 
         let reply = handle_entity_plugin_message(
             &incoming,
             ciborium::Value::Text(":help".to_string()),
-            entity_registry
-                .read()
-                .await
-                .get("scheduler")
-                .unwrap()
-                .clone(),
-            &ctx,
+            scheduler_entity,
+            &fixture.ctx,
         )
         .await
         .unwrap();
