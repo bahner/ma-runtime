@@ -8,6 +8,7 @@
 
 use anyhow::{anyhow, Result};
 use extism::{host_fn, Function, Manifest, Plugin, PluginBuilder, UserData, Wasm, PTR};
+use rand::{rngs::OsRng, RngCore};
 use tokio::sync::{
     mpsc::{Receiver, Sender},
     oneshot,
@@ -33,6 +34,53 @@ fn generate_fragment() -> String {
 }
 
 // ── Host functions ────────────────────────────────────────────────────────────
+
+const MAX_RANDOM_BYTES: usize = 256;
+
+fn secure_random_bytes(input: &[u8]) -> Result<Vec<u8>> {
+    let requested = std::str::from_utf8(input)
+        .map_err(|error| anyhow!("ma_random_bytes: length is not valid UTF-8: {error}"))?
+        .parse::<usize>()
+        .map_err(|error| anyhow!("ma_random_bytes: invalid length: {error}"))?;
+    if !(1..=MAX_RANDOM_BYTES).contains(&requested) {
+        return Err(anyhow!(
+            "ma_random_bytes: length must be between 1 and {MAX_RANDOM_BYTES}"
+        ));
+    }
+
+    let mut bytes = vec![0; requested];
+    OsRng
+        .try_fill_bytes(&mut bytes)
+        .map_err(|error| anyhow!("ma_random_bytes: operating system entropy failed: {error}"))?;
+    Ok(bytes)
+}
+
+host_fn!(ma_random_bytes_fn(_user_data: (); input: Vec<u8>) -> Vec<u8> {
+    secure_random_bytes(&input).map_err(extism::Error::msg)
+});
+
+#[cfg(test)]
+mod random_bytes_tests {
+    use super::{secure_random_bytes, MAX_RANDOM_BYTES};
+
+    #[test]
+    fn secure_random_bytes_returns_requested_length() {
+        assert_eq!(secure_random_bytes(b"8").unwrap().len(), 8);
+        assert_eq!(
+            secure_random_bytes(MAX_RANDOM_BYTES.to_string().as_bytes())
+                .unwrap()
+                .len(),
+            MAX_RANDOM_BYTES
+        );
+    }
+
+    #[test]
+    fn secure_random_bytes_rejects_invalid_lengths() {
+        for input in [b"0".as_slice(), b"257", b"nope", &[0xff]] {
+            assert!(secure_random_bytes(input).is_err());
+        }
+    }
+}
 
 // Context captured by `ma_send` and `ma_reply` host functions.
 //
@@ -663,6 +711,16 @@ fn build_host_functions(
         (
             "ma_send",
             Function::new("ma_send", [PTR], [PTR], ctx.outbox_ctx_send, ma_send_fn),
+        ),
+        (
+            "ma_random_bytes",
+            Function::new(
+                "ma_random_bytes",
+                [PTR],
+                [PTR],
+                UserData::new(()),
+                ma_random_bytes_fn,
+            ),
         ),
         (
             "ma_end",

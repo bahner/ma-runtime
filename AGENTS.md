@@ -366,6 +366,12 @@ originally assumed CBOR input; the Rust guest macro sends raw UTF-8; fixed
 by reading `input` as `String::from_utf8` on the host side instead of
 `from_cbor_bytes`).
 
+`ma_random_bytes` follows that raw Extism boundary. Its input is a UTF-8
+decimal byte count in the inclusive range `1..=256`; its output is exactly
+that many raw bytes from the operating system CSPRNG. Invalid lengths fail,
+and there is no weaker fallback. A kind must list `ma_random_bytes` in
+`host_functions` before a guest may import it.
+
 ## RPC protocol
 
 Content types are defined in ma-spec, not ma-core — they are string literals:
