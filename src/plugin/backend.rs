@@ -61,7 +61,28 @@ host_fn!(ma_random_bytes_fn(_user_data: (); input: Vec<u8>) -> Vec<u8> {
 
 #[cfg(test)]
 mod random_bytes_tests {
-    use super::{secure_random_bytes, MAX_RANDOM_BYTES};
+    use extism::{Function, Manifest, PluginBuilder, UserData, Wasm, PTR};
+
+    use super::{ma_random_bytes_fn, secure_random_bytes, MAX_RANDOM_BYTES};
+
+    const RANDOM_BYTES_GUEST: &str = r#"
+                (module
+                    (import "extism:host/env" "alloc" (func $alloc (param i64) (result i64)))
+                    (import "extism:host/env" "length" (func $length (param i64) (result i64)))
+                    (import "extism:host/env" "store_u8" (func $store_u8 (param i64 i32)))
+                    (import "extism:host/env" "output_set" (func $output_set (param i64 i64)))
+                    (import "extism:host/user" "ma_random_bytes" (func $ma_random_bytes (param i64) (result i64)))
+                    (func (export "generate") (result i32)
+                        (local $input i64)
+                        (local $output i64)
+                        (local.set $input (call $alloc (i64.const 1)))
+                        (call $store_u8 (local.get $input) (i32.const 56))
+                        (local.set $output (call $ma_random_bytes (local.get $input)))
+                        (if (i64.ne (call $length (local.get $output)) (i64.const 8))
+                            (then (return (i32.const 1))))
+                        (call $output_set (local.get $output) (i64.const 8))
+                        (i32.const 0)))
+        "#;
 
     #[test]
     fn secure_random_bytes_returns_requested_length() {
@@ -79,6 +100,26 @@ mod random_bytes_tests {
         for input in [b"0".as_slice(), b"257", b"nope", &[0xff]] {
             assert!(secure_random_bytes(input).is_err());
         }
+    }
+
+    #[test]
+    fn extism_guest_receives_secure_random_bytes() {
+        let wasm = wat::parse_str(RANDOM_BYTES_GUEST).unwrap();
+        let manifest = Manifest::new([Wasm::data(wasm)]);
+        let function = Function::new(
+            "ma_random_bytes",
+            [PTR],
+            [PTR],
+            UserData::new(()),
+            ma_random_bytes_fn,
+        );
+        let mut plugin = PluginBuilder::new(manifest)
+            .with_functions([function])
+            .build()
+            .unwrap();
+
+        let output = plugin.call::<&[u8], Vec<u8>>("generate", &[]).unwrap();
+        assert_eq!(output.len(), 8);
     }
 }
 

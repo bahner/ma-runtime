@@ -1183,7 +1183,7 @@ mod hostile {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn scheme_actor_wasm_uses_runtime_host_functions() -> anyhow::Result<()> {
+    async fn scheme_actor_wasm_dispatches_report_parent_with_args_first() -> anyhow::Result<()> {
         let Some(lambda_ma_dir) = lambda_ma_fixture_dir()? else {
             eprintln!(
                 "skipping lambda-ma scheme actor fixture test; set LAMBDA_MA_DIR to a checkout with scheme-actor/actor.wasm"
@@ -1198,19 +1198,15 @@ mod hostile {
         let wasm = read_lambda_ma_fixture(&lambda_ma_dir, "scheme-actor/actor.wasm")?;
         let wasm_cid = kubo.add_bytes(wasm).await;
 
-        let behaviour = format!(
-            "{}\n{}",
-            [
+        let behaviour = [
             read_lambda_ma_text(&lambda_ma_dir, "scheme-actor/stdlib.ma")?,
             read_lambda_ma_text(&lambda_ma_dir, "scheme-actor/actor.ma")?,
             read_lambda_ma_text(&lambda_ma_dir, "scheme-actor/state.ma")?,
             read_lambda_ma_text(&lambda_ma_dir, "scheme-actor/node.ma")?,
             read_lambda_ma_text(&lambda_ma_dir, "actors/agent.ma")?,
             read_lambda_ma_text(&lambda_ma_dir, "actors/duck.ma")?,
-            ]
-            .join("\n"),
-            "(set-cmd-method! :secure-random (lambda (args msg) (ma-reply! msg (list :ok (ma-random 10)))))"
-        );
+        ]
+        .join("\n");
         let behaviour_cid = kubo.add_bytes(behaviour.into_bytes()).await;
 
         let mut node = entity_node();
@@ -1273,24 +1269,6 @@ mod hostile {
             "agent should answer room with parent report"
         );
 
-        let input = cast_input_with_content(
-            "secure-random-1",
-            &ciborium::Value::Text(":secure-random".into()),
-        );
-        plugin.on_message(&input).await.expect("ma-random dispatch");
-
-        let (_, envelope) = envelope_rx.try_recv().expect("ma-random reply");
-        assert_eq!(envelope.reply_to.as_deref(), Some("secure-random-1"));
-        let reply: ciborium::Value = ciborium::de::from_reader(envelope.content.as_slice())?;
-        let ciborium::Value::Array(values) = reply else {
-            panic!("ma-random reply must be an array");
-        };
-        let [ciborium::Value::Text(ok), ciborium::Value::Integer(value)] = values.as_slice() else {
-            panic!("ma-random reply must be [:ok, integer]");
-        };
-        let value = i64::try_from(i128::from(*value))?;
-        assert_eq!(ok, ":ok");
-        assert!((0..10).contains(&value));
         Ok(())
     }
 
