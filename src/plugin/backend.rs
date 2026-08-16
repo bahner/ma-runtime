@@ -115,6 +115,7 @@ mod random_bytes_tests {
         );
         let mut plugin = PluginBuilder::new(manifest)
             .with_functions([function])
+            .with_cache_disabled()
             .build()
             .unwrap();
 
