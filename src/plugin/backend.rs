@@ -280,6 +280,7 @@ struct CreateEntityCtx {
     pending: Vec<CreateEntityRequest>,
     /// Fragment of the calling (parent) entity.
     caller_fragment: String,
+    runtime_did: String,
 }
 
 // `ma_create_entity` host function: plugin requests creation of a new entity.
@@ -334,9 +335,10 @@ host_fn!(ma_create_entity_fn(user_data: CreateEntityCtx; input: Vec<u8>) -> Vec<
         init_payload: req.init,
         parent,
     });
+    let actor = crate::routing::local_actor_url(&ctx.runtime_did, &fragment);
     drop(ctx);
     let mut out = Vec::new();
-    ciborium::ser::into_writer(&fragment, &mut out)
+    ciborium::ser::into_writer(&actor, &mut out)
         .map_err(|e| extism::Error::msg(format!("ma_create_entity: CBOR encode: {e}")))?;
     Ok(out)
 });
@@ -671,6 +673,7 @@ fn build_wasm_plugin(cfg: &WasmThreadCfg) -> Result<WasmThreadState> {
     let create_queue: UserData<CreateEntityCtx> = UserData::new(CreateEntityCtx {
         pending: Vec::new(),
         caller_fragment: cfg.fragment.clone(),
+        runtime_did: cfg.our_did.clone(),
     });
     let delete_queue: UserData<DeleteEntityCtx> = UserData::new(DeleteEntityCtx {
         pending: Vec::new(),

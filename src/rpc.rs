@@ -592,13 +592,14 @@ async fn finish_created_entity(
 fn report_create_init_error(req: &CreateEntityRequest, ctx: &RpcHandlerCtx) {
     warn!(fragment = %req.fragment, kind = %req.kind_protocol,
         "ma_create_entity: init() returned :error; entity discarded");
+    let actor = crate::routing::local_actor_url(&ctx.our_did, &req.fragment);
     let err_content = {
         let mut buf = Vec::new();
         let _ = ciborium::ser::into_writer(
             &CborValue::Array(vec![
                 CborValue::Text(":error".into()),
-                CborValue::Text(format!("init() failed for #{}", req.fragment)),
-                CborValue::Text(req.fragment.clone()),
+                CborValue::Text(format!("init() failed for {actor}")),
+                CborValue::Text(actor),
             ]),
             &mut buf,
         );
