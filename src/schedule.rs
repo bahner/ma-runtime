@@ -73,6 +73,26 @@ pub type ActiveScheduleGuard = Arc<dyn Fn() -> bool + Send + Sync>;
 
 // ── Job registration ──────────────────────────────────────────────────────────
 
+/// Arguments common to every job helper, bundled to keep argument lists short.
+#[derive(Clone)]
+struct ScheduleJobArgs {
+    ctx: SchedulerCtx,
+    fragment: String,
+    schedule_id: Option<String>,
+    active_guard: Option<ActiveScheduleGuard>,
+    content: Vec<u8>,
+}
+
+fn now_ms() -> i64 {
+    i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(i64::MAX)
+}
+
 /// Register a [`ScheduleRequest`] on the scheduler for the named entity.
 ///
 /// `schedule_id`: an optional opaque identifier for this job, used for
@@ -91,184 +111,68 @@ pub async fn register_schedule(
 ) -> Result<uuid::Uuid> {
     let id = match req {
         ScheduleRequest::Cron { spec, content } => {
-            let job = Job::new_async(spec.as_str(), {
-                let ctx = ctx.clone();
-                let fragment = fragment.clone();
-                let schedule_id = schedule_id.clone();
-                let active_guard = active_guard.clone();
-                move |_, _| {
-                    let ctx = ctx.clone();
-                    let fragment = fragment.clone();
-                    let content = content.clone();
-                    let schedule_id = schedule_id.clone();
-                    let active_guard = active_guard.clone();
-                    Box::pin(async move {
-                        dispatch_if_active(
-                            &ctx,
-                            &fragment,
-                            schedule_id.as_ref(),
-                            active_guard.as_ref(),
-                            &content,
-                            "cron",
-                        )
-                        .await;
-                    })
-                }
-            })?;
-            sched.add(job).await?
+            add_cron_job(sched, ScheduleJobArgs { ctx, fragment, schedule_id, active_guard, content }, spec).await?
         }
-
         ScheduleRequest::Interval { secs, content } => {
-            let job = Job::new_repeated_async(Duration::from_secs(secs), {
-                let ctx = ctx.clone();
-                let fragment = fragment.clone();
-                let schedule_id = schedule_id.clone();
-                let active_guard = active_guard.clone();
-                move |_, _| {
-                    let ctx = ctx.clone();
-                    let fragment = fragment.clone();
-                    let content = content.clone();
-                    let schedule_id = schedule_id.clone();
-                    let active_guard = active_guard.clone();
-                    Box::pin(async move {
-                        dispatch_if_active(
-                            &ctx,
-                            &fragment,
-                            schedule_id.as_ref(),
-                            active_guard.as_ref(),
-                            &content,
-                            "interval",
-                        )
-                        .await;
-                    })
-                }
-            })?;
-            sched.add(job).await?
+            add_interval_job(sched, ScheduleJobArgs { ctx, fragment, schedule_id, active_guard, content }, secs).await?
         }
-
-        ScheduleRequest::At {
-            timestamp_ms,
-            content,
-        } => {
-            add_at_schedule_job(
-                sched,
-                ctx,
-                fragment,
-                schedule_id,
-                active_guard,
-                content,
-                timestamp_ms,
-                on_complete,
-            )
-            .await?
+        ScheduleRequest::At { timestamp_ms, content } => {
+            add_at_job(sched, ScheduleJobArgs { ctx, fragment, schedule_id, active_guard, content }, timestamp_ms, on_complete).await?
         }
-
         ScheduleRequest::In { secs, content } => {
-            let timestamp_ms = i64::try_from(
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis(),
-            )
-            .unwrap_or(i64::MAX)
-            .saturating_add(i64::try_from(secs.saturating_mul(1000)).unwrap_or(i64::MAX));
-            add_at_schedule_job(
-                sched,
-                ctx,
-                fragment,
-                schedule_id,
-                active_guard,
-                content,
-                timestamp_ms,
-                on_complete,
-            )
-            .await?
+            let timestamp_ms = now_ms()
+                .saturating_add(i64::try_from(secs.saturating_mul(1000)).unwrap_or(i64::MAX));
+            add_at_job(sched, ScheduleJobArgs { ctx, fragment, schedule_id, active_guard, content }, timestamp_ms, on_complete).await?
         }
-
         ScheduleRequest::Random { max_secs, content } => {
-            add_random_schedule_job(
-                sched,
-                ctx,
-                fragment,
-                schedule_id,
-                active_guard,
-                content,
-                max_secs,
-            )
-            .await?
+            add_random_job(sched, ScheduleJobArgs { ctx, fragment, schedule_id, active_guard, content }, max_secs).await?
         }
     };
     Ok(id)
 }
 
-async fn add_random_schedule_job(
-    sched: &JobScheduler,
-    ctx: SchedulerCtx,
-    fragment: String,
-    schedule_id: Option<String>,
-    active_guard: Option<ActiveScheduleGuard>,
-    content: Vec<u8>,
-    max_secs: u64,
-) -> Result<uuid::Uuid> {
-    let job = make_random_job(
-        sched.clone(),
-        ctx,
-        fragment,
-        schedule_id,
-        active_guard,
-        content,
-        max_secs,
-    )?;
+async fn add_cron_job(sched: &JobScheduler, args: ScheduleJobArgs, spec: String) -> Result<uuid::Uuid> {
+    let job = Job::new_async(spec.as_str(), move |_, _| {
+        let args = args.clone();
+        Box::pin(async move {
+            dispatch_if_active(&args.ctx, &args.fragment, args.schedule_id.as_ref(), args.active_guard.as_ref(), &args.content, "cron").await;
+        })
+    })?;
     sched.add(job).await.map_err(Into::into)
 }
 
-async fn add_at_schedule_job(
+async fn add_interval_job(sched: &JobScheduler, args: ScheduleJobArgs, secs: u64) -> Result<uuid::Uuid> {
+    let job = Job::new_repeated_async(Duration::from_secs(secs), move |_, _| {
+        let args = args.clone();
+        Box::pin(async move {
+            dispatch_if_active(&args.ctx, &args.fragment, args.schedule_id.as_ref(), args.active_guard.as_ref(), &args.content, "interval").await;
+        })
+    })?;
+    sched.add(job).await.map_err(Into::into)
+}
+
+async fn add_at_job(
     sched: &JobScheduler,
-    ctx: SchedulerCtx,
-    fragment: String,
-    schedule_id: Option<String>,
-    active_guard: Option<ActiveScheduleGuard>,
-    content: Vec<u8>,
+    args: ScheduleJobArgs,
     timestamp_ms: i64,
     on_complete: Option<Arc<dyn Fn() + Send + Sync>>,
 ) -> Result<uuid::Uuid> {
-    let now_ms = i64::try_from(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis(),
-    )
-    .unwrap_or(i64::MAX);
-    let delay_ms = u64::try_from((timestamp_ms - now_ms).max(0)).unwrap_or(0);
-    let job = Job::new_one_shot_async(Duration::from_millis(delay_ms), {
-        let ctx = ctx.clone();
-        let fragment = fragment.clone();
-        let schedule_id = schedule_id.clone();
-        let active_guard = active_guard.clone();
+    let delay_ms = u64::try_from((timestamp_ms - now_ms()).max(0)).unwrap_or(0);
+    let job = Job::new_one_shot_async(Duration::from_millis(delay_ms), move |_, _| {
+        let args = args.clone();
         let on_complete = on_complete.clone();
-        move |_, _| {
-            let ctx = ctx.clone();
-            let fragment = fragment.clone();
-            let content = content.clone();
-            let schedule_id = schedule_id.clone();
-            let active_guard = active_guard.clone();
-            let on_complete = on_complete.clone();
-            Box::pin(async move {
-                dispatch_if_active(
-                    &ctx,
-                    &fragment,
-                    schedule_id.as_ref(),
-                    active_guard.as_ref(),
-                    &content,
-                    "one-shot",
-                )
-                .await;
-                if let Some(complete) = &on_complete {
-                    complete();
-                }
-            })
-        }
+        Box::pin(async move {
+            dispatch_if_active(&args.ctx, &args.fragment, args.schedule_id.as_ref(), args.active_guard.as_ref(), &args.content, "one-shot").await;
+            if let Some(complete) = &on_complete {
+                complete();
+            }
+        })
     })?;
+    sched.add(job).await.map_err(Into::into)
+}
+
+async fn add_random_job(sched: &JobScheduler, args: ScheduleJobArgs, max_secs: u64) -> Result<uuid::Uuid> {
+    let job = make_random_job(sched.clone(), args, max_secs)?;
     sched.add(job).await.map_err(Into::into)
 }
 
@@ -291,57 +195,35 @@ async fn dispatch_if_active(
 ///
 /// After firing, it checks whether the schedule definition is still current
 /// before re-adding, so stale generations terminate naturally.
-pub fn make_random_job(
-    sched: JobScheduler,
-    ctx: SchedulerCtx,
-    fragment: String,
-    schedule_id: Option<String>,
-    active_guard: Option<ActiveScheduleGuard>,
-    content: Vec<u8>,
-    max_secs: u64,
-) -> Result<Job> {
+fn make_random_job(sched: JobScheduler, args: ScheduleJobArgs, max_secs: u64) -> Result<Job> {
     let delay = rand_delay(max_secs);
     Ok(Job::new_one_shot_async(delay, move |_, _| {
         let sched = sched.clone();
-        let ctx = ctx.clone();
-        let fragment = fragment.clone();
-        let schedule_id = schedule_id.clone();
-        let active_guard = active_guard.clone();
-        let content = content.clone();
+        let args = args.clone();
         Box::pin(async move {
             dispatch_if_active(
-                &ctx,
-                &fragment,
-                schedule_id.as_ref(),
-                active_guard.as_ref(),
-                &content,
+                &args.ctx,
+                &args.fragment,
+                args.schedule_id.as_ref(),
+                args.active_guard.as_ref(),
+                &args.content,
                 "random",
             )
             .await;
 
-            // Re-schedule only while this schedule definition is still current.
-            let should_reschedule = active_guard.as_ref().is_none_or(|is_active| is_active());
-            if should_reschedule {
-                match make_random_job(
-                    sched.clone(),
-                    ctx,
-                    fragment.clone(),
-                    schedule_id,
-                    active_guard,
-                    content,
-                    max_secs,
-                ) {
+            if args.active_guard.as_ref().is_none_or(|is_active| is_active()) {
+                match make_random_job(sched.clone(), args.clone(), max_secs) {
                     Ok(next) => {
                         if let Err(e) = sched.add(next).await {
-                            warn!(fragment = %fragment, error = %e, "failed to reschedule random job");
+                            warn!(fragment = %args.fragment, error = %e, "failed to reschedule random job");
                         }
                     }
                     Err(e) => {
-                        warn!(fragment = %fragment, error = %e, "failed to create next random job");
+                        warn!(fragment = %args.fragment, error = %e, "failed to create next random job");
                     }
                 }
             } else {
-                trace!(fragment = %fragment, schedule_id = ?schedule_id, "random schedule chain stopped: superseded by newer definition");
+                trace!(fragment = %args.fragment, schedule_id = ?args.schedule_id, "random schedule chain stopped: superseded by newer definition");
             }
         })
     })?)
