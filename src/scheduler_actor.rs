@@ -13,6 +13,7 @@
 //! [name, ":cron",     spec_str,     verb_or_array, extra_args…]
 //! [name, ":interval", duration_str, verb_or_array, extra_args…]
 //! [name, ":at",       timestamp_ms, verb_or_array, extra_args…]
+//! [name, ":in",       duration_str, verb_or_array, extra_args…]
 //! [name, ":random",   max_secs_int, verb_or_array, extra_args…]
 //! ```
 //!
@@ -26,7 +27,7 @@
 //! `#scheduler` uses the `"scheduler"` ACL entry from the root manifest.
 //! A typical ACL grants `:help` to everyone while keeping registration verbs
 //! local-only, for example `"*": [":help"]` together with
-//! `"#": [":cron", ":interval", ":at", ":random"]`.
+//! `"#": [":cron", ":interval", ":at", ":in", ":random"]`.
 //!
 //! ## Kind
 //!
@@ -272,6 +273,16 @@ async fn process_schedule_registration(
 
     let active_guard = schedule_registry.active_guard(req.schedule_key.clone(), attempt.version);
 
+    // One-shot schedules remove themselves from the registry after firing.
+    let on_complete = if matches!(req.request, ScheduleRequest::At { .. } | ScheduleRequest::In { .. }) {
+        let registry = schedule_registry.clone();
+        let key = req.schedule_key.clone();
+        let version = attempt.version;
+        Some(Arc::new(move || registry.rollback_registration(&key, version)) as Arc<dyn Fn() + Send + Sync>)
+    } else {
+        None
+    };
+
     match register_schedule(
         &sched,
         ctx,
@@ -279,6 +290,7 @@ async fn process_schedule_registration(
         Some(req.schedule_key.clone()),
         Some(active_guard),
         req.request,
+        on_complete,
     )
     .await
     {
@@ -350,8 +362,8 @@ fn is_help_request(term: &CborValue) -> bool {
 const fn scheduler_help_text() -> &'static str {
     "scheduler help\n\
 format: [name, :type, spec, verb_or_array, extra_args...]\n\
-types: :cron, :interval, :at, :random\n\
-specs: :cron=\"sec min hour day month weekday\", :interval=\"30m\", :at=<unix_ms>, :random=<max_secs>\n\
+types: :cron, :interval, :at, :in, :random\n\
+specs: :cron=\"sec min hour day month weekday\", :interval=\"30m\", :at=<unix_ms>, :in=\"10s\", :random=<max_secs>\n\
 ownership: target is always msg.from; same [msg.from + name] overwrites previous schedule"
 }
 
@@ -363,7 +375,7 @@ ownership: target is always msg.from; same [msg.from + name] overwrites previous
 /// ```text
 /// [name, type_atom, spec, verb_or_array, extra_args…]
 /// ```
-/// where `type_atom` is one of `:cron`, `:interval`, `:at`, `:random`.
+/// where `type_atom` is one of `:cron`, `:interval`, `:at`, `:in`, `:random`.
 fn parse_schedule_request(term: CborValue, from: &str) -> Result<ParsedRequest> {
     let items = match term {
         CborValue::Array(a) => a,
@@ -430,6 +442,16 @@ fn parse_schedule_request(term: CborValue, from: &str) -> Result<ParsedRequest> 
                 timestamp_ms: ts,
                 content,
             }
+        }
+        ":in" => {
+            let dur_str = match &items[2] {
+                CborValue::Text(s) => s.clone(),
+                _ => return Err(anyhow!("scheduler :in: duration must be text")),
+            };
+            let secs = parse_duration(&dur_str)
+                .map_err(|e| anyhow!("scheduler :in: {e}"))?
+                .as_secs();
+            ScheduleRequest::In { secs, content }
         }
         ":random" => {
             let max_secs = match &items[2] {

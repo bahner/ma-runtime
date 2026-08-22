@@ -51,6 +51,8 @@ pub enum ScheduleRequest {
     Interval { secs: u64, content: Vec<u8> },
     /// One-shot dispatch at a Unix millisecond timestamp.
     At { timestamp_ms: i64, content: Vec<u8> },
+    /// One-shot dispatch after a relative delay (duration string, e.g. `"10s"`).
+    In { secs: u64, content: Vec<u8> },
     /// Self-rescheduling one-shot with a random delay up to `max_secs`.
     Random { max_secs: u64, content: Vec<u8> },
 }
@@ -85,6 +87,7 @@ pub async fn register_schedule(
     schedule_id: Option<String>,
     active_guard: Option<ActiveScheduleGuard>,
     req: ScheduleRequest,
+    on_complete: Option<Arc<dyn Fn() + Send + Sync>>,
 ) -> Result<uuid::Uuid> {
     let id = match req {
         ScheduleRequest::Cron { spec, content } => {
@@ -155,6 +158,29 @@ pub async fn register_schedule(
                 active_guard,
                 content,
                 timestamp_ms,
+                on_complete,
+            )
+            .await?
+        }
+
+        ScheduleRequest::In { secs, content } => {
+            let timestamp_ms = i64::try_from(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis(),
+            )
+            .unwrap_or(i64::MAX)
+            .saturating_add(i64::try_from(secs.saturating_mul(1000)).unwrap_or(i64::MAX));
+            add_at_schedule_job(
+                sched,
+                ctx,
+                fragment,
+                schedule_id,
+                active_guard,
+                content,
+                timestamp_ms,
+                on_complete,
             )
             .await?
         }
@@ -204,6 +230,7 @@ async fn add_at_schedule_job(
     active_guard: Option<ActiveScheduleGuard>,
     content: Vec<u8>,
     timestamp_ms: i64,
+    on_complete: Option<Arc<dyn Fn() + Send + Sync>>,
 ) -> Result<uuid::Uuid> {
     let now_ms = i64::try_from(
         SystemTime::now()
@@ -218,12 +245,14 @@ async fn add_at_schedule_job(
         let fragment = fragment.clone();
         let schedule_id = schedule_id.clone();
         let active_guard = active_guard.clone();
+        let on_complete = on_complete.clone();
         move |_, _| {
             let ctx = ctx.clone();
             let fragment = fragment.clone();
             let content = content.clone();
             let schedule_id = schedule_id.clone();
             let active_guard = active_guard.clone();
+            let on_complete = on_complete.clone();
             Box::pin(async move {
                 dispatch_if_active(
                     &ctx,
@@ -234,6 +263,9 @@ async fn add_at_schedule_job(
                     "one-shot",
                 )
                 .await;
+                if let Some(complete) = &on_complete {
+                    complete();
+                }
             })
         }
     })?;

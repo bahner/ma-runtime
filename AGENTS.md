@@ -431,12 +431,13 @@ dispatches by sending a CBOR array to `did:ma:<ipns>#scheduler` via `ma_send`.
 [":cron",     spec_str,     target_frag, verb_or_array, extra_args…]
 [":interval", duration_str, target_frag, verb_or_array, extra_args…]
 [":at",       timestamp_ms, target_frag, verb_or_array, extra_args…]
+[":in",       duration_str, target_frag, verb_or_array, extra_args…]
 [":random",   max_secs_int, target_frag, verb_or_array, extra_args…]
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| type | text atom | `:cron`, `:interval`, `:at`, or `:random` |
+| type | text atom | `:cron`, `:interval`, `:at`, `:in`, or `:random` |
 | spec | text / integer | cron string, duration string, Unix ms timestamp, or max_secs integer |
 | target_frag | text | bare fragment name (`"myentity"`) or full DID-URL (`did:ma:…#myentity`) |
 | verb_or_array | text atom or array | `":verb"` or `[":verb", arg1, …]` |
@@ -448,7 +449,8 @@ dispatches by sending a CBOR array to `did:ma:<ipns>#scheduler` via `ma_send`.
 |------|------|-----------|
 | `:cron` | 6-field cron `"sec min hour day month weekday"` | Fires on schedule indefinitely |
 | `:interval` | Human duration: `"1h"`, `"30m"`, `"5s"`, `"2d12h"` | Fires every N seconds indefinitely |
-| `:at` | Unix timestamp in milliseconds (integer) | Fires once after the computed delay |
+| `:at` | Unix timestamp in milliseconds (integer) | Fires once; removed from registry after firing |
+| `:in` | Human duration: `"1h"`, `"30m"`, `"5s"`, `"2d12h"` | Fires once after the delay; removed from registry after firing |
 | `:random` | Max seconds (integer) | Fires after 1–N random seconds, then self-reschedules |
 
 **Examples:**
@@ -465,6 +467,9 @@ dispatches by sending a CBOR array to `did:ma:<ipns>#scheduler` via `ma_send`.
 
 ; One-shot at a specific time
 [":at", 1748700000000, "myentity", ":wake"]
+
+; One-shot after a relative delay
+[":in", "30s", "myentity", ":timeout"]
 
 ; Random re-trigger within 5 minutes
 [":random", 300, "dog", ":scratch"]
