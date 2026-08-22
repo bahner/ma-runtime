@@ -759,10 +759,21 @@ impl EventLoopState {
             self.dispatch_envelope_remotely(fragment, env, &msg_type);
         }
         if drained_plugin_envelopes == PLUGIN_OUTBOX_DRAIN_BUDGET {
-            warn!(
+            // Normal backpressure — more envelopes arrive next tick.
+            tracing::debug!(
                 budget = PLUGIN_OUTBOX_DRAIN_BUDGET,
                 "plugin outbox drain budget exhausted; deferring remaining envelopes"
             );
+            // Warn only when the channel is more than 75% full — sustained overload.
+            let remaining = self.envelope_tx.capacity();
+            let max = self.envelope_tx.max_capacity();
+            if remaining < max / 4 {
+                warn!(
+                    queued = max - remaining,
+                    capacity = max,
+                    "plugin outbox congested; envelopes may be dropped if channel fills"
+                );
+            }
         }
     }
 
