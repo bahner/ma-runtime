@@ -1,9 +1,10 @@
 //! Serialised manifest writer.
 //!
 //! Every runtime-phase mutation of the IPFS [`RuntimeManifest`] goes through a
-//! single [`ManifestWriter`].  It owns the authoritative root CID behind an
-//! async mutex, so the read-modify-write cycle (`dag_get` → mutate → `dag_put` →
-//! local pin replacement) is serialised.
+//! single [`ManifestWriter`].  It owns the authoritative root CID and a cached
+//! in-memory copy of the manifest behind an async mutex, so the read-modify-write
+//! cycle (mutate → `dag_put` → local pin replacement) is serialised without a
+//! `dag_get` on every call after the first.
 //!
 //! This eliminates the last-writer-wins race that occurred when concurrent CRUD
 //! sets and `ma_create_entity` calls each read the same old root CID and raced
@@ -34,10 +35,20 @@ pub struct ManifestWriter {
     inner: Arc<Inner>,
 }
 
+/// Authoritative state held under the mutex.  Both fields must move together
+/// so the CID and the in-memory manifest are always consistent.
+struct CachedState {
+    cid: String,
+    /// `None` only before the first successful mutation (cold start).  After
+    /// that, every successful publish updates this so subsequent mutations skip
+    /// the `dag_get` round-trip.
+    manifest: Option<RuntimeManifest>,
+}
+
 struct Inner {
-    /// Authoritative current root CID.  Held across the whole read-modify-write
+    /// Authoritative CID + manifest.  Held across the whole read-modify-write
     /// so mutations never race on a stale base.
-    current: Mutex<String>,
+    state: Mutex<CachedState>,
     kubo_url: String,
     stats: SharedStats,
 }
@@ -47,7 +58,10 @@ impl ManifestWriter {
     pub fn new(initial_cid: String, kubo_url: String, stats: SharedStats) -> Self {
         Self {
             inner: Arc::new(Inner {
-                current: Mutex::new(initial_cid),
+                state: Mutex::new(CachedState {
+                    cid: initial_cid,
+                    manifest: None,
+                }),
                 kubo_url,
                 stats,
             }),
@@ -56,7 +70,7 @@ impl ManifestWriter {
 
     async fn publish_manifest_update(
         &self,
-        guard: &mut MutexGuard<'_, String>,
+        guard: &mut MutexGuard<'_, CachedState>,
         old_cid: String,
         manifest: &RuntimeManifest,
     ) -> Result<String> {
@@ -66,9 +80,20 @@ impl ManifestWriter {
             warn!(old = %old_cid, new = %new_cid, error = %e, "manifest pin_update failed");
         }
 
-        guard.clone_from(&new_cid);
+        guard.cid.clone_from(&new_cid);
+        guard.manifest = Some(manifest.clone());
         inner.stats.write().await.root_cid = Some(new_cid.clone());
         Ok(new_cid)
+    }
+
+    async fn fetch_or_cached(
+        guard: &mut MutexGuard<'_, CachedState>,
+        kubo_url: &str,
+    ) -> Result<RuntimeManifest> {
+        if let Some(m) = guard.manifest.take() {
+            return Ok(m);
+        }
+        crate::kubo::dag_get(kubo_url, &guard.cid).await
     }
 
     /// Apply `f` to the current manifest, publish it, swap the pin, and return
@@ -85,10 +110,10 @@ impl ManifestWriter {
         F: FnOnce(&mut RuntimeManifest) -> Result<()>,
     {
         let inner = &self.inner;
-        let mut guard = inner.current.lock().await;
-        let old_cid = guard.clone();
+        let mut guard = inner.state.lock().await;
+        let old_cid = guard.cid.clone();
 
-        let mut manifest: RuntimeManifest = crate::kubo::dag_get(&inner.kubo_url, &old_cid).await?;
+        let mut manifest = Self::fetch_or_cached(&mut guard, &inner.kubo_url).await?;
         f(&mut manifest)?;
         self.publish_manifest_update(&mut guard, old_cid, &manifest)
             .await
@@ -102,10 +127,10 @@ impl ManifestWriter {
         F: for<'a> FnOnce(&'a mut RuntimeManifest) -> ManifestMutationFuture<'a, T>,
     {
         let inner = &self.inner;
-        let mut guard = inner.current.lock().await;
-        let old_cid = guard.clone();
+        let mut guard = inner.state.lock().await;
+        let old_cid = guard.cid.clone();
 
-        let mut manifest: RuntimeManifest = crate::kubo::dag_get(&inner.kubo_url, &old_cid).await?;
+        let mut manifest = Self::fetch_or_cached(&mut guard, &inner.kubo_url).await?;
         let value = f(&mut manifest).await?;
         let new_cid = self
             .publish_manifest_update(&mut guard, old_cid, &manifest)
@@ -114,11 +139,17 @@ impl ManifestWriter {
     }
 
     /// Load an entity node from the current authoritative manifest root.
-    #[allow(clippy::significant_drop_tightening)]
     pub async fn entity_node(&self, fragment: &str) -> Result<EntityNode> {
         let inner = &self.inner;
-        let guard = inner.current.lock().await;
-        let manifest: RuntimeManifest = crate::kubo::dag_get(&inner.kubo_url, &guard).await?;
+        // Snapshot state then release the lock before network calls.
+        let (cid, manifest_cached) = {
+            let guard = inner.state.lock().await;
+            (guard.cid.clone(), guard.manifest.clone())
+        };
+        let manifest: RuntimeManifest = match manifest_cached {
+            Some(m) => m,
+            None => crate::kubo::dag_get(&inner.kubo_url, &cid).await?,
+        };
         let entity_link = manifest
             .entities
             .get(fragment)
@@ -136,10 +167,10 @@ impl ManifestWriter {
         F: FnOnce(&mut EntityNode) -> bool,
     {
         let inner = &self.inner;
-        let mut guard = inner.current.lock().await;
-        let old_cid = guard.clone();
+        let mut guard = inner.state.lock().await;
+        let old_cid = guard.cid.clone();
 
-        let mut manifest: RuntimeManifest = crate::kubo::dag_get(&inner.kubo_url, &old_cid).await?;
+        let mut manifest = Self::fetch_or_cached(&mut guard, &inner.kubo_url).await?;
         let entity_link = manifest
             .entities
             .get(fragment)
@@ -149,6 +180,7 @@ impl ManifestWriter {
             crate::kubo::dag_get(&inner.kubo_url, &entity_link.cid).await?;
 
         if !mutate(&mut entity_node) {
+            guard.manifest = Some(manifest);
             return Ok(old_cid);
         }
 

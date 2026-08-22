@@ -274,11 +274,17 @@ async fn process_schedule_registration(
     let active_guard = schedule_registry.active_guard(req.schedule_key.clone(), attempt.version);
 
     // One-shot schedules remove themselves from the registry after firing.
-    let on_complete = if matches!(req.request, ScheduleRequest::At { .. } | ScheduleRequest::In { .. }) {
+    let on_complete = if matches!(
+        req.request,
+        ScheduleRequest::At { .. } | ScheduleRequest::In { .. }
+    ) {
         let registry = schedule_registry.clone();
         let key = req.schedule_key.clone();
         let version = attempt.version;
-        Some(Arc::new(move || registry.rollback_registration(&key, version)) as Arc<dyn Fn() + Send + Sync>)
+        Some(
+            Arc::new(move || registry.rollback_registration(&key, version))
+                as Arc<dyn Fn() + Send + Sync>,
+        )
     } else {
         None
     };

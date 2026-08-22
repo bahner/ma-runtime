@@ -119,22 +119,6 @@ pub async fn pin_add(kubo_url: &str, cid: &str) -> Result<()> {
         .await?
         .error_for_status()?;
     drop(permit);
-    routing_provide(kubo_url, cid).await?;
-    Ok(())
-}
-
-/// Announce a CID to IPFS routing so independent Kubo nodes can discover the
-/// provider and fetch the recursively pinned DAG.
-pub async fn routing_provide(kubo_url: &str, cid: &str) -> Result<()> {
-    let _permit = acquire_request_permit("routing/provide").await?;
-    let base = kubo_url.trim_end_matches('/');
-    let url = format!("{base}/api/v0/routing/provide");
-    client()
-        .post(url)
-        .query(&[("arg", cid), ("recursive", "true")])
-        .send()
-        .await?
-        .error_for_status()?;
     Ok(())
 }
 
@@ -152,7 +136,6 @@ pub async fn pin_update(kubo_url: &str, old_cid: &str, new_cid: &str) -> Result<
         .await?;
     if resp.status().is_success() {
         drop(permit);
-        routing_provide(kubo_url, new_cid).await?;
         return Ok(());
     }
     let body = resp.text().await.unwrap_or_default();
