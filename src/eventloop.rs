@@ -12,8 +12,8 @@ use anyhow::Result;
 use ciborium::Value as CborValue;
 use ma_core::config::Config;
 use ma_core::{
-    Did, DidDocumentResolver, Inbox, MaEndpoint, Message, SigningKey, CONTENT_TYPE_TERM,
-    INBOX_PROTOCOL_ID, IPFS_PROTOCOL_ID, MESSAGE_TYPE_CRUD, MESSAGE_TYPE_CRUD_REPLY,
+    Did, Inbox, MaEndpoint, Message, SigningKey, CONTENT_TYPE_TERM, INBOX_PROTOCOL_ID,
+    IPFS_PROTOCOL_ID, MESSAGE_TYPE_CRUD, MESSAGE_TYPE_CRUD_REPLY,
     MESSAGE_TYPE_IDENTITY_PUBLISH_REQUEST, MESSAGE_TYPE_IPFS_REQUEST, MESSAGE_TYPE_RPC,
     MESSAGE_TYPE_RPC_REPLY,
 };
@@ -385,7 +385,8 @@ pub struct RunArgs {
     pub envelope_tx: Sender<(String, SendEnvelope)>,
     pub envelope_rx: Receiver<(String, SendEnvelope)>,
     pub shared_config: Arc<RwLock<Config>>,
-    pub shared_resolver: Arc<dyn DidDocumentResolver>,
+    pub shared_resolver: Arc<crate::doccache::RuntimeDidResolver>,
+    pub did_refresh_interval_tx: tokio::sync::watch::Sender<u64>,
     pub stats: SharedStats,
     pub acl: SharedAcl,
     pub acl_cache: AclCache,
@@ -416,7 +417,8 @@ struct EventLoopState {
     envelope_tx: Sender<(String, SendEnvelope)>,
     envelope_rx: Receiver<(String, SendEnvelope)>,
     shared_config: Arc<RwLock<Config>>,
-    shared_resolver: Arc<dyn DidDocumentResolver>,
+    shared_resolver: Arc<crate::doccache::RuntimeDidResolver>,
+    did_refresh_interval_tx: tokio::sync::watch::Sender<u64>,
     stats: SharedStats,
     acl: SharedAcl,
     acl_cache: AclCache,
@@ -449,6 +451,7 @@ impl EventLoopState {
             envelope_rx,
             shared_config,
             shared_resolver,
+            did_refresh_interval_tx,
             stats,
             acl,
             acl_cache,
@@ -477,6 +480,7 @@ impl EventLoopState {
             envelope_rx,
             shared_config,
             shared_resolver,
+            did_refresh_interval_tx,
             stats,
             acl,
             acl_cache,
@@ -502,17 +506,17 @@ impl EventLoopState {
     async fn drain_tick(&mut self) {
         let now = status::now_unix_secs();
         let kubo_url = self.shared_config.read().await.kubo_rpc_url.clone();
-        let shared_doc_cache = self
+        let shared_outbox_state = self
             .ipfs_state
             .as_ref()
-            .map(|ipfs| Arc::clone(&ipfs.doc_cache));
+            .map(|ipfs| Arc::clone(&ipfs.outbox_state));
 
-        self.drain_rpc_messages(now, shared_doc_cache.as_ref(), &kubo_url)
+        self.drain_rpc_messages(now, shared_outbox_state.as_ref(), &kubo_url)
             .await;
         self.drain_ipfs_messages(now, &kubo_url).await;
-        self.drain_crud_messages(now, shared_doc_cache.as_ref(), &kubo_url)
+        self.drain_crud_messages(now, shared_outbox_state.as_ref(), &kubo_url)
             .await;
-        self.drain_inbox_messages(now, shared_doc_cache.as_ref(), &kubo_url)
+        self.drain_inbox_messages(now, shared_outbox_state.as_ref(), &kubo_url)
             .await;
         self.drain_plugin_envelopes(&kubo_url).await;
     }
@@ -521,12 +525,12 @@ impl EventLoopState {
     async fn drain_rpc_messages(
         &self,
         now: u64,
-        shared_doc_cache: Option<&ipfs::DocCache>,
+        shared_outbox_state: Option<&ipfs::OutboxState>,
         kubo_url: &str,
     ) {
         while let Some(mut message) = self.rpc_messages.pop(now) {
-            if let Some(doc_cache) = shared_doc_cache {
-                ipfs::record_inbound_contact(doc_cache, &message.from).await;
+            if let Some(outbox_state) = shared_outbox_state {
+                ipfs::record_inbound_contact(outbox_state, &message.from).await;
             }
             debug!(
                 node = %message.from,
@@ -551,7 +555,7 @@ impl EventLoopState {
                 endpoint: Arc::clone(&self.endpoint),
                 kubo_rpc_url: Arc::from(kubo_url),
                 resolver: Arc::clone(&self.shared_resolver),
-                doc_cache: shared_doc_cache.map(Arc::clone),
+                outbox_state: shared_outbox_state.map(Arc::clone),
                 did_resolve: self.did_resolve,
                 entity_registry: self.entity_registry.clone(),
                 kind_registry: self.kind_registry.clone(),
@@ -588,7 +592,7 @@ impl EventLoopState {
             return;
         };
         while let Some(mut message) = ipfs.messages.pop(now) {
-            ipfs::record_inbound_contact(&ipfs.doc_cache, &message.from).await;
+            ipfs::record_inbound_contact(&ipfs.outbox_state, &message.from).await;
             debug!(
                 node = %message.from,
                 protocol = IPFS_PROTOCOL_ID,
@@ -621,7 +625,7 @@ impl EventLoopState {
                         ipns_publish: self.ipns_publish,
                         did_resolve: self.did_resolve,
                         resolver: Arc::clone(&self.shared_resolver),
-                        doc_cache: Arc::clone(&ipfs.doc_cache),
+                        outbox_state: Arc::clone(&ipfs.outbox_state),
                         group_cache: self.group_cache.clone(),
                     },
                     &mut ipfs.replay_guard,
@@ -641,15 +645,15 @@ impl EventLoopState {
     async fn drain_crud_messages(
         &mut self,
         now: u64,
-        shared_doc_cache: Option<&ipfs::DocCache>,
+        shared_outbox_state: Option<&ipfs::OutboxState>,
         kubo_url: &str,
     ) {
         let Some(ref mut crud_inbox) = self.crud_messages else {
             return;
         };
         while let Some(mut message) = crud_inbox.pop(now) {
-            if let Some(doc_cache) = shared_doc_cache {
-                ipfs::record_inbound_contact(doc_cache, &message.from).await;
+            if let Some(outbox_state) = shared_outbox_state {
+                ipfs::record_inbound_contact(outbox_state, &message.from).await;
             }
             info!(
                 from = %message.from,
@@ -669,12 +673,13 @@ impl EventLoopState {
                 endpoint: Arc::clone(&self.endpoint),
                 kubo_rpc_url: Arc::from(kubo_url),
                 resolver: Arc::clone(&self.shared_resolver),
-                doc_cache: shared_doc_cache.map(Arc::clone),
+                outbox_state: shared_outbox_state.map(Arc::clone),
                 did_resolve: self.did_resolve,
                 stats: self.stats.clone(),
                 entity_registry: self.entity_registry.clone(),
                 kind_registry: self.kind_registry.clone(),
                 shared_config: Arc::clone(&self.shared_config),
+                did_refresh_interval_tx: Some(self.did_refresh_interval_tx.clone()),
                 acl_cache: self.acl_cache.clone(),
                 group_cache: self.group_cache.clone(),
                 root_acl: self.acl.clone(),
@@ -699,12 +704,12 @@ impl EventLoopState {
     async fn drain_inbox_messages(
         &self,
         now: u64,
-        shared_doc_cache: Option<&ipfs::DocCache>,
+        shared_outbox_state: Option<&ipfs::OutboxState>,
         kubo_url: &str,
     ) {
         while let Some(mut message) = self.inbox_messages.pop(now) {
-            if let Some(doc_cache) = shared_doc_cache {
-                ipfs::record_inbound_contact(doc_cache, &message.from).await;
+            if let Some(outbox_state) = shared_outbox_state {
+                ipfs::record_inbound_contact(outbox_state, &message.from).await;
             }
             debug!(
                 from = %message.from,
@@ -881,10 +886,10 @@ impl EventLoopState {
         // bounded retries for transient DID/IPNS resolution delays.
         let ep = Arc::clone(&self.endpoint);
         let res = Arc::clone(&self.shared_resolver);
-        let doc_cache = self
+        let outbox_state = self
             .ipfs_state
             .as_ref()
-            .map(|ipfs| Arc::clone(&ipfs.doc_cache));
+            .map(|ipfs| Arc::clone(&ipfs.outbox_state));
         let base = recipient.base_id();
         let did_resolve = self.did_resolve;
         let Ok(permit) = self.remote_plugin_delivery_gate.clone().try_acquire_owned() else {
@@ -893,9 +898,16 @@ impl EventLoopState {
         };
         tokio::spawn(async move {
             let _permit = permit;
-            let outbox_result = if let Some(doc_cache) = doc_cache {
-                ipfs::open_outbox_for_did(&ep, &res, &doc_cache, &recipient, protocol, did_resolve)
-                    .await
+            let outbox_result = if let Some(outbox_state) = outbox_state {
+                ipfs::open_outbox_for_did(
+                    &ep,
+                    &res,
+                    &outbox_state,
+                    &recipient,
+                    protocol,
+                    did_resolve,
+                )
+                .await
             } else {
                 match tokio::time::timeout(
                     Duration::from_secs(5),

@@ -26,12 +26,10 @@ use crate::rpc::RPC_PROTOCOL_ID;
 const OUTBOX_BACKOFF_INITIAL: Duration = Duration::from_secs(1);
 pub const DEFAULT_OUTBOX_BACKOFF_ATTEMPTS: usize = 30;
 
-/// Cache of sender DID base-id → their most-recently-seen Document, plus
-/// per-outbox Fibonacci backoff for endpoints that could not be reached.
-pub type DocCache = Arc<OutboxCache>;
+/// Per-outbox Fibonacci backoff for endpoints that could not be reached.
+pub type OutboxState = Arc<OutboxCache>;
 
 pub struct OutboxCache {
-    documents: Mutex<HashMap<String, Document>>,
     unreachable: Mutex<HashMap<(String, String), UnreachableOutbox>>,
     backoff_attempts: AtomicUsize,
 }
@@ -47,7 +45,6 @@ struct UnreachableOutbox {
 impl OutboxCache {
     fn new(backoff_attempts: usize) -> Self {
         Self {
-            documents: Mutex::new(HashMap::new()),
             unreachable: Mutex::new(HashMap::new()),
             backoff_attempts: AtomicUsize::new(backoff_attempts.max(1)),
         }
@@ -56,14 +53,6 @@ impl OutboxCache {
     pub fn set_backoff_attempts(&self, attempts: usize) {
         self.backoff_attempts
             .store(attempts.max(1), Ordering::Relaxed);
-    }
-
-    async fn document(&self, did: &str) -> Option<Document> {
-        self.documents.lock().await.get(did).cloned()
-    }
-
-    async fn insert_document(&self, did: String, document: Document) {
-        self.documents.lock().await.insert(did, document);
     }
 
     async fn unreachable_for(&self, did: &str, protocol: &str) -> Option<Duration> {
@@ -119,9 +108,9 @@ impl OutboxCache {
 
 /// Record that a peer has contacted this runtime, making every outbox to that
 /// peer eligible for an immediate retry.
-pub async fn record_inbound_contact(doc_cache: &DocCache, from: &str) {
+pub async fn record_inbound_contact(outbox_state: &OutboxState, from: &str) {
     if let Ok(sender) = Did::try_from(from) {
-        doc_cache.clear_unreachable(&sender.base_id()).await;
+        outbox_state.clear_unreachable(&sender.base_id()).await;
     }
 }
 
@@ -129,8 +118,8 @@ pub async fn record_inbound_contact(doc_cache: &DocCache, from: &str) {
 pub struct IpfsServiceState {
     pub messages: Inbox<ma_core::Message>,
     pub replay_guard: ReplayGuard,
-    /// Recently-seen sender documents — avoids IPNS lookups for reply delivery.
-    pub doc_cache: DocCache,
+    /// Backoff state for temporarily unreachable peer outboxes.
+    pub outbox_state: OutboxState,
 }
 
 impl IpfsServiceState {
@@ -138,7 +127,7 @@ impl IpfsServiceState {
         Self {
             messages,
             replay_guard: ReplayGuard::default(),
-            doc_cache: Arc::new(OutboxCache::new(backoff_attempts)),
+            outbox_state: Arc::new(OutboxCache::new(backoff_attempts)),
         }
     }
 }
@@ -152,9 +141,9 @@ pub struct IpfsHandlerCtx<'a> {
     pub remote_pin: Option<&'a RemotePinConfig>,
     pub ipns_publish: IpnsPublishSettings,
     pub did_resolve: DidResolveSettings,
-    pub resolver: Arc<dyn DidDocumentResolver>,
-    /// Shared document cache — populated on `DidDocumentPublish`, read on Store.
-    pub doc_cache: DocCache,
+    pub resolver: Arc<crate::doccache::RuntimeDidResolver>,
+    /// Shared backoff state for peer outbox connections.
+    pub outbox_state: OutboxState,
     /// Named group cache — backs the `+<name>` principal syntax in the root ACL.
     pub group_cache: GroupCache,
 }
@@ -634,14 +623,14 @@ fn endpoint_for_protocol_from_doc(doc: &Document, protocol: &str) -> Option<Stri
 /// needing a reference to the short-lived `IpfsHandlerCtx`.
 pub async fn open_outbox_for_did(
     endpoint: &Arc<dyn ma_core::MaEndpoint>,
-    resolver: &Arc<dyn DidDocumentResolver>,
-    doc_cache: &DocCache,
+    resolver: &Arc<crate::doccache::RuntimeDidResolver>,
+    outbox_state: &OutboxState,
     target: &Did,
     protocol: &str,
     did_resolve: DidResolveSettings,
 ) -> Result<ma_core::Outbox> {
     let target_base = target.base_id();
-    if let Some(remaining) = doc_cache.unreachable_for(&target_base, protocol).await {
+    if let Some(remaining) = outbox_state.unreachable_for(&target_base, protocol).await {
         debug!(
             to = %target_base,
             protocol = %protocol,
@@ -653,20 +642,18 @@ pub async fn open_outbox_for_did(
         ));
     }
 
-    let cached_doc = doc_cache.document(&target_base).await;
-
-    if let Some(ref doc) = cached_doc {
-        if let Some(eid) = endpoint_for_protocol_from_doc(doc, protocol) {
+    if let Ok(doc) = resolver.resolve(&target_base).await {
+        if let Some(eid) = endpoint_for_protocol_from_doc(&doc, protocol) {
             // Use a short deadline so a stale cached endpoint ID does not block
             // the handler indefinitely.
             match tokio::time::timeout(
                 Duration::from_secs(5),
-                endpoint.connect_outbox(doc, &eid, &target_base, protocol),
+                endpoint.connect_outbox(&doc, &eid, &target_base, protocol),
             )
             .await
             {
                 Ok(Ok(outbox)) => {
-                    doc_cache.clear_unreachable(&target_base).await;
+                    outbox_state.clear_unreachable(&target_base).await;
                     return Ok(outbox);
                 }
                 Ok(Err(e)) => {
@@ -680,9 +667,6 @@ pub async fn open_outbox_for_did(
     }
 
     let doc = resolve_did_for_outbox(resolver, &target_base, did_resolve).await?;
-    doc_cache
-        .insert_document(target_base.clone(), doc.clone())
-        .await;
     let eid = endpoint_for_protocol_from_doc(&doc, protocol)
         .ok_or_else(|| anyhow::anyhow!("{target_base} has no service for {protocol}"))?;
 
@@ -693,16 +677,16 @@ pub async fn open_outbox_for_did(
     .await
     {
         Ok(Ok(outbox)) => {
-            doc_cache.clear_unreachable(&target_base).await;
+            outbox_state.clear_unreachable(&target_base).await;
             Ok(outbox)
         }
         Ok(Err(error)) => {
-            let retry_in = doc_cache.mark_unreachable(&target_base, protocol).await;
+            let retry_in = outbox_state.mark_unreachable(&target_base, protocol).await;
             debug!(to = %target_base, protocol = %protocol, retry_in_secs = retry_in.as_secs(), "outbox connect failed; applying Fibonacci backoff");
             Err(anyhow::Error::from(error))
         }
         Err(_elapsed) => {
-            let retry_in = doc_cache.mark_unreachable(&target_base, protocol).await;
+            let retry_in = outbox_state.mark_unreachable(&target_base, protocol).await;
             debug!(to = %target_base, protocol = %protocol, retry_in_secs = retry_in.as_secs(), "outbox connect timed out; applying Fibonacci backoff");
             Err(anyhow::anyhow!(
                 "iroh outbox connect timed out for {target_base} endpoint {eid}"
@@ -712,7 +696,7 @@ pub async fn open_outbox_for_did(
 }
 
 async fn resolve_did_for_outbox(
-    resolver: &Arc<dyn DidDocumentResolver>,
+    resolver: &Arc<crate::doccache::RuntimeDidResolver>,
     target_base: &str,
     settings: DidResolveSettings,
 ) -> Result<Document> {
@@ -782,7 +766,7 @@ async fn resolve_did_for_outbox(
 
 fn spawn_did_resolve_attempt(
     resolve_tasks: &mut tokio::task::JoinSet<(usize, Result<Document>)>,
-    did_resolver: &Arc<dyn DidDocumentResolver>,
+    did_resolver: &Arc<crate::doccache::RuntimeDidResolver>,
     target_base: &str,
     attempt: usize,
     settings: DidResolveSettings,
@@ -792,7 +776,7 @@ fn spawn_did_resolve_attempt(
     resolve_tasks.spawn(async move {
         let result = match tokio::time::timeout(
             Duration::from_secs(settings.attempt_timeout_secs),
-            did_resolver.resolve(&target_base),
+            did_resolver.refresh(&target_base),
         )
         .await
         {
@@ -891,10 +875,11 @@ async fn handle_did_document_publish(
     // IPFS-store reply tasks can resolve this sender's endpoint immediately.
     let sender_for_cache = ma_core::Did::try_from(message.from.as_str())
         .with_context(|| format!("invalid sender DID: {}", message.from))?;
-    ctx.doc_cache
-        .insert_document(sender_for_cache.base_id(), document.clone())
-        .await;
-    ctx.doc_cache
+    ctx.resolver
+        .insert_published(&sender_for_cache.base_id(), document.clone())
+        .await
+        .context("caching verified DID document")?;
+    ctx.outbox_state
         .clear_unreachable(&sender_for_cache.base_id())
         .await;
 
@@ -1053,13 +1038,13 @@ async fn handle_ipfs_store(
     // blocks the main event loop (and therefore never prevents Ctrl-C).
     let endpoint = Arc::clone(&ctx.endpoint);
     let resolver = Arc::clone(&ctx.resolver);
-    let doc_cache = Arc::clone(&ctx.doc_cache);
+    let outbox_state = Arc::clone(&ctx.outbox_state);
     let did_resolve = ctx.did_resolve;
     tokio::spawn(async move {
         match open_outbox_for_did(
             &endpoint,
             &resolver,
-            &doc_cache,
+            &outbox_state,
             &sender,
             RPC_PROTOCOL_ID,
             did_resolve,

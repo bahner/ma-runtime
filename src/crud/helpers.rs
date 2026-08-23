@@ -1019,11 +1019,11 @@ async fn send_crud_reply_raw(
     )
     .context("failed to build CRUD reply")?;
 
-    let outbox_result = if let Some(doc_cache) = &ctx.doc_cache {
+    let outbox_result = if let Some(outbox_state) = &ctx.outbox_state {
         crate::ipfs::open_outbox_for_did(
             &ctx.endpoint,
             &ctx.resolver,
-            doc_cache,
+            outbox_state,
             &sender,
             ma_core::CRUD_PROTOCOL_ID,
             ctx.did_resolve,

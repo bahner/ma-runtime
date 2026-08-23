@@ -147,7 +147,7 @@ impl Cli {
 /// rest of the daemon.
 async fn setup_endpoint_services(
     secrets: &ma_core::config::SecretBundle,
-    shared_resolver: &Arc<dyn ma_core::DidDocumentResolver>,
+    shared_resolver: &Arc<crate::doccache::RuntimeDidResolver>,
     ipv6_enabled: bool,
     ipfs_publisher_enabled: bool,
     crud_enabled: bool,
@@ -157,10 +157,11 @@ async fn setup_endpoint_services(
     } else {
         info!("{}", i18n::t("ipv6-disabled"));
     }
+    let endpoint_resolver: Arc<dyn ma_core::DidDocumentResolver> = shared_resolver.clone();
     let mut endpoint = ma_core::new_ma_endpoint(
         secrets.iroh_secret_key,
         secrets.encryption_key()?,
-        Arc::clone(shared_resolver),
+        endpoint_resolver,
         ipv6_enabled,
     )
     .await?;
@@ -816,7 +817,7 @@ pub struct Boot {
     acl: acl::SharedAcl,
     ipfs_publisher_enabled: bool,
     secrets: Option<ma_core::config::SecretBundle>,
-    shared_resolver: Option<Arc<dyn ma_core::DidDocumentResolver>>,
+    shared_resolver: Option<Arc<crate::doccache::RuntimeDidResolver>>,
     runtime_ipns_key: Option<[u8; 32]>,
     runtime_ipns_id: Option<String>,
 
@@ -1017,8 +1018,19 @@ impl Boot {
 
         let mut secrets = load_secret_bundle(&self.config)?;
         qa_prepare_bundle_timestamps_for_publish(&mut secrets);
-        let shared_resolver: Arc<dyn ma_core::DidDocumentResolver> =
+        let resolver: Arc<dyn ma_core::DidDocumentResolver> =
             Arc::new(self.config.ipfs_gateway_resolver());
+        let refresh_resolver = self.config.ipfs_gateway_resolver();
+        ma_core::DidDocumentResolver::set_cache_ttls(
+            &refresh_resolver,
+            std::time::Duration::ZERO,
+            std::time::Duration::ZERO,
+        );
+        let refresh_resolver: Arc<dyn ma_core::DidDocumentResolver> = Arc::new(refresh_resolver);
+        let shared_resolver = Arc::new(crate::doccache::RuntimeDidResolver::new(
+            resolver,
+            refresh_resolver,
+        ));
 
         // ── Runtime IPNS key (separate from the DID-document IPNS key) ───────
         let runtime_ipns_key: [u8; 32] = secrets
@@ -1286,6 +1298,16 @@ impl Boot {
         })
         .await?;
 
+        let did_refresh_interval_secs = crud::config::did_refresh_interval_secs(
+            self.config.extra.get("did_refresh_interval_secs"),
+        )?;
+        let (did_refresh_interval_tx, did_refresh_interval_rx) =
+            tokio::sync::watch::channel(did_refresh_interval_secs);
+        crate::doccache::spawn_refresh_worker(
+            Arc::clone(self.shared_resolver.as_ref().expect("setup_endpoint ran")),
+            did_refresh_interval_rx,
+        );
+
         let endpoint = self.endpoint.take().expect("setup_endpoint ran");
         info!(
             did = %self.our_did.as_deref().unwrap_or_default(),
@@ -1306,6 +1328,7 @@ impl Boot {
             envelope_rx: self.envelope_rx.take().expect("load_entities ran"),
             shared_config,
             shared_resolver: self.shared_resolver.take().expect("setup_endpoint ran"),
+            did_refresh_interval_tx,
             stats,
             acl: self.acl,
             acl_cache: self.acl_cache.take().expect("load_acl_owners ran"),

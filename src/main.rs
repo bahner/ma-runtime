@@ -3,6 +3,7 @@ mod behaviour;
 mod boot;
 mod bootstrap;
 mod crud;
+mod doccache;
 mod entity;
 mod eventloop;
 mod i18n;

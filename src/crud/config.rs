@@ -21,6 +21,7 @@ pub const DAEMON_CONFIG_KEYS_PUB: &[&str] = &[
     "log_level_stdout",
     "did_resolver_positive_ttl_secs",
     "did_resolver_negative_ttl_secs",
+    "did_refresh_interval_secs",
     "log_file",
     "outbox_backoff_attempts",
     "ipv6_enable",
@@ -57,6 +58,17 @@ pub const DEFAULT_RUNTIME_NAME: &str = "間trix";
 pub const DEFAULT_RUNTIME_DESCRIPTION: &str = "A 間 runtime with a lazy owner.";
 pub const DEFAULT_WASM_RELOAD_SHUTDOWN_TIMEOUT_MS: u64 = 250;
 pub const DEFAULT_PLUGIN_ENVELOPE_QUEUE_CAPACITY: usize = 1024;
+
+pub fn did_refresh_interval_secs(value: Option<&serde_yaml::Value>) -> Result<u64> {
+    value.map_or(
+        Ok(crate::doccache::DEFAULT_DID_REFRESH_INTERVAL_SECS),
+        |value| {
+            value
+                .as_u64()
+                .ok_or_else(|| anyhow!("did_refresh_interval_secs must be a non-negative integer"))
+        },
+    )
+}
 
 pub fn outbox_backoff_attempts(value: Option<&serde_yaml::Value>) -> Result<usize> {
     let Some(value) = value else {
@@ -150,6 +162,11 @@ pub fn daemon_config_key_value_pub(cfg: &ma_core::Config, key: &str) -> serde_ya
         "did_resolver_negative_ttl_secs" => {
             serde_yaml::Value::Number(cfg.did_resolver_negative_ttl_secs.into())
         }
+        "did_refresh_interval_secs" => serde_yaml::Value::Number(
+            did_refresh_interval_secs(cfg.extra.get("did_refresh_interval_secs"))
+                .unwrap_or(crate::doccache::DEFAULT_DID_REFRESH_INTERVAL_SECS)
+                .into(),
+        ),
         "log_file" => cfg.log_file.as_ref().map_or(serde_yaml::Value::Null, |p| {
             serde_yaml::Value::String(p.to_string_lossy().into_owned())
         }),
@@ -266,6 +283,14 @@ pub fn set_daemon_config_key_pub(cfg: &mut ma_core::Config, key: &str, val: &ser
         "did_resolver_negative_ttl_secs" => {
             if let Some(n) = val.as_u64() {
                 cfg.did_resolver_negative_ttl_secs = n;
+            }
+        }
+        "did_refresh_interval_secs" => {
+            if let Some(n) = val.as_u64() {
+                cfg.extra.insert(
+                    serde_yaml::Value::String("did_refresh_interval_secs".to_string()),
+                    serde_yaml::Value::Number(n.into()),
+                );
             }
         }
         "log_file" => {
@@ -514,16 +539,25 @@ async fn handle_config_key_set(
         .await;
     }
     if is_daemon_key {
+        let did_refresh_interval = if key == "did_refresh_interval_secs" {
+            Some(did_refresh_interval_secs(Some(&yaml_val))?)
+        } else {
+            None
+        };
         if key == "outbox_backoff_attempts" {
             let attempts = outbox_backoff_attempts(Some(&yaml_val))?;
-            if let Some(doc_cache) = &ctx.doc_cache {
-                doc_cache.set_backoff_attempts(attempts);
+            if let Some(outbox_state) = &ctx.outbox_state {
+                outbox_state.set_backoff_attempts(attempts);
             }
         }
         set_daemon_config_key(&mut *ctx.shared_config.write().await, &key, &yaml_val);
         let save_result = ctx.shared_config.read().await.save();
         if let Err(e) = save_result {
             warn!(key = %key, error = %e, "failed to save config.yaml after CRUD update");
+        }
+        if let (Some(interval), Some(sender)) = (did_refresh_interval, &ctx.did_refresh_interval_tx)
+        {
+            sender.send_replace(interval);
         }
         return send_crud_ok(message, reply_type, ctx).await;
     }
@@ -611,9 +645,9 @@ pub(super) async fn handle_config_ns(
 #[cfg(test)]
 mod tests {
     use super::{
-        cbor_to_yaml, default_manifest_config_value, is_protected_config_key_pub,
-        outbox_backoff_attempts, plugin_envelope_queue_capacity, public_plugin_config,
-        set_daemon_config_key_pub, wasm_reload_shutdown_timeout,
+        cbor_to_yaml, default_manifest_config_value, did_refresh_interval_secs,
+        is_protected_config_key_pub, outbox_backoff_attempts, plugin_envelope_queue_capacity,
+        public_plugin_config, set_daemon_config_key_pub, wasm_reload_shutdown_timeout,
         DEFAULT_PLUGIN_ENVELOPE_QUEUE_CAPACITY, DEFAULT_RUNTIME_DESCRIPTION, DEFAULT_RUNTIME_NAME,
         DEFAULT_WASM_RELOAD_SHUTDOWN_TIMEOUT_MS,
     };
@@ -648,6 +682,21 @@ mod tests {
         assert!(is_protected_config_key_pub("secret_bundle_passphrase"));
         assert!(is_protected_config_key_pub("config_path"));
         assert!(is_protected_config_key_pub("secret_future_field"));
+    }
+
+    #[test]
+    fn did_refresh_interval_defaults_and_allows_zero() {
+        assert_eq!(
+            did_refresh_interval_secs(None).unwrap(),
+            crate::doccache::DEFAULT_DID_REFRESH_INTERVAL_SECS
+        );
+        assert_eq!(
+            did_refresh_interval_secs(Some(&serde_yaml::Value::Number(0_u64.into()))).unwrap(),
+            0
+        );
+        assert!(
+            did_refresh_interval_secs(Some(&serde_yaml::Value::String("daily".into()))).is_err()
+        );
     }
 
     #[test]

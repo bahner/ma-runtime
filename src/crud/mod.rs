@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use ciborium::Value as CborValue;
-use ma_core::{DidDocumentResolver, SigningKey, MESSAGE_TYPE_CRUD, MESSAGE_TYPE_CRUD_REPLY};
+use ma_core::{SigningKey, MESSAGE_TYPE_CRUD, MESSAGE_TYPE_CRUD_REPLY};
 use tokio::sync::RwLock;
 
 use crate::acl::{check_full, AclCache, AclMap, GroupCache, SharedAcl, CAP_CRUD};
@@ -38,13 +38,14 @@ pub struct CrudHandlerCtx {
     pub signing_key: Arc<SigningKey>,
     pub endpoint: Arc<dyn ma_core::MaEndpoint>,
     pub kubo_rpc_url: Arc<str>,
-    pub resolver: Arc<dyn DidDocumentResolver>,
-    pub doc_cache: Option<crate::ipfs::DocCache>,
+    pub resolver: Arc<crate::doccache::RuntimeDidResolver>,
+    pub outbox_state: Option<crate::ipfs::OutboxState>,
     pub did_resolve: crate::ipfs::DidResolveSettings,
     pub stats: SharedStats,
     pub entity_registry: EntityRegistry,
     pub kind_registry: KindRegistry,
     pub shared_config: Arc<RwLock<ma_core::Config>>,
+    pub did_refresh_interval_tx: Option<tokio::sync::watch::Sender<u64>>,
     /// Named ACL cache — maps `"acls.<name>"` to its `AclMap` for
     /// zero-overhead lookup at call time.
     pub acl_cache: AclCache,

@@ -28,8 +28,8 @@ pub struct RpcHandlerCtx {
     pub signing_key: Arc<SigningKey>,
     pub endpoint: Arc<dyn ma_core::MaEndpoint>,
     pub kubo_rpc_url: Arc<str>,
-    pub resolver: Arc<dyn DidDocumentResolver>,
-    pub doc_cache: Option<crate::ipfs::DocCache>,
+    pub resolver: Arc<crate::doccache::RuntimeDidResolver>,
+    pub outbox_state: Option<crate::ipfs::OutboxState>,
     pub did_resolve: crate::ipfs::DidResolveSettings,
     pub entity_registry: EntityRegistry,
     pub kind_registry: crate::entity::KindRegistry,
@@ -790,16 +790,16 @@ fn send_rpc_reply_typed(
     // perspective; failures are logged but do not affect the caller.
     let endpoint = Arc::clone(&ctx.endpoint);
     let resolver = Arc::clone(&ctx.resolver);
-    let doc_cache = ctx.doc_cache.as_ref().map(Arc::clone);
+    let outbox_state = ctx.outbox_state.as_ref().map(Arc::clone);
     let did_resolve = ctx.did_resolve;
     let from = incoming.from.clone();
     let msg_id = incoming.id.clone();
     tokio::spawn(async move {
-        let outbox_result = if let Some(doc_cache) = doc_cache {
+        let outbox_result = if let Some(outbox_state) = outbox_state {
             crate::ipfs::open_outbox_for_did(
                 &endpoint,
                 &resolver,
-                &doc_cache,
+                &outbox_state,
                 &sender,
                 RPC_PROTOCOL_ID,
                 did_resolve,
@@ -1052,8 +1052,10 @@ mod tests {
             signing_key: Arc::new(runtime_signing),
             endpoint: runtime_endpoint,
             kubo_rpc_url: Arc::from(kubo.url().to_string()),
-            resolver: Arc::new(ma_core::IpfsGatewayResolver::new("http://127.0.0.1:9")),
-            doc_cache: None,
+            resolver: Arc::new(crate::doccache::RuntimeDidResolver::from_resolver(
+                Arc::new(ma_core::IpfsGatewayResolver::new("http://127.0.0.1:9")),
+            )),
+            outbox_state: None,
             did_resolve: crate::ipfs::DidResolveSettings::default(),
             entity_registry,
             kind_registry,
