@@ -612,7 +612,7 @@ impl EventLoopState {
             }
             let acl_snapshot = self.acl.read().await.clone();
             if let Err(err) = tokio::time::timeout(
-                Duration::from_mins(1),
+                Duration::from_mins(10),
                 ipfs::handle_ipfs_message(
                     &message,
                     &acl_snapshot,
