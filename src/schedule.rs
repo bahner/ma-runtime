@@ -111,41 +111,125 @@ pub async fn register_schedule(
 ) -> Result<uuid::Uuid> {
     let id = match req {
         ScheduleRequest::Cron { spec, content } => {
-            add_cron_job(sched, ScheduleJobArgs { ctx, fragment, schedule_id, active_guard, content }, spec).await?
+            add_cron_job(
+                sched,
+                ScheduleJobArgs {
+                    ctx,
+                    fragment,
+                    schedule_id,
+                    active_guard,
+                    content,
+                },
+                spec,
+            )
+            .await?
         }
         ScheduleRequest::Interval { secs, content } => {
-            add_interval_job(sched, ScheduleJobArgs { ctx, fragment, schedule_id, active_guard, content }, secs).await?
+            add_interval_job(
+                sched,
+                ScheduleJobArgs {
+                    ctx,
+                    fragment,
+                    schedule_id,
+                    active_guard,
+                    content,
+                },
+                secs,
+            )
+            .await?
         }
-        ScheduleRequest::At { timestamp_ms, content } => {
-            add_at_job(sched, ScheduleJobArgs { ctx, fragment, schedule_id, active_guard, content }, timestamp_ms, on_complete).await?
+        ScheduleRequest::At {
+            timestamp_ms,
+            content,
+        } => {
+            add_at_job(
+                sched,
+                ScheduleJobArgs {
+                    ctx,
+                    fragment,
+                    schedule_id,
+                    active_guard,
+                    content,
+                },
+                timestamp_ms,
+                on_complete,
+            )
+            .await?
         }
         ScheduleRequest::In { secs, content } => {
             let timestamp_ms = now_ms()
                 .saturating_add(i64::try_from(secs.saturating_mul(1000)).unwrap_or(i64::MAX));
-            add_at_job(sched, ScheduleJobArgs { ctx, fragment, schedule_id, active_guard, content }, timestamp_ms, on_complete).await?
+            add_at_job(
+                sched,
+                ScheduleJobArgs {
+                    ctx,
+                    fragment,
+                    schedule_id,
+                    active_guard,
+                    content,
+                },
+                timestamp_ms,
+                on_complete,
+            )
+            .await?
         }
         ScheduleRequest::Random { max_secs, content } => {
-            add_random_job(sched, ScheduleJobArgs { ctx, fragment, schedule_id, active_guard, content }, max_secs).await?
+            add_random_job(
+                sched,
+                ScheduleJobArgs {
+                    ctx,
+                    fragment,
+                    schedule_id,
+                    active_guard,
+                    content,
+                },
+                max_secs,
+            )
+            .await?
         }
     };
     Ok(id)
 }
 
-async fn add_cron_job(sched: &JobScheduler, args: ScheduleJobArgs, spec: String) -> Result<uuid::Uuid> {
+async fn add_cron_job(
+    sched: &JobScheduler,
+    args: ScheduleJobArgs,
+    spec: String,
+) -> Result<uuid::Uuid> {
     let job = Job::new_async(spec.as_str(), move |_, _| {
         let args = args.clone();
         Box::pin(async move {
-            dispatch_if_active(&args.ctx, &args.fragment, args.schedule_id.as_ref(), args.active_guard.as_ref(), &args.content, "cron").await;
+            dispatch_if_active(
+                &args.ctx,
+                &args.fragment,
+                args.schedule_id.as_ref(),
+                args.active_guard.as_ref(),
+                &args.content,
+                "cron",
+            )
+            .await;
         })
     })?;
     sched.add(job).await.map_err(Into::into)
 }
 
-async fn add_interval_job(sched: &JobScheduler, args: ScheduleJobArgs, secs: u64) -> Result<uuid::Uuid> {
+async fn add_interval_job(
+    sched: &JobScheduler,
+    args: ScheduleJobArgs,
+    secs: u64,
+) -> Result<uuid::Uuid> {
     let job = Job::new_repeated_async(Duration::from_secs(secs), move |_, _| {
         let args = args.clone();
         Box::pin(async move {
-            dispatch_if_active(&args.ctx, &args.fragment, args.schedule_id.as_ref(), args.active_guard.as_ref(), &args.content, "interval").await;
+            dispatch_if_active(
+                &args.ctx,
+                &args.fragment,
+                args.schedule_id.as_ref(),
+                args.active_guard.as_ref(),
+                &args.content,
+                "interval",
+            )
+            .await;
         })
     })?;
     sched.add(job).await.map_err(Into::into)
@@ -162,7 +246,15 @@ async fn add_at_job(
         let args = args.clone();
         let on_complete = on_complete.clone();
         Box::pin(async move {
-            dispatch_if_active(&args.ctx, &args.fragment, args.schedule_id.as_ref(), args.active_guard.as_ref(), &args.content, "one-shot").await;
+            dispatch_if_active(
+                &args.ctx,
+                &args.fragment,
+                args.schedule_id.as_ref(),
+                args.active_guard.as_ref(),
+                &args.content,
+                "one-shot",
+            )
+            .await;
             if let Some(complete) = &on_complete {
                 complete();
             }
@@ -171,7 +263,11 @@ async fn add_at_job(
     sched.add(job).await.map_err(Into::into)
 }
 
-async fn add_random_job(sched: &JobScheduler, args: ScheduleJobArgs, max_secs: u64) -> Result<uuid::Uuid> {
+async fn add_random_job(
+    sched: &JobScheduler,
+    args: ScheduleJobArgs,
+    max_secs: u64,
+) -> Result<uuid::Uuid> {
     let job = make_random_job(sched.clone(), args, max_secs)?;
     sched.add(job).await.map_err(Into::into)
 }
@@ -211,7 +307,11 @@ fn make_random_job(sched: JobScheduler, args: ScheduleJobArgs, max_secs: u64) ->
             )
             .await;
 
-            if args.active_guard.as_ref().is_none_or(|is_active| is_active()) {
+            if args
+                .active_guard
+                .as_ref()
+                .is_none_or(|is_active| is_active())
+            {
                 match make_random_job(sched.clone(), args.clone(), max_secs) {
                     Ok(next) => {
                         if let Err(e) = sched.add(next).await {
