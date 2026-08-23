@@ -43,9 +43,8 @@ the network, not a pointer in local memory.
 > I do not know of anybody yet who has realized that at the very least each
 > object should have a URL.
 
-DIDs can be converted to URLs by appending paths or fragments. The 間
-framework provides a URL for all entities for other entities to send messages
-to.
+DIDs can be converted to URLs by appending fragments. The 間 framework provides
+a URL for all entities for other entities to send messages to.
 
 ### Hewitt's Actor Model
 
