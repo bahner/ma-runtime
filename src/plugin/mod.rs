@@ -1274,6 +1274,18 @@ mod hostile {
 
     /// One combined test (not parallel-safe pieces): the Wasm timeout env var
     /// is process-global, so all hostile scenarios run under one setting.
+    ///
+    /// Windows CI runners are much slower at Wasm JIT compilation than
+    /// Linux/macOS, so bounded-timing assertions get extra slack there;
+    /// other platforms keep their tight bounds unchanged.
+    fn hostile_bound(base: Duration) -> Duration {
+        if cfg!(target_os = "windows") {
+            base + Duration::from_secs(15)
+        } else {
+            base
+        }
+    }
+
     async fn assert_garbage_load_fails_fast(
         kubo: &MockKubo,
         garbage_cid: &str,
@@ -1284,7 +1296,7 @@ mod hostile {
         let res = load(kubo.url(), "garbage", garbage_cid, envelope_tx, registry).await;
         assert!(res.is_err(), "garbage wasm must fail to load");
         assert!(
-            t.elapsed() < Duration::from_secs(5),
+            t.elapsed() < hostile_bound(Duration::from_secs(5)),
             "garbage load not bounded: {:?}",
             t.elapsed()
         );
@@ -1303,7 +1315,7 @@ mod hostile {
             "infinite on_signal(:start) must fail, not hang"
         );
         assert!(
-            t.elapsed() < Duration::from_secs(10),
+            t.elapsed() < hostile_bound(Duration::from_secs(10)),
             "infinite on_signal(:start) not bounded: {:?}",
             t.elapsed()
         );
@@ -1354,7 +1366,7 @@ mod hostile {
             .await
             .expect("good entity must not be affected by evil one");
         assert!(
-            t.elapsed() < Duration::from_secs(1),
+            t.elapsed() < hostile_bound(Duration::from_secs(1)),
             "good entity was starved: {:?}",
             t.elapsed()
         );
@@ -1364,7 +1376,7 @@ mod hostile {
         let res = wedged.await.expect("join");
         assert!(res.is_err(), "infinite on_message must error, got Ok");
         assert!(
-            t.elapsed() < Duration::from_secs(10),
+            t.elapsed() < hostile_bound(Duration::from_secs(10)),
             "wedged dispatch not bounded: {:?}",
             t.elapsed()
         );
@@ -1375,7 +1387,7 @@ mod hostile {
         let res2 = evil.on_message(&cast_input("wedge-2")).await;
         assert!(res2.is_err(), "second dispatch must also error");
         assert!(
-            t.elapsed() < Duration::from_secs(10),
+            t.elapsed() < hostile_bound(Duration::from_secs(10)),
             "second wedged dispatch not bounded: {:?}",
             t.elapsed()
         );
