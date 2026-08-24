@@ -255,8 +255,8 @@ pub async fn handle_rpc_message(
                 }
             }
         } else {
-            let reason = format!("unknown entity fragment: {fragment}");
-            debug!(fragment = %fragment, "{}", crate::i18n::t("entity-not-found"));
+            let reason = format!("unknown entity: {}", message.to);
+            debug!(did_url = %message.to, "{}", crate::i18n::t("entity-not-found"));
             send_rpc_error_reply(message, ctx, &reason)
         };
     }

@@ -50,7 +50,7 @@ pub async fn handle_inbox_message(message: &ma_core::Message, ctx: &InboxHandler
     let entity = ctx.entity_registry.read().await.get(fragment).cloned();
 
     let Some(entity) = entity else {
-        warn!(fragment = %fragment, "{}", crate::i18n::t("inbox-unknown-entity"));
+        warn!(did_url = %message.to, "{}", crate::i18n::t("inbox-unknown-entity"));
         return Ok(());
     };
 
