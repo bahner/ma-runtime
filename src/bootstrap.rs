@@ -51,7 +51,7 @@ pub fn runtime_remote_pin_config(config: &ma_core::Config) -> Option<RemotePinCo
     match config.remote_pin_config_with_default_name(default_name) {
         Ok(remote) => remote,
         Err(err) => {
-            tracing::warn!(error = %err, "remote root pinning is misconfigured");
+            tracing::warn!(error = %err, "{}", crate::i18n::t("bootstrap-remote-root-pin-misconfigured"));
             None
         }
     }
@@ -79,7 +79,8 @@ async fn replace_remote_root_pin(
         service = %remote.service,
         name = %remote.name,
         cleanup_scheduled,
-        "remote root pin confirmed"
+        "{}",
+        crate::i18n::t("bootstrap-remote-root-pin-confirmed")
     );
     Ok(())
 }
@@ -239,7 +240,7 @@ pub async fn run_kinds_bootstrap(yaml_path: &std::path::Path, kubo_url: &str) ->
     kubo::pin_add(kubo_url, &cid)
         .await
         .context("pinning kinds tree")?;
-    tracing::info!(kinds_cid = %cid, "Published runtime kinds tree");
+    tracing::info!(kinds_cid = %cid, "{}", crate::i18n::t("bootstrap-kinds-tree-published"));
     Ok(cid)
 }
 
@@ -272,9 +273,20 @@ pub async fn apply_kinds_overlay(
         .await
         .context("dag_put root manifest after kinds overlay")?;
     if let Err(e) = kubo::pin_update(kubo_url, root_cid, &new_root_cid).await {
-        tracing::warn!(old = %root_cid, new = %new_root_cid, error = %e, "pin/update failed after kinds overlay");
+        tracing::warn!(
+            old = %root_cid,
+            new = %new_root_cid,
+            error = %e,
+            "{}",
+            crate::i18n::t("bootstrap-kinds-overlay-pin-update-failed")
+        );
     }
-    tracing::info!(root_cid = %new_root_cid, changed = changed_protocols.len(), "Published runtime manifest after kinds overlay");
+    tracing::info!(
+        root_cid = %new_root_cid,
+        changed = changed_protocols.len(),
+        "{}",
+        crate::i18n::t("bootstrap-kinds-overlay-published")
+    );
     Ok(KindsOverlayResult {
         root_cid: new_root_cid,
         changed_protocols,
@@ -360,14 +372,25 @@ pub async fn build_manifest(
     let root_cid = kubo::dag_put(kubo_url, &root)
         .await
         .context("dag_put root manifest")?;
-    tracing::info!(root_cid = %root_cid, "Published runtime root manifest");
+    tracing::info!(root_cid = %root_cid, "{}", crate::i18n::t("bootstrap-runtime-manifest-published"));
 
     if let Err(error) = replace_remote_root_pin(kubo_url, remote_pin, &root_cid).await {
-        tracing::warn!(root_cid = %root_cid, error = %error, "continuing after remote root pin replacement failure");
+        tracing::warn!(
+            root_cid = %root_cid,
+            error = %error,
+            "{}",
+            crate::i18n::t("bootstrap-root-pin-replacement-failed")
+        );
     }
     if let Some(old) = old_root_cid {
         if let Err(e) = kubo::pin_update(kubo_url, old, &root_cid).await {
-            tracing::warn!(old = %old, new = %root_cid, error = %e, "pin/update failed after bootstrap");
+            tracing::warn!(
+                old = %old,
+                new = %root_cid,
+                error = %e,
+                "{}",
+                crate::i18n::t("bootstrap-root-pin-update-failed")
+            );
         }
     } else {
         kubo::pin_add(kubo_url, &root_cid)
@@ -394,7 +417,7 @@ async fn publish_kinds(cfg: &BootstrapRuntime, kubo_url: &str) -> Result<KindTre
         let cid = kubo::dag_put(kubo_url, &node)
             .await
             .with_context(|| format!("dag_put kind {protocol}"))?;
-        tracing::info!(protocol = %protocol, cid = %cid, "Published kind node");
+        tracing::info!(protocol = %protocol, cid = %cid, "{}", crate::i18n::t("bootstrap-kind-published"));
         kinds.insert_protocol(protocol, IpldLink::new(cid));
     }
     Ok(kinds)
@@ -408,7 +431,7 @@ async fn publish_entities(
     for (name, be) in &cfg.entities {
         let link = match be {
             BootstrapEntity::Cid(cid) => {
-                tracing::info!(name = %name, cid = %cid, "Registering pre-published entity");
+                tracing::info!(name = %name, cid = %cid, "{}", crate::i18n::t("bootstrap-entity-registering-prepublished"));
                 IpldLink::new(cid)
             }
             BootstrapEntity::Inline {
@@ -449,7 +472,7 @@ async fn publish_entities(
                 let cid = kubo::dag_put(kubo_url, &node)
                     .await
                     .with_context(|| format!("dag_put entity {name}"))?;
-                tracing::info!(name = %name, cid = %cid, "Published entity node");
+                tracing::info!(name = %name, cid = %cid, "{}", crate::i18n::t("bootstrap-entity-published"));
                 IpldLink::new(cid)
             }
         };
@@ -467,7 +490,7 @@ async fn publish_named_acls(
         let cid = kubo::dag_put(kubo_url, acl)
             .await
             .with_context(|| format!("dag_put acl {name}"))?;
-        tracing::info!(name = %name, cid = %cid, "Published ACL node");
+        tracing::info!(name = %name, cid = %cid, "{}", crate::i18n::t("bootstrap-acl-published"));
         acls_map.insert(name.clone(), IpldLink::new(cid));
     }
     Ok(acls_map)
@@ -482,7 +505,7 @@ async fn publish_groups(
         let cid = kubo::dag_put(kubo_url, members)
             .await
             .with_context(|| format!("dag_put group {name}"))?;
-        tracing::info!(name = %name, cid = %cid, "Published group node");
+        tracing::info!(name = %name, cid = %cid, "{}", crate::i18n::t("bootstrap-group-published"));
         grp_map.insert(name.clone(), IpldLink::new(cid));
     }
     Ok(grp_map)
@@ -497,7 +520,7 @@ async fn publish_root_acl(cfg: &BootstrapRuntime, kubo_url: &str) -> Result<Opti
     let cid = kubo::dag_put(kubo_url, &root_acl)
         .await
         .context("dag_put root acl")?;
-    tracing::info!(cid = %cid, "Published root transport-gate ACL");
+    tracing::info!(cid = %cid, "{}", crate::i18n::t("bootstrap-root-acl-published"));
     Ok(Some(IpldLink::new(cid)))
 }
 
@@ -626,13 +649,18 @@ pub async fn load_entities(args: LoadEntitiesArgs<'_>) -> (usize, Option<String>
     let mut manifest = match kubo::dag_get::<RuntimeManifest>(kubo_url, root_cid).await {
         Ok(m) => m,
         Err(e) => {
-            tracing::error!("Failed to fetch runtime manifest {root_cid}: {e}");
+            tracing::error!(
+                root_cid = %root_cid,
+                error = %e,
+                "{}",
+                crate::i18n::t("bootstrap-manifest-fetch-failed")
+            );
             return (0, None);
         }
     };
 
     let kind_count = hydrate_kind_registry(&manifest, kubo_url, kind_registry).await;
-    tracing::info!(count = %kind_count, "Kind registry hydrated from manifest");
+    tracing::info!(count = %kind_count, "{}", crate::i18n::t("bootstrap-kind-registry-hydrated"));
     let runtime_config = crate::crud::config::public_plugin_config(&manifest, daemon_config);
 
     let mut loaded = 0usize;
@@ -680,13 +708,13 @@ pub async fn load_entities(args: LoadEntitiesArgs<'_>) -> (usize, Option<String>
     match kubo::dag_put(kubo_url, &manifest).await {
         Ok(new_root) => {
             if let Err(e) = kubo::pin_update(kubo_url, root_cid, &new_root).await {
-                tracing::warn!(old = %root_cid, new = %new_root, error = %e, "pin/update failed after lifecycle persist");
+                tracing::warn!(old = %root_cid, new = %new_root, error = %e, "{}", crate::i18n::t("bootstrap-lifecycle-manifest-pin-update-failed"));
             }
-            tracing::info!(root_cid = %new_root, "Published updated manifest after lifecycle transitions");
+            tracing::info!(root_cid = %new_root, "{}", crate::i18n::t("bootstrap-lifecycle-manifest-published"));
             (loaded, Some(new_root))
         }
         Err(e) => {
-            tracing::warn!(error = %e, "Failed to publish manifest after lifecycle transitions");
+            tracing::warn!(error = %e, "{}", crate::i18n::t("bootstrap-lifecycle-manifest-publish-failed"));
             (loaded, None)
         }
     }
@@ -702,7 +730,7 @@ async fn hydrate_kind_registry(
         let raw_kind: KindNode = match kubo::dag_get(kubo_url, &link.cid).await {
             Ok(k) => k,
             Err(e) => {
-                tracing::warn!(protocol = %protocol, cid = %link.cid, "Failed to fetch kind node for registry: {e}");
+                tracing::warn!(protocol = %protocol, cid = %link.cid, error = %e, "{}", crate::i18n::t("bootstrap-kind-registry-fetch-log-failed"));
                 continue;
             }
         };
@@ -710,7 +738,12 @@ async fn hydrate_kind_registry(
             match crate::entity::resolve_kind_extends(kubo_url, manifest, raw_kind).await {
                 Ok(k) => k,
                 Err(e) => {
-                    tracing::warn!(protocol = %protocol, "Failed to resolve kind extends chain for registry: {e}");
+                    tracing::warn!(
+                        protocol = %protocol,
+                        error = %e,
+                        "{}",
+                        crate::i18n::t("bootstrap-kind-registry-extends-failed")
+                    );
                     continue;
                 }
             }
@@ -732,20 +765,38 @@ async fn load_entity_and_kind(
     let node: EntityNode = match kubo::dag_get(kubo_url, &link.cid).await {
         Ok(n) => n,
         Err(e) => {
-            tracing::warn!(name = %name, cid = %link.cid, "Failed to fetch entity node: {e}");
+            tracing::warn!(
+                name = %name,
+                cid = %link.cid,
+                error = %e,
+                "{}",
+                crate::i18n::t("bootstrap-entity-registry-fetch-failed")
+            );
             return None;
         }
     };
 
     let Some(kind_link) = manifest.kinds.get_protocol(&node.kind).cloned() else {
-        tracing::warn!(name = %name, kind = %node.kind, "Kind not found in manifest; skipping entity");
+        tracing::warn!(
+            name = %name,
+            kind = %node.kind,
+            "{}",
+            crate::i18n::t("bootstrap-entity-registry-kind-missing")
+        );
         return None;
     };
 
     let raw_kind: KindNode = match kubo::dag_get(kubo_url, &kind_link.cid).await {
         Ok(k) => k,
         Err(e) => {
-            tracing::warn!(name = %name, kind = %node.kind, cid = %kind_link.cid, "Failed to fetch kind node: {e}");
+            tracing::warn!(
+                name = %name,
+                kind = %node.kind,
+                cid = %kind_link.cid,
+                error = %e,
+                "{}",
+                crate::i18n::t("bootstrap-entity-registry-kind-fetch-failed")
+            );
             return None;
         }
     };
@@ -754,7 +805,13 @@ async fn load_entity_and_kind(
         match crate::entity::resolve_kind_extends(kubo_url, manifest, raw_kind).await {
             Ok(k) => k,
             Err(e) => {
-                tracing::warn!(name = %name, kind = %node.kind, "Failed to resolve kind extends chain: {e}");
+                tracing::warn!(
+                    name = %name,
+                    kind = %node.kind,
+                    error = %e,
+                    "{}",
+                    crate::i18n::t("bootstrap-entity-registry-kind-extends-failed")
+                );
                 return None;
             }
         }
@@ -899,11 +956,11 @@ async fn persist_initialised_transition(
     }
     match kubo::dag_put(args.kubo_url, &updated).await {
         Ok(new_cid) => {
-            tracing::debug!(name = %args.name, cid = %new_cid, "Updated entity lifecycle in IPFS");
+            tracing::debug!(name = %args.name, cid = %new_cid, "{}", crate::i18n::t("bootstrap-entity-lifecycle-updated"));
             Some(IpldLink::new(new_cid))
         }
         Err(e) => {
-            tracing::warn!(name = %args.name, error = %e, "Failed to write updated entity lifecycle to IPFS");
+            tracing::warn!(name = %args.name, error = %e, "{}", crate::i18n::t("bootstrap-entity-lifecycle-update-failed"));
             None
         }
     }
@@ -941,13 +998,13 @@ pub async fn save_all_entity_states(
                         continue;
                     }
                     let Some(entity_link) = manifest.entities.get(name).cloned() else {
-                        tracing::warn!(name = %name, "Entity in registry but not in manifest, skipping");
+                        tracing::warn!(name = %name, "{}", crate::i18n::t("bootstrap-entity-registry-not-in-manifest"));
                         continue;
                     };
                     let mut entity_node: EntityNode = match kubo::dag_get(&kubo_url, &entity_link.cid).await {
                         Ok(n) => n,
                         Err(e) => {
-                            tracing::warn!(name = %name, error = %e, "Failed to fetch entity node for state update");
+                            tracing::warn!(name = %name, error = %e, "{}", crate::i18n::t("bootstrap-entity-state-update-fetch-failed"));
                             continue;
                         }
                     };
@@ -973,7 +1030,7 @@ pub async fn save_all_entity_states(
 
                     match kubo::dag_put(&kubo_url, &entity_node).await {
                         Ok(new_cid) => {
-                            tracing::info!(name = %name, cid = %new_cid, "Updated entity node on shutdown");
+                            tracing::info!(name = %name, cid = %new_cid, "{}", crate::i18n::t("bootstrap-entity-node-shutdown-updated"));
                             manifest
                                 .entities
                                 .insert(name.clone(), IpldLink::new(new_cid));

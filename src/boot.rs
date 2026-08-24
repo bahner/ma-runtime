@@ -321,13 +321,15 @@ async fn resolve_startup_root_cid(
             .context("failed to resolve runtime root CID from IPNS")?;
         require_kinds_overlay_base(kinds_cid, root_cid.as_deref())?;
         if root_cid.is_none() {
-            warn!("No runtime root CID found in IPNS; bootstrapping minimal manifest");
+            warn!("{}", i18n::t("boot-minimal-manifest-not-found"));
             match status::bootstrap_minimal_manifest(&config.kubo_rpc_url, &[]).await {
                 Ok(cid) => {
-                    info!(cid = %cid, "Minimal manifest bootstrapped");
+                    info!(cid = %cid, "{}", i18n::t("boot-minimal-manifest-bootstrapped"));
                     root_cid = Some(cid);
                 }
-                Err(e) => warn!(error = %format!("{e:#}"), "Failed to bootstrap minimal manifest"),
+                Err(e) => {
+                    warn!(error = %format!("{e:#}"), "{}", i18n::t("bootstrap-minimal-manifest-failed"));
+                }
             }
         }
     }
@@ -337,9 +339,9 @@ async fn resolve_startup_root_cid(
             .await
             .context("applying kinds CID overlay failed")?;
         if result.root_cid == rc {
-            info!(changed = 0, "Kinds overlay made no manifest changes");
+            info!(changed = 0, "{}", i18n::t("boot-kinds-overlay-no-change"));
         } else {
-            info!(root_cid = %result.root_cid, changed = result.changed_protocols.len(), "Kinds overlay applied");
+            info!(root_cid = %result.root_cid, changed = result.changed_protocols.len(), "{}", i18n::t("boot-kinds-overlay-applied"));
             root_cid = Some(result.root_cid);
         }
     }
@@ -410,7 +412,7 @@ async fn load_entities_and_scheduler(
             started_at: startup_epoch,
         })
         .await;
-        info!(count = %count, "Entity plugins loaded");
+        info!(count = %count, "{}", i18n::t("boot-entity-load-processed"));
         if let Some(new_rc) = updated_root {
             root_cid = Some(new_rc);
         }
@@ -447,7 +449,7 @@ async fn populate_acl_and_group_caches(
     let m = match manifest {
         Ok(m) => m,
         Err(e) => {
-            warn!(error = %e, "failed to load manifest for ACL cache population");
+            warn!(error = %e, "{}", i18n::t("boot-load-manifest-for-acl-cache-failed"));
             return manifest_owners;
         }
     };
@@ -456,11 +458,11 @@ async fn populate_acl_and_group_caches(
     if let Some(ref link) = m.acl {
         match acl::load_acl_from_cid(&config.kubo_rpc_url, &link.cid).await {
             Ok(manifest_acl) => {
-                info!(cid = %link.cid, "Root transport-gate ACL loaded from manifest");
+                info!(cid = %link.cid, "{}", i18n::t("boot-root-acl-loaded-from-manifest"));
                 *acl.write().await = manifest_acl;
             }
             Err(e) => {
-                warn!(cid = %link.cid, error = %e, "failed to load root ACL from manifest");
+                warn!(cid = %link.cid, error = %e, "{}", i18n::t("boot-root-acl-load-failed"));
             }
         }
     }
@@ -471,11 +473,11 @@ async fn populate_acl_and_group_caches(
     for (name, link) in &m.grp {
         match kubo::dag_get::<Vec<String>>(&config.kubo_rpc_url, &link.cid).await {
             Ok(members) => {
-                info!(name = %name, cid = %link.cid, "Group loaded into cache");
+                info!(name = %name, cid = %link.cid, "{}", i18n::t("boot-group-loaded-into-cache"));
                 group_entries.push((name.clone(), members));
             }
             Err(e) => {
-                warn!(name = %name, cid = %link.cid, error = %e, "failed to load group at startup");
+                warn!(name = %name, cid = %link.cid, error = %e, "{}", i18n::t("boot-group-load-failed"));
             }
         }
     }
@@ -495,11 +497,11 @@ async fn populate_acl_and_group_caches(
         let cache_key = format!("acls.{acl_name}");
         match acl::load_acl_from_cid(&config.kubo_rpc_url, &link.cid).await {
             Ok(acl_map) => {
-                info!(key = %cache_key, cid = %link.cid, "Root ACL loaded into cache");
+                info!(key = %cache_key, cid = %link.cid, "{}", i18n::t("boot-root-acl-loaded-into-cache"));
                 entries.push((cache_key, acl_map));
             }
             Err(e) => {
-                warn!(key = %cache_key, cid = %link.cid, error = %e, "failed to load root ACL at startup");
+                warn!(key = %cache_key, cid = %link.cid, error = %e, "{}", i18n::t("boot-root-acl-load-cache-failed"));
             }
         }
     }
@@ -559,7 +561,7 @@ async fn resolve_and_seed_owners(
     if resolved_owners != owners_from_config {
         if let Some(ref path) = config.config_path {
             if let Err(e) = status::persist_owners_to_config(path, &resolved_owners) {
-                warn!(error = %e, "failed to persist reconciled owners to config.yaml");
+                warn!(error = %e, "{}", i18n::t("boot-reconciled-owners-persist-failed"));
             }
         }
     }
@@ -644,10 +646,10 @@ async fn reconcile_owners_into_manifest(
                 .write()
                 .await
                 .insert("owners".to_string(), merged_owners);
-            info!(cid = %cid, "owners reconciled from config.yaml/--owner into manifest at startup");
+            info!(cid = %cid, "{}", i18n::t("boot-reconciled-owners-published"));
         }
         Err(e) => {
-            warn!(error = %e, "failed to reconcile owners into manifest at startup");
+            warn!(error = %e, "{}", i18n::t("boot-reconciled-owners-manifest-failed"));
         }
     }
 }
@@ -759,12 +761,12 @@ async fn populate_default_config_root(
     our_did: &str,
 ) {
     if !entity_registry.read().await.contains_key("root") {
-        warn!("{}", i18n::t("default-config-root-no-root-entity"));
+        warn!("{}", i18n::t("boot-no-root-entity"));
         return;
     }
 
     let Some(root_cid) = stats.read().await.root_cid.clone() else {
-        warn!("{}", i18n::t("default-config-root-no-root-cid"));
+        warn!("{}", i18n::t("boot-no-root-entity"));
         return;
     };
     match kubo::dag_get::<entity::RuntimeManifest>(kubo_rpc_url, &root_cid).await {
@@ -775,7 +777,7 @@ async fn populate_default_config_root(
         }
         Ok(_) => {}
         Err(e) => {
-            warn!(error = %format!("{e:#}"), "{}", i18n::t("default-config-root-inspect-failed"));
+            warn!(error = %format!("{e:#}"), "{}", i18n::t("boot-default-root-config-populate-failed"));
             return;
         }
     }
@@ -794,9 +796,9 @@ async fn populate_default_config_root(
         })
         .await
     {
-        Ok(cid) => info!(cid = %cid, "{}", i18n::t("default-config-root-populated")),
+        Ok(cid) => info!(cid = %cid, "{}", i18n::t("boot-default-root-config-populated")),
         Err(e) => {
-            warn!(error = %format!("{e:#}"), "{}", i18n::t("default-config-root-populate-failed"));
+            warn!(error = %format!("{e:#}"), "{}", i18n::t("boot-default-root-config-populate-failed"));
         }
     }
 }
@@ -878,10 +880,10 @@ impl Boot {
         // box without manual configuration.
         let bundle_path = config.effective_secret_bundle()?;
         let config = if should_generate_headless_config(&config, &bundle_path) {
-            warn!("No config found.");
-            warn!("Initialising new runtime identity.");
+            warn!("{}", i18n::t("boot-no-config-found"));
+            warn!("{}", i18n::t("boot-initialising-new-identity"));
             generate_and_persist_headless_config(&cli.ma)?;
-            warn!("Generated headless config.");
+            warn!("{}", i18n::t("boot-generated-headless-config"));
             Config::from_args(&cli.ma, MA_DEFAULT_SLUG)?
         } else {
             if !bundle_path.exists() {
@@ -988,18 +990,18 @@ impl Boot {
                 self.cli.root_cid.as_deref(),
             )
             .await?;
-            info!(root_cid = %result.root_cid, "Bootstrap complete");
+            info!(root_cid = %result.root_cid, "{}", i18n::t("bootstrap-complete"));
             self.bootstrap_root_cid = Some(result.root_cid);
         }
 
         if let Some(ref cid) = self.cli.root_cid {
             Cid::try_from(cid.as_str())
-                .with_context(|| format!("invalid --root-cid CID: {cid}"))?;
-            info!(root_cid = %cid, "runtime head reset for this session");
+                .with_context(|| format!("{}: {cid}", i18n::t("boot-root-cid-usage-invalid")))?;
+            info!(root_cid = %cid, "{}", i18n::t("boot-root-cid-reset"));
         }
         if let Some(ref cid) = self.cli.kinds_cid {
             Cid::try_from(cid.as_str())
-                .with_context(|| format!("invalid --kinds-cid CID: {cid}"))?;
+                .with_context(|| format!("{}: {cid}", i18n::t("boot-kinds-cid-usage-invalid")))?;
         }
 
         Ok(ControlFlow::Continue(()))
@@ -1173,13 +1175,13 @@ impl Boot {
                 .ipfs_messages
                 .take()
                 .expect("ipfs inbox exists when publisher is enabled");
-            info!("IPFS publisher service enabled");
+            info!("{}", i18n::t("boot-runtime-ipfs-service-enabled"));
             Some(ipfs::IpfsServiceState::new(
                 messages,
                 self.outbox_backoff_attempts,
             ))
         } else {
-            info!("IPFS publisher service disabled (set ipfs_publisher: true in config to enable)");
+            info!("{}", i18n::t("boot-runtime-ipfs-service-disabled"));
             None
         };
         Ok(())

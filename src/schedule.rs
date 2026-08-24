@@ -281,7 +281,7 @@ async fn dispatch_if_active(
     schedule_kind: &str,
 ) {
     if !active_guard.is_none_or(|is_active| is_active()) {
-        trace!(fragment = %fragment, schedule_id = ?schedule_id, "scheduled dispatch skipped: stale {schedule_kind} schedule");
+        trace!(fragment = %fragment, schedule_id = ?schedule_id, schedule_kind = %schedule_kind, "{}", crate::i18n::t("schedule-stale-dispatch-skipped"));
         return;
     }
     dispatch_scheduled(ctx, fragment, schedule_id.map(String::as_str), content).await;
@@ -315,15 +315,15 @@ fn make_random_job(sched: JobScheduler, args: ScheduleJobArgs, max_secs: u64) ->
                 match make_random_job(sched.clone(), args.clone(), max_secs) {
                     Ok(next) => {
                         if let Err(e) = sched.add(next).await {
-                            warn!(fragment = %args.fragment, error = %e, "failed to reschedule random job");
+                            warn!(fragment = %args.fragment, error = %e, "{}", crate::i18n::t("schedule-random-reschedule-failed"));
                         }
                     }
                     Err(e) => {
-                        warn!(fragment = %args.fragment, error = %e, "failed to create next random job");
+                        warn!(fragment = %args.fragment, error = %e, "{}", crate::i18n::t("schedule-random-create-failed"));
                     }
                 }
             } else {
-                trace!(fragment = %args.fragment, schedule_id = ?args.schedule_id, "random schedule chain stopped: superseded by newer definition");
+                trace!(fragment = %args.fragment, schedule_id = ?args.schedule_id, "{}", crate::i18n::t("schedule-random-chain-stopped"));
             }
         })
     })?)
@@ -383,13 +383,13 @@ pub async fn dispatch_scheduled(
 ) {
     let plugin = ctx.entity_registry.read().await.get(fragment).cloned();
     let Some(plugin) = plugin else {
-        warn!(fragment = %fragment, "scheduled dispatch: entity not found");
+        warn!(fragment = %fragment, "{}", crate::i18n::t("schedule-entity-not-found"));
         return;
     };
 
     // Guard: if this job was registered with a named id, log it for tracing.
     if let Some(id) = schedule_id {
-        tracing::trace!(fragment = %fragment, id = %id, "scheduled dispatch firing");
+        tracing::trace!(fragment = %fragment, id = %id, "{}", crate::i18n::t("schedule-dispatch-firing"));
     }
 
     let now_secs = SystemTime::now()
@@ -425,7 +425,7 @@ pub async fn dispatch_scheduled(
     let result = match result {
         Ok(r) => r,
         Err(e) => {
-            warn!(fragment = %fragment, error = %e, "scheduled dispatch error");
+            warn!(fragment = %fragment, error = %e, "{}", crate::i18n::t("scheduled-dispatch-error"));
             return;
         }
     };
@@ -436,7 +436,8 @@ pub async fn dispatch_scheduled(
         let Some(writer) = writer else {
             warn!(
                 fragment = %fragment,
-                "scheduled dispatch: manifest writer is not ready; entity state remains pending"
+                "{}",
+                crate::i18n::t("scheduled-dispatch-manifest-writer-unavailable")
             );
             return;
         };

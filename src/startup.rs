@@ -35,7 +35,13 @@ pub async fn materialise_plugin_envelope_queue_capacity(
     );
     let new_root_cid = crate::kubo::dag_put(kubo_url, &manifest).await?;
     if let Err(error) = crate::kubo::pin_update(kubo_url, root_cid, &new_root_cid).await {
-        tracing::warn!(old = %root_cid, new = %new_root_cid, error = %error, "manifest pin_update failed");
+        tracing::warn!(
+            old = %root_cid,
+            new = %new_root_cid,
+            error = %error,
+            "{}",
+            crate::i18n::t("manifest-pin-update-failed")
+        );
     }
     Ok((new_root_cid, capacity))
 }

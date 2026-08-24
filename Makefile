@@ -13,8 +13,11 @@ DOCKER_COMPOSE	?= docker compose
 DOCKER_IMAGE	?= bahner/ma
 DOCKER_TAG		?= latest
 MA_VERSION		?=
+DEB_CHANGED_BY	:= $(shell if [ -n "$$DEBFULLNAME" ] && [ -n "$$DEBEMAIL" ]; then printf '%s <%s>' "$$DEBFULLNAME" "$$DEBEMAIL"; else printf '%s' 'ma maintainers <maintainers@ma.invalid>'; fi)
+DEBSIGN_KEYID	?=
+DEB_SIGN_ARGS	:= $(if $(DEBSIGN_KEYID),-k$(DEBSIGN_KEYID))
 
-.PHONY: all clean distclean docker docker-image docker-push install lint publish release test
+.PHONY: all clean deb distclean docker docker-image docker-push install lint publish release test
 
 all: $(BINARY)
 
@@ -26,6 +29,9 @@ lint:
 test:
 	$(CARGO) clippy $(CLIPPY_STRICT)
 	$(CARGO) test --all-features
+
+deb:
+	dpkg-buildpackage -b -nc -d $(DEB_SIGN_ARGS) --changes-option="--changed-by=$(DEB_CHANGED_BY)"
 
 docker:
 	$(DOCKER_COMPOSE) up

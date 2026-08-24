@@ -364,7 +364,12 @@ pub(super) async fn spawn_kind_dependency_reloads_for(
 pub(super) fn spawn_entity_reload(name: String, entity_node: EntityNode, ctx: EntityReloadCtx) {
     tokio::spawn(async move {
         let Ok(_permit) = Arc::clone(&ctx.reload_gate).acquire_owned().await else {
-            warn!(name = %name, kind = %entity_node.kind, "entity reload skipped because reload gate closed");
+            warn!(
+                name = %name,
+                kind = %entity_node.kind,
+                "{}",
+                crate::i18n::t("entity-reload-skipped")
+            );
             return;
         };
         info!(
@@ -372,7 +377,8 @@ pub(super) fn spawn_entity_reload(name: String, entity_node: EntityNode, ctx: En
             kind = %entity_node.kind,
             state_cid = ?entity_node.state.as_ref().map(|link| link.cid.as_str()),
             behaviour_cid = ?entity_node.behaviour.as_ref().map(|link| link.cid.as_str()),
-            "entity reload started"
+            "{}",
+            crate::i18n::t("entity-reload-started")
         );
 
         let Ok(kind_node) = resolve_kind_node_for_reload(&ctx, &name, &entity_node.kind).await
@@ -441,7 +447,13 @@ async fn resolve_kind_node_for_reload(
         Ok(m) => m,
         Err(e) => {
             let reason = format!("failed to load manifest for kind lookup: {e}");
-            warn!(name = %name, kind = %entity_kind, error = %e, "failed to load manifest for kind lookup");
+            warn!(
+                name = %name,
+                kind = %entity_kind,
+                error = %e,
+                "{}",
+                crate::i18n::t("entity-reload-kind-lookup-failed")
+            );
             mark_entity_reload_failed(&ctx.manifest_writer, name, &reason).await;
             return Err(());
         }
@@ -449,7 +461,12 @@ async fn resolve_kind_node_for_reload(
 
     let Some(kind_link) = manifest.kinds.get_protocol(entity_kind).cloned() else {
         let reason = format!("kind '{entity_kind}' is not in manifest; cannot reload entity");
-        warn!(name = %name, kind = %entity_kind, "kind not in manifest; cannot reload entity");
+        warn!(
+            name = %name,
+            kind = %entity_kind,
+            "{}",
+            crate::i18n::t("entity-reload-kind-missing")
+        );
         mark_entity_reload_failed(&ctx.manifest_writer, name, &reason).await;
         return Err(());
     };
@@ -458,7 +475,13 @@ async fn resolve_kind_node_for_reload(
         Ok(k) => k,
         Err(e) => {
             let reason = format!("failed to fetch kind node: {e}");
-            warn!(name = %name, kind = %entity_kind, error = %e, "failed to fetch kind node; cannot reload entity");
+            warn!(
+                name = %name,
+                kind = %entity_kind,
+                error = %e,
+                "{}",
+                crate::i18n::t("entity-reload-kind-fetch-failed")
+            );
             mark_entity_reload_failed(&ctx.manifest_writer, name, &reason).await;
             return Err(());
         }
@@ -469,7 +492,13 @@ async fn resolve_kind_node_for_reload(
             Ok(k) => k,
             Err(e) => {
                 let reason = format!("failed to resolve kind extends chain: {e}");
-                warn!(name = %name, kind = %entity_kind, error = %e, "failed to resolve kind extends chain; cannot reload entity");
+                warn!(
+                    name = %name,
+                    kind = %entity_kind,
+                    error = %e,
+                    "{}",
+                    crate::i18n::t("entity-reload-kind-extends-failed")
+                );
                 mark_entity_reload_failed(&ctx.manifest_writer, name, &reason).await;
                 return Err(());
             }
@@ -497,7 +526,13 @@ async fn refresh_entity_before_reload(
         Ok(Some(cid)) => {
             if let Err(e) = ctx.manifest_writer.set_entity_state(name, &cid).await {
                 let reason = format!("failed to publish current state before reload: {e}");
-                warn!(name = %name, cid = %cid, error = %e, "failed to update manifest with current state before reload; keeping current plugin");
+                warn!(
+                    name = %name,
+                    cid = %cid,
+                    error = %e,
+                    "{}",
+                    crate::i18n::t("entity-reload-manifest-state-update-failed")
+                );
                 mark_entity_reload_failed(&ctx.manifest_writer, name, &reason).await;
                 return Err(());
             }
@@ -505,7 +540,13 @@ async fn refresh_entity_before_reload(
         Ok(None) => {}
         Err(e) => {
             let reason = format!("failed to persist current state before reload: {e}");
-            warn!(name = %name, timeout_ms = ctx.reload_shutdown_timeout.as_millis(), error = %e, "failed to persist current state before reload; keeping current plugin");
+            warn!(
+                name = %name,
+                timeout_ms = ctx.reload_shutdown_timeout.as_millis(),
+                error = %e,
+                "{}",
+                crate::i18n::t("entity-reload-state-persist-failed")
+            );
             mark_entity_reload_failed(&ctx.manifest_writer, name, &reason).await;
             return Err(());
         }
@@ -515,7 +556,12 @@ async fn refresh_entity_before_reload(
         Ok(node) => Ok(node),
         Err(e) => {
             let reason = format!("failed to reload current entity node after saving state: {e}");
-            warn!(name = %name, error = %e, "failed to load current entity node before reload; keeping current plugin");
+            warn!(
+                name = %name,
+                error = %e,
+                "{}",
+                crate::i18n::t("entity-reload-current-node-load-failed")
+            );
             mark_entity_reload_failed(&ctx.manifest_writer, name, &reason).await;
             Err(())
         }
@@ -535,7 +581,12 @@ async fn finish_reload(
         Ok((ep, lifecycle)) => {
             if lifecycle == crate::entity::Lifecycle::Error && current_entity.is_some() {
                 let reason = "plugin lifecycle returned error during reload";
-                error!(name = %name, reason, "entity failed to reload; unloading until next reload");
+                error!(
+                    name = %name,
+                    reason,
+                    "{}",
+                    crate::i18n::t("entity-reload-failed")
+                );
                 ctx.entity_registry.write().await.remove(name);
                 if let Some(current) = current_entity {
                     current.terminate_worker();
@@ -546,7 +597,12 @@ async fn finish_reload(
             let replacement_state_cid = match ep.trigger_save(&ctx.kubo_rpc_url).await {
                 Ok(cid) => cid,
                 Err(e) => {
-                    warn!(name = %name, error = %e, "failed to persist state produced during reload");
+                    warn!(
+                        name = %name,
+                        error = %e,
+                        "{}",
+                        crate::i18n::t("entity-reload-state-produced-failed")
+                    );
                     None
                 }
             };
@@ -565,10 +621,20 @@ async fn finish_reload(
                     .await
                 {
                     Ok(root_cid) => {
-                        info!(name = %name, root_cid = %root_cid, "updated reloaded entity in manifest");
+                        info!(
+                            name = %name,
+                            root_cid = %root_cid,
+                            "{}",
+                            crate::i18n::t("entity-reloaded-manifest-updated")
+                        );
                     }
                     Err(e) => {
-                        warn!(name = %name, error = %e, "failed to update reloaded entity in manifest");
+                        warn!(
+                            name = %name,
+                            error = %e,
+                            "{}",
+                            crate::i18n::t("entity-reloaded-manifest-update-failed")
+                        );
                     }
                 }
             }
@@ -578,7 +644,8 @@ async fn finish_reload(
             error!(
                 name = %name,
                 error = %e,
-                "entity failed to reload; unloading until next reload"
+                "{}",
+                crate::i18n::t("entity-reload-failed")
             );
             ctx.entity_registry.write().await.remove(name);
             if let Some(current) = current_entity {

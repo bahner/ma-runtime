@@ -1,0 +1,17 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    configure)
+        if ! getent group ma >/dev/null; then
+            addgroup --system ma
+        fi
+        if ! getent passwd ma >/dev/null; then
+            adduser --system --ingroup ma --no-create-home --home /nonexistent \
+                --shell /usr/sbin/nologin ma
+        fi
+        systemd-tmpfiles --create /usr/lib/tmpfiles.d/ma.conf
+        ;;
+esac
+
+#DEBHELPER#

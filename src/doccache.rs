@@ -73,11 +73,6 @@ impl RuntimeDidResolver {
         self.cache.insert_published(did, document).await
     }
 
-    /// Backward-compatible alias used by older call sites.
-    pub async fn insert_published(&self, did: &str, document: Document) -> ma_core::Result<()> {
-        self.insert_known(did, document).await
-    }
-
     pub async fn refresh(&self, did: &str) -> ma_core::Result<Document> {
         let document = self.refresh_resolver.resolve(did).await?;
         self.cache.merge_resolved(did, document).await
@@ -217,7 +212,7 @@ mod tests {
         let refresh = stub(document("2026-08-24T10:00:00Z"));
         let resolver = RuntimeDidResolver::new(normal.clone(), refresh);
         resolver
-            .insert_published(&format!("{TEST_DID}#rpc"), document("2026-08-24T11:00:00Z"))
+            .insert_known(&format!("{TEST_DID}#rpc"), document("2026-08-24T11:00:00Z"))
             .await
             .unwrap();
 
@@ -246,7 +241,7 @@ mod tests {
         let refresh = stub(document("2026-08-24T09:00:00Z"));
         let resolver = RuntimeDidResolver::new(normal, refresh.clone());
         resolver
-            .insert_published(TEST_DID, document("2026-08-24T10:00:00Z"))
+            .insert_known(TEST_DID, document("2026-08-24T10:00:00Z"))
             .await
             .unwrap();
 
@@ -262,7 +257,7 @@ mod tests {
         let refresh = stub(document("2026-08-24T11:00:00Z"));
         let resolver = RuntimeDidResolver::new(normal, refresh);
         resolver
-            .insert_published(TEST_DID, document("2026-08-24T10:00:00Z"))
+            .insert_known(TEST_DID, document("2026-08-24T10:00:00Z"))
             .await
             .unwrap();
 
@@ -277,7 +272,7 @@ mod tests {
         let refresh = stub(document("2026-08-24T11:00:00Z"));
         let resolver = Arc::new(RuntimeDidResolver::new(normal, refresh.clone()));
         resolver
-            .insert_published(TEST_DID, document("2026-08-24T10:00:00Z"))
+            .insert_known(TEST_DID, document("2026-08-24T10:00:00Z"))
             .await
             .unwrap();
         let (sender, receiver) = watch::channel(DEFAULT_DID_REFRESH_INTERVAL_SECS);
@@ -297,7 +292,7 @@ mod tests {
         let refresh = stub(document("2026-08-24T11:00:00Z"));
         let resolver = Arc::new(RuntimeDidResolver::new(normal, refresh.clone()));
         resolver
-            .insert_published(TEST_DID, document("2026-08-24T10:00:00Z"))
+            .insert_known(TEST_DID, document("2026-08-24T10:00:00Z"))
             .await
             .unwrap();
         let (sender, receiver) = watch::channel(0);

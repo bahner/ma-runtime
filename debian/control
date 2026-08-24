@@ -1,0 +1,16 @@
+Source: ma-runtime
+Section: net
+Priority: optional
+Maintainer: Lars Bahner <bahner@debian.org>
+Build-Depends: debhelper-compat (= 13), cargo, rustc, pkg-config
+Standards-Version: 4.7.0
+Rules-Requires-Root: no
+Homepage: https://github.com/bahner/ma-runtime
+
+Package: ma
+Architecture: any
+Depends: ${misc:Depends}, ${shlibs:Depends}, adduser
+Recommends: logrotate
+Description: decentralised ma runtime daemon
+ The ma runtime hosts Wasm entities, publishes its did:ma identity through
+ IPFS/IPNS, and exchanges signed, encrypted messages over iroh.

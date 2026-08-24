@@ -1,0 +1,2 @@
+d /etc/ma 0700 ma ma -
+d /var/log/ma 0700 ma ma -

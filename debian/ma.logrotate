@@ -1,0 +1,10 @@
+/var/log/ma/*.log {
+    weekly
+    rotate 12
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0600 ma ma
+    copytruncate
+}

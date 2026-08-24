@@ -63,6 +63,32 @@ chmod +x ma
 mv ma ~/.local/bin/
 ```
 
+To build a Debian package from a source checkout, install the package build
+dependencies and run:
+
+```sh
+make deb
+```
+
+Install the resulting `../ma_*.deb`. The package creates and enables
+`ma.service`, which runs as the dedicated `ma` system user. Its configuration
+and encrypted key bundle live in `/etc/ma`; logs are written to
+`/var/log/ma/ma.log` and rotated weekly. Use `systemctl status ma` and
+`journalctl -u ma` to inspect the service.
+
+`make deb` uses the active Rust toolchain and skips only Debian's package
+database check. This supports a current Rust toolchain installed outside APT;
+the package metadata still declares the dependencies required by a standard
+Debian build environment. It reuses existing Cargo artefacts; `make clean`
+performs an explicit clean build reset.
+
+Set `DEBFULLNAME` and `DEBEMAIL` before building to set the generated package
+change metadata, for example `DEBFULLNAME='Ada Example' DEBEMAIL=ada@example.org
+make deb`.
+
+`make deb` signs the generated Debian files using the default GPG signing key.
+Set `DEBSIGN_KEYID` to a key fingerprint when a specific signing key is needed.
+
 **macOS:** same as Linux.  You may need to right-click → Open the first time
 to bypass the Gatekeeper quarantine warning.
 

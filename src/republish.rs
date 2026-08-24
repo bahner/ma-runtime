@@ -52,7 +52,12 @@ pub fn spawn_periodic_did_publish(context: PeriodicDidPublishContext) {
             if publish_current_root(&context, &latest_root_cid, cid_changed).await {
                 let mut config = context.shared_config.write().await;
                 if let Err(err) = crate::startup::persist_root_cid(&mut config, &latest_root_cid) {
-                    warn!(root_cid = %latest_root_cid, error = %err, "failed to persist root_cid after periodic republish");
+                    warn!(
+                        root_cid = %latest_root_cid,
+                        error = %err,
+                        "{}",
+                        crate::i18n::t("bootstrap-root-pin-update-failed")
+                    );
                 }
                 last_published_cid = Some(latest_root_cid);
                 last_published_at = Instant::now();
@@ -83,14 +88,14 @@ fn build_did_publish_payload(
     let runtime_cid = match Cid::try_from(latest_root_cid) {
         Ok(cid) => cid,
         Err(err) => {
-            warn!(cid = %latest_root_cid, error = %err, "invalid root_cid for periodic DID publish");
+            warn!(cid = %latest_root_cid, error = %err, "{}", crate::i18n::t("bootstrap-root-pin-update-failed"));
             return None;
         }
     };
     let mut bundle = match SecretBundle::load(&context.bundle_path, &context.passphrase) {
         Ok(bundle) => bundle,
         Err(err) => {
-            error!(error = %format!("{err:#}"), "periodic DID load secret bundle failed");
+            error!(error = %format!("{err:#}"), "{}", crate::i18n::t("bootstrap-root-pin-update-failed"));
             return None;
         }
     };
@@ -102,14 +107,14 @@ fn build_did_publish_payload(
     let document = match bundle.build_document(ma) {
         Ok(document) => document,
         Err(err) => {
-            error!(error = %format!("{err:#}"), "periodic DID build failed");
+            error!(error = %format!("{err:#}"), "{}", crate::i18n::t("bootstrap-root-pin-update-failed"));
             return None;
         }
     };
     let doc_cbor = match document.encode() {
         Ok(bytes) => bytes,
         Err(err) => {
-            error!(error = %format!("{err:#}"), "periodic DID encode failed");
+            error!(error = %format!("{err:#}"), "{}", crate::i18n::t("bootstrap-root-pin-update-failed"));
             return None;
         }
     };
@@ -144,15 +149,15 @@ async fn publish_did_document(
     .await;
     match publish {
         Ok(Ok(())) => {
-            info!(runtime_cid = %latest_root_cid, cid_changed, "periodic DID publish succeeded");
+            info!(runtime_cid = %latest_root_cid, cid_changed, "{}", crate::i18n::t("bootstrap-runtime-manifest-published"));
             true
         }
         Ok(Err(err)) => {
-            error!(runtime_cid = %latest_root_cid, error = %format!("{err:#}"), "periodic DID publish failed");
+            error!(runtime_cid = %latest_root_cid, error = %format!("{err:#}"), "{}", crate::i18n::t("bootstrap-runtime-manifest-published"));
             false
         }
         Err(_) => {
-            error!(runtime_cid = %latest_root_cid, "periodic DID publish timed out");
+            error!(runtime_cid = %latest_root_cid, "{}", crate::i18n::t("bootstrap-root-pin-update-failed"));
             false
         }
     }
@@ -176,15 +181,15 @@ async fn publish_runtime_ipns(
     .await
     {
         Ok(Ok(_)) => {
-            info!(runtime_cid = %latest_root_cid, cid_changed, "periodic runtime_ipns publish succeeded");
+            info!(runtime_cid = %latest_root_cid, cid_changed, "{}", crate::i18n::t("bootstrap-root-pin-update-failed"));
             true
         }
         Ok(Err(err)) => {
-            error!(runtime_cid = %latest_root_cid, error = %format!("{err:#}"), "periodic runtime_ipns publish failed");
+            error!(runtime_cid = %latest_root_cid, error = %format!("{err:#}"), "{}", crate::i18n::t("bootstrap-root-pin-update-failed"));
             false
         }
         Err(_) => {
-            error!(runtime_cid = %latest_root_cid, "periodic runtime_ipns publish timed out");
+            error!(runtime_cid = %latest_root_cid, "{}", crate::i18n::t("bootstrap-root-pin-update-failed"));
             false
         }
     }

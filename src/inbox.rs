@@ -28,7 +28,8 @@ pub async fn handle_inbox_message(message: &ma_core::Message, ctx: &InboxHandler
             to = %message.to,
             id = %message.id,
             message_type = %message.message_type,
-            "inbox: empty payload dropped"
+            "{}",
+            crate::i18n::t("inbox-empty-payload-dropped")
         );
         return Ok(());
     }
@@ -40,7 +41,8 @@ pub async fn handle_inbox_message(message: &ma_core::Message, ctx: &InboxHandler
             from = %message.from,
             to = %message.to,
             message_type = %message.message_type,
-            "inbox: unfragmented message dropped"
+            "{}",
+            crate::i18n::t("inbox-unfragmented-dropped")
         );
         return Ok(());
     };
@@ -48,7 +50,7 @@ pub async fn handle_inbox_message(message: &ma_core::Message, ctx: &InboxHandler
     let entity = ctx.entity_registry.read().await.get(fragment).cloned();
 
     let Some(entity) = entity else {
-        warn!(fragment = %fragment, "inbox: unknown entity fragment; dropped");
+        warn!(fragment = %fragment, "{}", crate::i18n::t("inbox-unknown-entity"));
         return Ok(());
     };
 
@@ -56,7 +58,8 @@ pub async fn handle_inbox_message(message: &ma_core::Message, ctx: &InboxHandler
         fragment = %fragment,
         from = %message.from,
         message_type = %message.message_type,
-        "inbox: dispatching to entity"
+        "{}",
+        crate::i18n::t("inbox-dispatching")
     );
 
     let local_msg = LocalMessage {
@@ -84,7 +87,7 @@ pub async fn handle_inbox_message(message: &ma_core::Message, ctx: &InboxHandler
     }
 
     if !result.behaviour_requests.is_empty() {
-        warn!(fragment = %entity.fragment, "inbox: ma_set_behaviour requests are ignored on fire-and-forget inbox dispatch");
+        warn!(fragment = %entity.fragment, "{}", crate::i18n::t("inbox-behaviour-ignored"));
     }
 
     Ok(())

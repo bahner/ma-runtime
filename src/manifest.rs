@@ -77,7 +77,7 @@ impl ManifestWriter {
         let inner = &self.inner;
         let new_cid = crate::kubo::dag_put(&inner.kubo_url, manifest).await?;
         if let Err(e) = crate::kubo::pin_update(&inner.kubo_url, &old_cid, &new_cid).await {
-            warn!(old = %old_cid, new = %new_cid, error = %e, "manifest pin_update failed");
+            warn!(old = %old_cid, new = %new_cid, error = %e, "{}", crate::i18n::t("manifest-pin-update-failed"));
         }
 
         guard.cid.clone_from(&new_cid);

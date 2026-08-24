@@ -128,7 +128,13 @@ async fn dispatch_local_plugin_envelope(args: LocalDispatchArgs) {
         }
     }
     let Some(entity) = entity else {
-        warn!(fragment = %sender_fragment, to = %env.to, target = %target_fragment, "plugin envelope: unknown local recipient; skipped");
+        warn!(
+            fragment = %sender_fragment,
+            to = %env.to,
+            target = %target_fragment,
+            "{}",
+            crate::i18n::t("plugin-envelope-local-recipient-unknown")
+        );
         return;
     };
 
@@ -155,7 +161,8 @@ async fn dispatch_local_plugin_envelope(args: LocalDispatchArgs) {
         id = %local_msg.id,
         reply_to = ?local_msg.reply_to,
         msg_type = %local_msg.message_type,
-        "plugin envelope: local dispatch start"
+        "{}",
+        crate::i18n::t("plugin-envelope-local-dispatch-start")
     );
     let result = match entity.on_message(&cast_input).await {
         Ok(result) => {
@@ -165,12 +172,19 @@ async fn dispatch_local_plugin_envelope(args: LocalDispatchArgs) {
                 from = %local_msg.from,
                 to = %local_msg.to,
                 id = %local_msg.id,
-                "plugin envelope: local dispatch finish"
+                "{}",
+                crate::i18n::t("plugin-envelope-local-dispatch-finish")
             );
             result
         }
         Err(err) => {
-            warn!(fragment = %target_fragment, from = %local_msg.from, error = %err, "plugin envelope: local dispatch failed");
+            warn!(
+                fragment = %target_fragment,
+                from = %local_msg.from,
+                error = %err,
+                "{}",
+                crate::i18n::t("plugin-envelope-local-dispatch-failed")
+            );
             return;
         }
     };
@@ -198,7 +212,8 @@ async fn dispatch_local_plugin_envelope(args: LocalDispatchArgs) {
     } else if !result.create_requests.is_empty() {
         warn!(
             count = result.create_requests.len(),
-            "plugin envelope: create requests ignored without side-effect context"
+            "{}",
+            crate::i18n::t("plugin-envelope-create-requests-ignored")
         );
     }
 }
@@ -227,8 +242,12 @@ async fn handle_create_request(
     let entity_registry = ctx.entity_registry;
     let _creation_guard = side_effects.entity_creation_gate.lock().await;
     if entity_registry.read().await.contains_key(&req.fragment) {
-        debug!(fragment = %req.fragment, kind = %req.kind_protocol,
-            "ma_create_entity: entity already exists; keeping current entity");
+        debug!(
+            fragment = %req.fragment,
+            kind = %req.kind_protocol,
+            "{}",
+            crate::i18n::t("ma-create-entity-already-exists")
+        );
         return;
     }
     let maybe_kind = side_effects
@@ -238,8 +257,12 @@ async fn handle_create_request(
         .get(&req.kind_protocol)
         .cloned();
     let Some(kind_node) = maybe_kind else {
-        warn!(caller = %entity.fragment, kind = %req.kind_protocol,
-            "ma_create_entity: kind not in registry; skipped");
+        warn!(
+            caller = %entity.fragment,
+            kind = %req.kind_protocol,
+            "{}",
+            crate::i18n::t("ma-create-entity-kind-missing")
+        );
         return;
     };
 
@@ -253,8 +276,13 @@ async fn handle_create_request(
         {
             Ok(value) => value.as_deref().map(IpldLink::new),
             Err(e) => {
-                warn!(fragment = %req.fragment, kind = %req.kind_protocol, error = %e,
-                    "ma_create_entity: invalid behaviour reference; skipped");
+                warn!(
+                    fragment = %req.fragment,
+                    kind = %req.kind_protocol,
+                    error = %e,
+                    "{}",
+                    crate::i18n::t("ma-create-entity-invalid-behaviour")
+                );
                 return;
             }
         },
@@ -693,7 +721,7 @@ impl EventLoopState {
             .await
             .unwrap_or_else(|_| Err(anyhow::anyhow!("crud handler timed out")))
             {
-                warn!(error = %err, from = %message.from, "CRUD message rejected");
+                warn!(error = %err, from = %message.from, "{}", i18n::t("crud-message-rejected"));
             }
             message.content.zeroize();
             message.signature.zeroize();
@@ -731,7 +759,7 @@ impl EventLoopState {
                 .await
                 .unwrap_or_else(|_| Err(anyhow::anyhow!("inbox handler timed out")))
                 {
-                    warn!(error = %err, from = %message.from, "inbox message rejected");
+                    warn!(error = %err, from = %message.from, "{}", i18n::t("inbox-message-rejected"));
                 }
                 message.content.zeroize();
                 message.signature.zeroize();
@@ -767,7 +795,8 @@ impl EventLoopState {
             // Normal backpressure — more envelopes arrive next tick.
             tracing::debug!(
                 budget = PLUGIN_OUTBOX_DRAIN_BUDGET,
-                "plugin outbox drain budget exhausted; deferring remaining envelopes"
+                "{}",
+                i18n::t("plugin-outbox-drain-limit")
             );
             // Warn only when the channel is more than 75% full — sustained overload.
             let remaining = self.envelope_tx.capacity();
@@ -776,7 +805,8 @@ impl EventLoopState {
                 warn!(
                     queued = max - remaining,
                     capacity = max,
-                    "plugin outbox congested; envelopes may be dropped if channel fills"
+                    "{}",
+                    i18n::t("plugin-outbox-congested")
                 );
             }
         }
@@ -814,7 +844,7 @@ impl EventLoopState {
             .acquire_owned()
             .await
         else {
-            warn!(fragment = %fragment, target = %target_fragment, "plugin envelope: local dispatch gate closed");
+            warn!(fragment = %fragment, target = %target_fragment, "{}", i18n::t("plugin-envelope-local-gate-closed"));
             return;
         };
         let args = LocalDispatchArgs {
@@ -837,7 +867,7 @@ impl EventLoopState {
             .await
             .is_err()
             {
-                warn!(fragment = %fragment, target = %target_fragment, "plugin envelope: local dispatch timed out");
+                warn!(fragment = %fragment, target = %target_fragment, "{}", i18n::t("plugin-envelope-local-timeout"));
             }
         });
     }
@@ -850,7 +880,7 @@ impl EventLoopState {
         let recipient = match Did::try_from(env.to.as_str()) {
             Ok(d) => d,
             Err(e) => {
-                warn!(fragment = %fragment, to = %env.to, error = %e, "plugin envelope: invalid recipient DID; skipped");
+                warn!(fragment = %fragment, to = %env.to, error = %e, "{}", i18n::t("plugin-envelope-recipient-invalid"));
                 return;
             }
         };
@@ -876,7 +906,7 @@ impl EventLoopState {
         let msg = match message {
             Ok(m) => m,
             Err(e) => {
-                warn!(fragment = %fragment, error = %e, "plugin envelope: failed to build message; skipped");
+                warn!(fragment = %fragment, error = %e, "{}", i18n::t("plugin-envelope-build-failed"));
                 return;
             }
         };
@@ -893,7 +923,7 @@ impl EventLoopState {
         let base = recipient.base_id();
         let did_resolve = self.did_resolve;
         let Ok(permit) = self.remote_plugin_delivery_gate.clone().try_acquire_owned() else {
-            debug!(fragment = %fragment, to = %env.to, limit = REMOTE_PLUGIN_DELIVERY_LIMIT, "plugin envelope: remote delivery limit reached; envelope dropped");
+            debug!(fragment = %fragment, to = %env.to, limit = REMOTE_PLUGIN_DELIVERY_LIMIT, "{}", i18n::t("plugin-envelope-remote-limit"));
             return;
         };
         tokio::spawn(async move {
@@ -924,11 +954,11 @@ impl EventLoopState {
             match outbox_result {
                 Ok(mut outbox) => {
                     if let Err(e) = outbox.send(&msg).await {
-                        warn!(fragment = %fragment, to = %env.to, error = %e, "plugin envelope delivery failed; dropping envelope");
+                        warn!(fragment = %fragment, to = %env.to, error = %e, "{}", i18n::t("bootstrap-envelope-delivery-failed"));
                     }
                 }
                 Err(e) => {
-                    debug!(fragment = %fragment, to = %env.to, error = %e, "plugin envelope: outbox open failed; dropping envelope");
+                    debug!(fragment = %fragment, to = %env.to, error = %e, "{}", i18n::t("bootstrap-envelope-open-failed"));
                 }
             }
         });
@@ -966,8 +996,8 @@ impl EventLoopState {
                     info!(cid = %new_cid, "{}", i18n::t("entity-states-saved"));
                 }
                 Err(e) => {
-                    error!(error = %e, "Failed to save entity states");
-                    error!("shutdown aborted; runtime remains active so state can be saved on a later shutdown attempt");
+                    error!(error = %e, "{}", i18n::t("bootstrap-entity-state-save-failed"));
+                    error!("{}", i18n::t("bootstrap-entity-state-shutdown-aborted"));
                     return false;
                 }
             }
@@ -977,7 +1007,7 @@ impl EventLoopState {
         {
             let mut config = self.shared_config.write().await;
             if let Err(err) = crate::startup::persist_root_cid(&mut config, &latest_root_cid) {
-                error!(root_cid = %latest_root_cid, error = %err, "failed to persist root_cid during shutdown");
+                error!(root_cid = %latest_root_cid, error = %err, "{}", i18n::t("bootstrap-root-cid-shutdown-persist-failed"));
             }
         }
         match tokio::time::timeout(
@@ -993,13 +1023,13 @@ impl EventLoopState {
         .await
         {
             Ok(Ok(_)) => {
-                info!(runtime_cid = %latest_root_cid, "shutdown runtime_ipns publish succeeded");
+                info!(runtime_cid = %latest_root_cid, "{}", i18n::t("bootstrap-root-cid-shutdown-publish-succeeded"));
             }
             Ok(Err(err)) => {
-                error!(runtime_cid = %latest_root_cid, error = %format!("{err:#}"), "shutdown runtime_ipns publish failed");
+                error!(runtime_cid = %latest_root_cid, error = %format!("{err:#}"), "{}", i18n::t("bootstrap-root-cid-shutdown-publish-failed"));
             }
             Err(_) => {
-                error!(runtime_cid = %latest_root_cid, "shutdown runtime_ipns publish timed out");
+                error!(runtime_cid = %latest_root_cid, "{}", i18n::t("bootstrap-root-cid-shutdown-publish-timeout"));
             }
         }
 
@@ -1021,13 +1051,11 @@ impl EventLoopState {
                     .await
                     .is_err()
                 {
-                    warn!("endpoint close timed out after 5 s; forcing exit");
+                    warn!("{}", i18n::t("bootstrap-endpoint-close-timeout"));
                 }
             }
             None => {
-                warn!(
-                    "endpoint still held by in-flight tasks after 10 s; dropping without graceful close"
-                );
+                warn!("{}", i18n::t("bootstrap-endpoint-close-stuck"));
             }
         }
         info!("{}", i18n::t("shutdown-complete"));
