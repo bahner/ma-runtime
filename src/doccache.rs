@@ -66,8 +66,16 @@ impl RuntimeDidResolver {
         }
     }
 
-    pub async fn insert_published(&self, did: &str, document: Document) -> ma_core::Result<()> {
+    /// Any document the runtime has already received and validated locally is
+    /// authoritative, even if it has not yet reached the public IPFS/IPNS layer
+    /// or a gateway refresh is temporarily unavailable.
+    pub async fn insert_known(&self, did: &str, document: Document) -> ma_core::Result<()> {
         self.cache.insert_published(did, document).await
+    }
+
+    /// Backward-compatible alias used by older call sites.
+    pub async fn insert_published(&self, did: &str, document: Document) -> ma_core::Result<()> {
+        self.insert_known(did, document).await
     }
 
     pub async fn refresh(&self, did: &str) -> ma_core::Result<Document> {
@@ -167,12 +175,24 @@ mod tests {
         called: Notify,
     }
 
+    struct RejectingResolver;
+
     #[async_trait]
     impl DidDocumentResolver for StubResolver {
         async fn resolve(&self, _did: &str) -> ma_core::Result<Document> {
             self.calls.fetch_add(1, Ordering::Relaxed);
             self.called.notify_one();
             Ok(self.document.clone())
+        }
+    }
+
+    #[async_trait]
+    impl DidDocumentResolver for RejectingResolver {
+        async fn resolve(&self, _did: &str) -> ma_core::Result<Document> {
+            Err(ma_core::Error::Resolution {
+                did: _did.to_string(),
+                detail: "remote DID resolution intentionally failed".to_string(),
+            })
         }
     }
 
@@ -205,6 +225,19 @@ mod tests {
 
         assert_eq!(document.updated_at, "2026-08-24T11:00:00Z");
         assert_eq!(normal.calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn known_local_document_is_used_even_when_remote_resolution_fails() {
+        let normal = Arc::new(RejectingResolver);
+        let refresh = Arc::new(RejectingResolver);
+        let resolver = RuntimeDidResolver::new(normal, refresh);
+        let received = document("2026-08-24T11:00:00Z");
+        resolver.insert_known(TEST_DID, received.clone()).await.unwrap();
+
+        let resolved = resolver.resolve(TEST_DID).await.unwrap();
+
+        assert_eq!(resolved.updated_at, "2026-08-24T11:00:00Z");
     }
 
     #[tokio::test]

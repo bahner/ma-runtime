@@ -876,7 +876,7 @@ async fn handle_did_document_publish(
     let sender_for_cache = ma_core::Did::try_from(message.from.as_str())
         .with_context(|| format!("invalid sender DID: {}", message.from))?;
     ctx.resolver
-        .insert_published(&sender_for_cache.base_id(), document.clone())
+        .insert_known(&sender_for_cache.base_id(), document.clone())
         .await
         .context("caching verified DID document")?;
     ctx.outbox_state
