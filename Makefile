@@ -4,8 +4,7 @@ RELEASE  			:= target/release/$(BINARY)
 DEBUG    			:= target/debug/$(BINARY)
 CLIPPY_STRICT := --all-targets --all-features -- -D warnings -W clippy::pedantic -W clippy::nursery
 SRCS					:= Cargo.toml Cargo.lock src/i18n.yaml $(shell find src -name '*.rs')
-PREFIX   			?= $(HOME)/.local/bin
-PUBLISH  			:= ma:bin/
+PREFIX   			?= /usr//bin
 PUBLISH_SH    := .publish.sh
 RUN_ARGS			?=
 DOCKER			?= docker
@@ -31,7 +30,7 @@ test:
 	$(CARGO) test --all-features
 
 deb:
-	dpkg-buildpackage -b -nc -d $(DEB_SIGN_ARGS) --changes-option="--changed-by=$(DEB_CHANGED_BY)"
+	dpkg-buildpackage -b -nc -d $(DEB_SIGN_ARGS) --changed-by="$(DEB_CHANGED_BY)"
 
 docker:
 	$(DOCKER_COMPOSE) up
@@ -69,18 +68,18 @@ clean:
 	$(CARGO) clean
 
 install: $(RELEASE)
-	mkdir -p $(PREFIX)
-	install -m 0755 $(RELEASE) $(PREFIX)/$(BINARY)
+	sudo mkdir -p $(PREFIX)
+	sudo install -m 0755 $(RELEASE) $(PREFIX)/$(BINARY)
 
 publish: $(RELEASE)
-	scp $(RELEASE) $(PUBLISH)
 	test -f $(PUBLISH_SH) && bash $(PUBLISH_SH)
 
 release:
 	@test -n "$(MA_VERSION)" || { echo "MA_VERSION is required (for example: make release MA_VERSION=0.0.1)" >&2; exit 2; }
 	$(CARGO) build --release
 	cargo release $(MA_VERSION) --no-confirm --no-publish --execute
-	scp $(RELEASE) $(PUBLISH)
+	scp $(RELEASE) $(PUBLISH_HOST):$(PUBLISH_PATH).tmp
+	ssh $(PUBLISH_HOST) 'mv -f $(PUBLISH_PATH).tmp $(PUBLISH_PATH)'
 	test -f $(PUBLISH_SH) && bash $(PUBLISH_SH)
 	$(MAKE) docker-push DOCKER_TAG=$(MA_VERSION)
 
