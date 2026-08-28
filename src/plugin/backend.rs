@@ -8,7 +8,7 @@
 
 use anyhow::{anyhow, Result};
 use extism::{host_fn, Function, Manifest, Plugin, PluginBuilder, UserData, Wasm, PTR};
-use rand::{rngs::OsRng, RngCore};
+use rand::{rngs::SysRng, TryRng};
 use tokio::sync::{
     mpsc::{Receiver, Sender},
     oneshot,
@@ -25,11 +25,11 @@ use super::{DispatchResult, EntityMsg, EntityRegistry, NativeActor, NativeSignal
 
 /// Generate an 8-character URL-safe alphanumeric fragment (nanoid-style).
 fn generate_fragment() -> String {
-    use rand::Rng;
+    use rand::RngExt;
     const ALPHABET: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     (0..8)
-        .map(|_| ALPHABET[rng.gen_range(0..ALPHABET.len())] as char)
+        .map(|_| ALPHABET[rng.random_range(0..ALPHABET.len())] as char)
         .collect()
 }
 
@@ -49,7 +49,7 @@ fn secure_random_bytes(input: &[u8]) -> Result<Vec<u8>> {
     }
 
     let mut bytes = vec![0; requested];
-    OsRng
+    SysRng
         .try_fill_bytes(&mut bytes)
         .map_err(|error| anyhow!("ma_random_bytes: operating system entropy failed: {error}"))?;
     Ok(bytes)

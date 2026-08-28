@@ -330,8 +330,8 @@ fn make_random_job(sched: JobScheduler, args: ScheduleJobArgs, max_secs: u64) ->
 }
 
 fn rand_delay(max_secs: u64) -> Duration {
-    use rand::Rng;
-    let secs = rand::thread_rng().gen_range(1..=max_secs.max(1));
+    use rand::RngExt;
+    let secs = rand::rng().random_range(1..=max_secs.max(1));
     Duration::from_secs(secs)
 }
 

@@ -29,7 +29,7 @@ use crate::entity::{
 };
 use crate::ipfs::IpfsServiceState;
 use crate::manifest::ManifestWriter;
-use crate::plugin::EntityRegistry;
+use crate::plugin::{EntityPlugin, EntityRegistry};
 use crate::routing::{local_actor_url, local_target_fragment};
 use crate::status::SharedStats;
 use crate::{bootstrap, crud, i18n, inbox, ipfs, rpc, status};
@@ -104,6 +104,24 @@ struct LocalDispatchArgs {
     side_effects: Option<LocalSideEffectCtx>,
 }
 
+/// Look up the target entity with brief retries so a plugin that is still
+/// being loaded becomes reachable.
+async fn lookup_local_entity(
+    entity_registry: &EntityRegistry,
+    target_fragment: &str,
+) -> Option<Arc<EntityPlugin>> {
+    for attempt in 0..40 {
+        let entity = entity_registry.read().await.get(target_fragment).cloned();
+        if entity.is_some() {
+            return entity;
+        }
+        if attempt < 39 {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+    None
+}
+
 async fn dispatch_local_plugin_envelope(args: LocalDispatchArgs) {
     let LocalDispatchArgs {
         sender_fragment,
@@ -117,17 +135,7 @@ async fn dispatch_local_plugin_envelope(args: LocalDispatchArgs) {
         side_effects,
     } = args;
 
-    let mut entity = None;
-    for attempt in 0..40 {
-        entity = entity_registry.read().await.get(&target_fragment).cloned();
-        if entity.is_some() {
-            break;
-        }
-        if attempt < 39 {
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-    }
-    let Some(entity) = entity else {
+    let Some(entity) = lookup_local_entity(&entity_registry, &target_fragment).await else {
         warn!(
             fragment = %sender_fragment,
             to = %env.to,

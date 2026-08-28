@@ -481,7 +481,7 @@ mod tests {
         }
 
         let app = Router::new()
-            .route("/ipns/:id", get(serve_doc))
+            .route("/ipns/{id}", get(serve_doc))
             .with_state(Arc::new(doc_bytes));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();

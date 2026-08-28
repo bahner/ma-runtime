@@ -228,11 +228,14 @@ mod tests {
         let refresh = Arc::new(RejectingResolver);
         let resolver = RuntimeDidResolver::new(normal, refresh);
         let received = document("2026-08-24T11:00:00Z");
-        resolver.insert_known(TEST_DID, received.clone()).await.unwrap();
+        resolver
+            .insert_known(TEST_DID, received.clone())
+            .await
+            .unwrap();
 
-        let resolved = resolver.resolve(TEST_DID).await.unwrap();
+        let result = resolver.resolve(TEST_DID).await.unwrap();
 
-        assert_eq!(resolved.updated_at, "2026-08-24T11:00:00Z");
+        assert_eq!(result.updated_at, "2026-08-24T11:00:00Z");
     }
 
     #[tokio::test]
