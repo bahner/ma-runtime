@@ -900,7 +900,7 @@ the filename stem and the entry in `BUNDLED_LANGS`.
   publish. When remote pinning is configured, documents published by a current
   `/grp/owners` member are also mirrored through Kubo's configured remote
   pinning service. Their pin name is
-  `ma-agent-blake3(<first-16-hex-of-owner-DID>)-YYYY-MM-DD`. Remote pin failures
+  `ma-agent-blake3<first-16-hex-of-owner-DID>-YYYY-MM-DD`. Remote pin failures
   and old-pin cleanup failures do not fail the publish. Non-owner DID documents
   and generic IPFS store requests are not directly remote-pinned.
 - **Replay protection** via a 120-second sliding window on `/ma/ipfs/0.0.1`.

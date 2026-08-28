@@ -38,7 +38,7 @@ pub fn owner_did_remote_pin_name(did: &str) -> String {
     let now = time::OffsetDateTime::now_utc();
     let digest = blake3::hash(did.as_bytes()).to_hex();
     format!(
-        "ma-agent-blake3({})-{:04}-{:02}-{:02}",
+        "ma-agent-blake3{}-{:04}-{:02}-{:02}",
         &digest[..16],
         now.year(),
         u8::from(now.month()),
@@ -1064,8 +1064,10 @@ mod tests {
         let digest = blake3::hash(did.as_bytes()).to_hex();
         let name = owner_did_remote_pin_name(did);
 
-        assert!(name.starts_with(&format!("ma-agent-blake3({})-", &digest[..16])));
-        let (_, date) = name.rsplit_once(")-").expect("pin name date separator");
+        let date = name
+            .strip_prefix(&format!("ma-agent-blake3{}", &digest[..16]))
+            .and_then(|rest| rest.strip_prefix('-'))
+            .expect("pin name is prefix + date");
         let mut parts = date.split('-');
         let year = parts.next().expect("pin name year");
         let month = parts.next().expect("pin name month");
