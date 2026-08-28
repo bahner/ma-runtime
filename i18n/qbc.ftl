@@ -69,7 +69,7 @@ runtime-claimed = runtime faaɓinaa.
 # Eegame jalte ɗe a ɗon
 refuse-delete-root = na-du na-du na-du: tek-out jalte ɗe a ɗon na gonya
 no-root-acl = nating root ACL — runtime gútegow beshkaise owkwa-hamma
-acl-owners-access = Lo clamant a eu accès cume membre de +owners
+acl-owners-access = Di neldowt au-chanya grant access as memba a +owners
 runtime-claim-persisted = jom winndirii saiti.
 runtime-already-claimed = runtime finyish faaɓinaa wanya.
 

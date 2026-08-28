@@ -53,7 +53,7 @@ entity-state-saving = A save entity state
 entity-state-saved = Entity state save
 entity-state-empty = Plugin return empty state, skip it
 entity-states-saved = Entity state dem save
-link-set = Link set
+link-set = Link set op
 ftl-loaded = Lang message load from IPFS
 
 # First-run auto-init
@@ -100,7 +100,7 @@ ipv6-enable-unchanged = ipv6_enable already set to dat value — no change.
 # New keys
 boot-default-root-config-populate-failed = Kyaan fill up di default config root
 boot-default-root-config-populated = Default config root full up
-boot-default-root-config-skip = Default config root already set
+boot-default-root-config-skip = Default config root don set
 boot-entity-load-processed = Entity plugin dem load up
 boot-group-load-failed = Kyaan load di group wen start up
 boot-group-loaded-into-cache = Group load inna di cache
@@ -194,8 +194,8 @@ plugin-dispatch-rejected = Plugin dispatch reject
 plugin-envelope-build-failed = Plugin envelope: kyaan build di message; skip
 plugin-envelope-create-requests-ignored = Plugin envelope: create request ignore without side-effect context
 plugin-envelope-local-dispatch-failed = Plugin envelope: local dispatch fail
-plugin-envelope-local-dispatch-finish = Plugin envelope: local dispatch finish
-plugin-envelope-local-dispatch-start = Plugin envelope: local dispatch start
+plugin-envelope-local-dispatch-finish = Plugin envelope: local dispatch finish op
+plugin-envelope-local-dispatch-start = Plugin envelope: local dispatch start op
 plugin-envelope-local-gate-closed = Plugin envelope: local dispatch gate close
 plugin-envelope-local-recipient-unknown = Plugin envelope: unknown local receiver; skip
 plugin-envelope-local-reply-dropped = Plugin envelope: local RPC reply drop (no local reply waiter)

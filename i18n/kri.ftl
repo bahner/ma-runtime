@@ -53,7 +53,7 @@ entity-state-saving = De save entity state
 entity-state-saved = Entity state don save
 entity-state-empty = Plugin give empty state, skip am
 entity-states-saved = Entity states don save
-link-set = Link set
+link-set = Link don set
 ftl-loaded = Lang mesej don lod from IPFS
 
 # First-run auto-init
@@ -140,7 +140,7 @@ plugin-envelope-local-timeout = Plugin envelope: local dispatch timeout
 plugin-envelope-recipient-invalid = Plugin envelope: recipient DID no valid; skip
 plugin-envelope-build-failed = Plugin envelope: i no ebul build message; skip
 plugin-envelope-remote-limit = Plugin envelope: remote delivery limit reach; envelope drop
-scheduled-dispatch-error = Scheduled dispatch error
+scheduled-dispatch-error = Error pan scheduled dispatch
 scheduled-dispatch-manifest-writer-unavailable = Scheduled dispatch: manifest writer no ready; entity state remain pending
 manifest-pin-update-failed = Manifest pin_update fail
 bootstrap-kind-registry-fetch-log-failed = I no ebul fetch kind node fo registry

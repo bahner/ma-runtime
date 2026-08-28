@@ -1,3 +1,5 @@
+# ma-runtime – Alemannisch
+lang-name = Alemannisch
 
 boot-default-root-config-populate-failed = Standard-Konfigurationsroot konnte nicht befüllt werden
 boot-default-root-config-populated = Standard-Konfigurationsroot befüllt
@@ -113,8 +115,6 @@ schedule-random-reschedule-failed = Zufälligs Job kunnt nit nü gplant wärre
 schedule-stale-dispatch-skipped = Gplanter Dispatch überspronge: veralteteter Ziitplan
 scheduled-dispatch-error = Fehler bim gplante Dispatch
 scheduled-dispatch-manifest-writer-unavailable = Gplanter Dispatch: Manifest-Writer isch nit bereit; Entity-Zustand bliibt usstehend
-
-lang-name = Alemannisch
 own-did-published = Eigets DID-Dokument uf IPNS veröffentlicht
 own-did-publish-failed = Veröffentliching vom eigete DID-Dokument isch fehlgschlage
 own-did-publish-timeout = Veröffentliching vom eigete DID-Dokument nach 2 Minute abgbroche
