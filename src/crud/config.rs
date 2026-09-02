@@ -780,7 +780,7 @@ mod tests {
         );
         manifest.config.insert(
             "start".to_string(),
-            serde_yaml::Value::String("did:ma:test#construct".to_string()),
+            serde_yaml::Value::String("did:ma:test#concourse".to_string()),
         );
         manifest
             .config
@@ -797,7 +797,7 @@ mod tests {
         );
         assert_eq!(
             view.get("start").map(String::as_str),
-            Some("did:ma:test#construct")
+            Some("did:ma:test#concourse")
         );
         assert_eq!(view.get("enabled").map(String::as_str), Some("true"));
         assert_eq!(

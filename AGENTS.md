@@ -38,6 +38,12 @@ A minimal status HTTP server runs on `127.0.0.1:5003` (configurable).
 - **No local protocol code.** All publish logic, validation, secret-bundle
   handling, config, ACL, and transport are provided by the `ma-core` crate.
   Local code is nothing but glue.
+- **Entry/start room naming.** The conventional entry/`start` room fragment is
+  `#concourse` — `src/boot.rs` writes it as the default `start` config value
+  (`{our_did}#concourse`). This is distinct from `Construct` (capital C), the
+  empty-room display name owned by the lambda-ma world profile
+  (`lambda-ma/actors/room.ma`); this runtime only names the fragment. Do not
+  conflate the two, and do not revert `#concourse` to `#construct`.
 - **Entity lifecycle.** Every entity tracks a `Lifecycle` state (`new` →
   `running` | `error`; `stopped` on shutdown). `Lifecycle::New` is set on
   creation. After `init()` returns `:ok` the state becomes `Running`; a CBOR

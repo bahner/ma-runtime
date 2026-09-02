@@ -415,7 +415,7 @@ mod tests {
         let mut manifest = RuntimeManifest::default();
         manifest
             .entities
-            .insert("construct".to_string(), IpldLink::new(entity_cid));
+            .insert("concourse".to_string(), IpldLink::new(entity_cid));
         let initial = crate::kubo::dag_put(kubo.url(), &manifest).await.unwrap();
         let stats = Arc::new(RwLock::new(Stats {
             root_cid: Some(initial.clone()),
@@ -424,13 +424,13 @@ mod tests {
         let writer = ManifestWriter::new(initial, kubo.url().to_string(), stats.clone());
 
         let root_cid = writer
-            .set_entity_behaviour("construct", Some("bafybehaviour"))
+            .set_entity_behaviour("concourse", Some("bafybehaviour"))
             .await
             .unwrap();
 
         let updated_manifest: RuntimeManifest =
             crate::kubo::dag_get(kubo.url(), &root_cid).await.unwrap();
-        let updated_link = updated_manifest.entities.get("construct").unwrap();
+        let updated_link = updated_manifest.entities.get("concourse").unwrap();
         let updated_node: crate::entity::EntityNode =
             crate::kubo::dag_get(kubo.url(), &updated_link.cid)
                 .await
@@ -460,7 +460,7 @@ mod tests {
         let mut manifest = RuntimeManifest::default();
         manifest
             .entities
-            .insert("construct".to_string(), IpldLink::new(entity_cid));
+            .insert("concourse".to_string(), IpldLink::new(entity_cid));
         let initial = crate::kubo::dag_put(kubo.url(), &manifest).await.unwrap();
         let stats = Arc::new(RwLock::new(Stats {
             root_cid: Some(initial.clone()),
@@ -469,13 +469,13 @@ mod tests {
         let writer = ManifestWriter::new(initial, kubo.url().to_string(), stats);
 
         let failed_root = writer
-            .set_entity_reload_error("construct", Some("kind fetch failed"))
+            .set_entity_reload_error("concourse", Some("kind fetch failed"))
             .await
             .unwrap();
         let failed_manifest: RuntimeManifest = crate::kubo::dag_get(kubo.url(), &failed_root)
             .await
             .unwrap();
-        let failed_link = failed_manifest.entities.get("construct").unwrap();
+        let failed_link = failed_manifest.entities.get("concourse").unwrap();
         let failed_node: crate::entity::EntityNode =
             crate::kubo::dag_get(kubo.url(), &failed_link.cid)
                 .await
@@ -486,13 +486,13 @@ mod tests {
         );
 
         let cleared_root = writer
-            .set_entity_reload_error("construct", None)
+            .set_entity_reload_error("concourse", None)
             .await
             .unwrap();
         let cleared_manifest: RuntimeManifest = crate::kubo::dag_get(kubo.url(), &cleared_root)
             .await
             .unwrap();
-        let cleared_link = cleared_manifest.entities.get("construct").unwrap();
+        let cleared_link = cleared_manifest.entities.get("concourse").unwrap();
         let cleared_node: crate::entity::EntityNode =
             crate::kubo::dag_get(kubo.url(), &cleared_link.cid)
                 .await

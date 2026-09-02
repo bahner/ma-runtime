@@ -54,8 +54,8 @@ mod tests {
     fn classifies_local_fragment_target() {
         let local = test_did(1);
         assert_eq!(
-            classify_target(&format!("{local}#construct"), &local),
-            TargetRoute::LocalFragment("construct".to_string())
+            classify_target(&format!("{local}#concourse"), &local),
+            TargetRoute::LocalFragment("concourse".to_string())
         );
     }
 
@@ -70,7 +70,7 @@ mod tests {
         let local = test_did(1);
         let remote = test_did(2);
         assert!(matches!(
-            classify_target(&format!("{remote}#construct"), &local),
+            classify_target(&format!("{remote}#concourse"), &local),
             TargetRoute::Remote(_)
         ));
     }
@@ -78,7 +78,7 @@ mod tests {
     #[test]
     fn rejects_bare_fragment_target() {
         let local = test_did(1);
-        assert_eq!(classify_target("#construct", &local), TargetRoute::Invalid);
+        assert_eq!(classify_target("#concourse", &local), TargetRoute::Invalid);
     }
 
     #[test]

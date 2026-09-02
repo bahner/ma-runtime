@@ -1114,7 +1114,7 @@ mod hostile {
         CastInput {
             msg: PluginMsg {
                 id: id.to_string(),
-                from: "did:ma:testrunner#construct".to_string(),
+                from: "did:ma:testrunner#concourse".to_string(),
                 to: "did:ma:testrunner#duckie".to_string(),
                 created_at: 0,
                 exp: 0,
@@ -1248,7 +1248,7 @@ mod hostile {
             "report-parent-1",
             &ciborium::Value::Array(vec![
                 ciborium::Value::Text(":report-parent".into()),
-                ciborium::Value::Text("did:ma:testrunner#construct".into()),
+                ciborium::Value::Text("did:ma:testrunner#concourse".into()),
                 ciborium::Value::Text("tick-1".into()),
                 ciborium::Value::Text("nonce-1".into()),
             ]),
@@ -1260,7 +1260,7 @@ mod hostile {
 
         let mut saw_parent_report = false;
         while let Ok((_fragment, envelope)) = envelope_rx.try_recv() {
-            if envelope.to == "did:ma:testrunner#construct" {
+            if envelope.to == "did:ma:testrunner#concourse" {
                 saw_parent_report = true;
             }
         }

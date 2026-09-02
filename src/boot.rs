@@ -783,7 +783,7 @@ async fn populate_default_config_root(
     }
 
     let default_root = format!("{our_did}#root");
-    let default_start = format!("{our_did}#construct");
+    let default_start = format!("{our_did}#concourse");
     match manifest_writer
         .mutate(move |m| {
             m.config
