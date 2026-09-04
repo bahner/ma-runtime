@@ -42,18 +42,29 @@ and `rust-ma-runtime`; the bulk lives in `rust-ma-runtime`.
    now sends via inbox but the name hints at the removed service. Consider
    renaming (`actor-call`/`call`) in phase 6.
 
-## Deferred cleanup (cosmetic)
+## Deferred cleanup — now done
 
-1. i18n log keys still reference "RPC": `rpc-message-received`,
-   `rpc-message-rejected`, `rpc-not-text-atom`, `rpc-unknown-verb`,
-   `unknown-rpc-atom` are now dead; `entity-dispatched`, `entity-replied`,
-   `rpc-reply-sent`, `plugin-envelope-local-reply-dropped` are still used but
-   their translated values say "RPC". Deferred: touches ~20+ locale files with
-   genuine translations (and the AGENTS forbids copying English into them).
-2. `boot.rs` `Cli` doc string still says "RPC + optional IPFS publisher".
-3. acl.rs test function names (`wildcard_rpc_allows_rpc`,
-   `wildcard_rpc_denies_ipfs`) still say "rpc" but now test `inbox`.
-4. `rust-ma-runtime/AGENTS.md` (and `ma-zion/AGENTS.md`, `zscheme/AGENTS.md`,
-   `lambda-ma/AGENTS.md`) still document the RPC protocol, dot-path grammar,
-   `:entities`/`:config` verbs, and `/ma/rpc/0.0.1`. These agent notes need a
-   follow-up pass to match the inbox-only actor model.
+1. **i18n keys**: dead RPC/inbox keys removed, remaining "RPC" values
+   reworded, `rpc-reply-sent` renamed to `reply-sent`, and `MESSAGE_IDS`
+   regenerated to exactly match code usage (160 keys). Missing `boot-*` and
+   `inbox-message-received` keys added. All 65 locale files pruned.
+2. **Stale "RPC" code comments/log strings** (boot.rs `about`, dispatch.rs
+   debug strings, acl.rs test names, bootstrap.rs, crud/config.rs,
+   eventloop.rs) reworded to the actor/inbox model.
+3. **`rpc_requests` status field** removed (it was dead, always 0).
+4. **`rust-ma-runtime/AGENTS.md`** updated to the inbox-only actor model.
+
+## Remaining (phase 6 — out of scope here)
+
+1. `ipfs.rs` still builds IPFS-service replies addressed to the sender's
+   `#rpc` fragment (`build_rpc_reply_message`). That is the client-side reply
+   convention zion/zscheme still rely on; it changes with the phase 6 zion
+   refactor, not before.
+2. `ma-zion/AGENTS.md` and `zscheme/AGENTS.md` still describe the RPC
+   transport (`RPC_PROTOCOL_ID`, `CAP_RPC`, `send_rpc`, `SESSION_RPC_INBOX`,
+   `rpc-send` primitive). Those repos are unrefactored; update the notes when
+   phase 6 lands.
+3. `lambda-ma/AGENTS.md` "RPC and events" wording is generic actor-model
+   language (ma-reply!, technical replies); no functional change needed.
+4. zscheme's `rpc-send` primitive name and zion's `actor-call` timeout/error
+   classification (see "Questions for review").

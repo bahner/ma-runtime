@@ -8,17 +8,21 @@
 
 ---
 
-A lean daemon that exposes `/ma/ipfs/0.0.1` and `/ma/rpc/0.0.1` on behalf of
+A lean daemon that exposes `/ma/inbox/0.0.1` (the obligatory actor channel)
+plus optional `/ma/ipfs/0.0.1` and `/ma/crud/0.0.1` meta-services on behalf of
 clients that cannot reach the Kubo RPC API directly (e.g. browser-based 間
 actors). It runs on a host with a Kubo daemon, derives its own `did:ma` identity
-at startup, publishes its own DID document, then handles two services over iroh
-QUIC transport:
+at startup, publishes its own DID document, then handles these services over
+iroh QUIC transport:
 
-- **`/ma/ipfs/0.0.1`** — optional (enabled by `ipfs_publisher: true` in config, default `true`);
-  receives signed IPFS-publish requests and publishes
-  `did:ma` DID documents to IPFS/IPNS via Kubo on behalf of the caller.
-- **`/ma/rpc/0.0.1`** — receives RPC messages; responds to `:ping` atoms with
-  `:pong` replies using the `/ma/rpc/0.0.1` transport.
+- **`/ma/inbox/0.0.1`** — required. Delivers every actor message (fragment →
+  entity `on_message`; unfragmented `:ping` → `:pong`). There is no
+  `/ma/rpc/0.0.1`.
+- **`/ma/ipfs/0.0.1`** — optional (enabled by `ipfs_publisher: true` in config,
+  default `true`); receives signed IPFS-publish requests and publishes `did:ma`
+  DID documents to IPFS/IPNS via Kubo on behalf of the caller.
+- **`/ma/crud/0.0.1`** — optional; the runtime's own maintenance interface
+  (entities, kinds, config, ACL, groups) over the CRUD meta-protocol.
 
 A minimal status HTTP server runs on `127.0.0.1:5003` (configurable).
 
@@ -33,8 +37,10 @@ A minimal status HTTP server runs on `127.0.0.1:5003` (configurable).
   `initialised`, `serialise`, `colour`, and `licence`. Keep externally mandated
   API names unchanged, such as Rust/serde `Serialize`/`Deserialize`, CSS
   `color`, HTTP/Web/API terms, crate names, and upstream protocol names.
-- **Two services, nothing more.** Only `/ma/ipfs/0.0.1` and `/ma/rpc/0.0.1`
-  are registered. No gossip, no additional RPC.
+- **One required service, optional meta-services.** `/ma/inbox/0.0.1` is always
+  registered and is the only actor channel. `/ma/ipfs/0.0.1` and
+  `/ma/crud/0.0.1` are optional meta-services (not actors). No gossip, no
+  additional actor transport.
 - **No local protocol code.** All publish logic, validation, secret-bundle
   handling, config, ACL, and transport are provided by the `ma-core` crate.
   Local code is nothing but glue.
@@ -67,7 +73,7 @@ A minimal status HTTP server runs on `127.0.0.1:5003` (configurable).
   addressed as `/grp/<name>`), an IPLD link to a plain `Vec<String>` of member
   DIDs. Resolution is a synchronous, in-memory `GroupCache` lookup (see
   `acl.rs`'s `GroupCache`/`new_group_cache`) — no actor dispatch, no async
-  RPC round-trip. `"owners"` is one ordinary entry in `grp`, resolved exactly
+  round-trip. `"owners"` is one ordinary entry in `grp`, resolved exactly
   like any other group; it is protected only against deletion (see
   `crud/grp.rs`), never resolved specially. There is no `#fragment`-actor-
   probe mechanism (the old `+#<fragment>`/`ma-set`/`query_actor_group`
@@ -93,12 +99,11 @@ A minimal status HTTP server runs on `127.0.0.1:5003` (configurable).
   to `/ma/ipfs/0.0.1` messages before any processing.
 - **ACL with deny-wins semantics.** An explicit `null` entry in the `AclMap`
   denies a principal and overrides any wildcard allow. Capabilities are plain
-  strings in YAML sequences — `/ma/rpc/0.0.1` requires `"rpc"`,
-  `/ma/ipfs/0.0.1` requires `"ipfs"` for generic content storage
-  (`application/vnd.ma.ipfs.request`) or `"identity-publish"` for DID-document
-  publishing (`application/vnd.ma.identity.publish.request`) — these are two
-  independent capabilities gating two independent message types on the same
-  protocol.
+  strings in YAML sequences — `/ma/ipfs/0.0.1` requires `"ipfs"` for generic
+  content storage (`application/vnd.ma.ipfs.request`) or `"identity-publish"`
+  for DID-document publishing (`application/vnd.ma.identity.publish.request`).
+  The actor inbox is not gated by a transport capability; per-actor verb ACLs
+  are enforced on the receiving entity instead.
 - **Manifest is the source of truth; ACLs are derivatives.** `RuntimeManifest`
   paths are canonical. ACLs must always be derived from and kept in sync with
   manifest data, never the reverse. Concretely:
@@ -132,9 +137,9 @@ A minimal status HTTP server runs on `127.0.0.1:5003` (configurable).
   `reply_to` message-ID. This is not a style preference; it is the only
   architecture that scales to hundreds of thousands of entities.
 - **Per-entity message queues.** Each entity has a dedicated `tokio::mpsc`
-  channel. The RPC handler routes incoming messages non-blockingly to the correct
-  entity channel. Each entity processes its own queue sequentially in a spawned
-  tokio task. Entities never block one another.
+  channel. The inbox dispatch routes incoming messages non-blockingly to the
+  correct entity channel. Each entity processes its own queue sequentially in a
+  spawned tokio task. Entities never block one another.
 
 ## Dependencies
 
@@ -193,18 +198,19 @@ slug. After that selected file is read, its `slug:` value sets the effective
 runtime slug and derived defaults. YAML `slug` must never select, redirect, or
 reload a config file; CLI/environment slug overrides it.
 
-**Protected keys** — never exposed or writable via `:config.*` RPC:
+**Protected keys** — never exposed or writable via the CRUD config path:
 
 | Key | Reason |
 |-----|--------|
-| `slug` | Runtime identity/default paths; set in config.yaml or before startup, never through RPC |
+| `slug` | Runtime identity/default paths; set in config.yaml or before startup, never through CRUD |
 | `secret_bundle` | Key material path — must not leak |
 | `secret_bundle_passphrase` | Secret — must never be exposed |
-| `config_path` | Internal path — not user-settable via RPC |
+| `config_path` | Internal path — not user-settable via CRUD |
 | any key starting with `secret` | Blanket guard for future secret fields |
 
-**Daemon config keys** — readable and writable via `:config.<key>` RPC;
-changes take effect immediately in memory and are saved to `config.yaml`:
+**Daemon config keys** — readable and writable via the CRUD config path
+(`/config/<key>`); changes take effect immediately in memory and are saved to
+`config.yaml`:
 
 | Key | Type | Description |
 |-----|------|-------------|
@@ -225,8 +231,9 @@ changes take effect immediately in memory and are saved to `config.yaml`:
 | `i18n` | string | Active language BCP-47 tag (e.g. `nb`, `zh-Hans`) |
 | other | any | Free-form runtime metadata |
 
-Setting `i18n` via `:config.i18n: nb` takes effect immediately (calls
-`switch_lang()` to reload FTL translations in memory) and persists to IPFS.
+Setting `i18n` via the CRUD config path (e.g. `/config/i18n: nb`) takes effect
+immediately (calls `switch_lang()` to reload FTL translations in memory) and
+persists to IPFS.
 
 Startup head resolution order is `--root-cid`, `--bootstrap`, `root_cid` from
 `config.yaml`, then runtime IPNS. Runtime manifest mutations advance the
@@ -278,21 +285,20 @@ ma --status-bind 127.0.0.1:5004
 
 The ACL YAML must contain an `acl:` map from principal to a YAML sequence of
 capability strings. The default when no file is supplied is open
-(`"*": [rpc, ipfs, identity-publish]`).
+(`"*": [ipfs, identity-publish]`).
 
 ```yaml
 acl:
-  "*": [rpc, ipfs, identity-publish]  # everyone: RPC + IPFS store + DID publish
-  "did:ma:alice": ["*"]       # alice: all capabilities
-  "did:ma:bob": [rpc]         # bob: RPC only, no IPFS store or DID publish
-  "did:ma:eve":               # null = explicit deny
+  "*": [ipfs, identity-publish]  # everyone: IPFS store + DID publish
+  "did:ma:alice": ["*"]          # alice: all capabilities
+  "did:ma:bob": [ipfs]           # bob: IPFS store only, no DID publish
+  "did:ma:eve":                  # null = explicit deny
 ```
 
 Built-in capability strings:
 
 | Capability | Required by |
 |------------|-------------|
-| `"rpc"` | `/ma/rpc/0.0.1` |
 | `"ipfs"` | `/ma/ipfs/0.0.1` (generic content storage) |
 | `"identity-publish"` | `/ma/ipfs/0.0.1` (DID-document publishing) |
 | `"read"` | (reserved — future read-only access) |
@@ -330,8 +336,6 @@ The JSON object contains:
   "uptime_secs": 42,
   "ipfs_publisher": true,
   "ipfs_requests": 0,
-  "rpc_requests": 0,
-  "pings_received": 0,
   "started_at": 1234567890
 }
 ```
@@ -340,8 +344,8 @@ The JSON object contains:
 
 **All data over iroh transport is CBOR. No JSON is sent between peers.**
 
-- RPC requests: CBOR atom (`:verb`) or array `[":verb", arg1, arg2, …]`.
-- RPC replies: CBOR atom (`:pong`, `:ok`, `:error`) or tuple `[":ok", payload]` / `[":error", reason]`.
+- Actor messages: CBOR atom (`:verb`) or array `[":verb", arg1, arg2, …]`.
+- Replies: CBOR atom (`:pong`, `:ok`, `:error`) or tuple `[":ok", payload]` / `[":error", reason]`.
 - Entity content in replies: CBOR-encoded `EntityNode` (same structure as
   stored in IPFS DAG-CBOR), never JSON.
 - Entity definitions written by users in zion use **YAML** as the human-readable
@@ -378,53 +382,28 @@ that many raw bytes from the operating system CSPRNG. Invalid lengths fail,
 and there is no weaker fallback. A kind must list `ma_random_bytes` in
 `host_functions` before a guest may import it.
 
-## RPC protocol
+## Actor verb dispatch
 
-Content types are defined in ma-spec, not ma-core — they are string literals:
-
-| Direction | Content-Type |
-|-----------|--------------|
-| Request | `application/vnd.ma.rpc.request` |
-| Reply | `application/vnd.ma.rpc.reply` |
-
-RPC verbs are CBOR-encoded text strings beginning with `:`.
-
-### Dot-path grammar
-
-Unfragmented RPC messages (addressed to `did:ma:<ipns>`, no fragment) use a
-dot-path grammar rooted in four namespaces:
-
-```
-:entities[.<name>][:<verb>]  — entity management
-:kinds[.<family>[.<impl>]]   — kind/protocol registry (read-only)
-:config[.<key>]              — runtime config
-:ping                        — liveness check
-```
-
-| Pattern | Meaning |
-|---------|---------|
-| `:entities` | list all entity names |
-| `:entities.<name>` | get EntityNode (as CBOR) |
-| `:entities.<name>:` | delete entity |
-| `:entities.<name>: <cid>` | upsert entity by CID (fetches DAG-CBOR from IPFS) |
-| `:entities.<name>:edit` | return current EntityNode for client-side editing |
-| `:ping` | reply `:pong` |
-
-Fragment-addressed messages (`did:ma:<ipns>#<name>`) are routed directly to
-the named entity plugin (Wasm `on_message`).
-
-### `:edit` verb
-
-`:entities.<name>:edit` returns the current `EntityNode` as CBOR. The **client**
-(zion) is responsible for opening an editor so the user can modify it. After
-editing, the client publishes the updated node to IPFS (`dag_put`), then sends
-`:entities.<name>: <new-cid>` to register it. The runtime never initiates an
-editor session; it only stores and retrieves by CID.
+Actor messages arrive over `/ma/inbox/0.0.1` as CBOR. A message addressed to a
+fragment (`did:ma:<ipns>#<name>`) is routed to that entity's `on_message`; the
+verb is the CBOR term's head (a `:`-prefixed text atom, or the first element of
+an array). Unfragmented messages (bare `did:ma:<ipns>`) are reserved for
+transport liveness: `:ping` → `:pong`. There is no dot-path grammar — entity,
+kind, config, ACL, and group management live in the CRUD meta-service
+(`/ma/crud/0.0.1`), not on the actor channel.
 
 ### `:ping`
 
-Replies with `:pong` to `did:ma:<sender_ipns>#ping`. The reply sets `reply_to`
-to the originating message's ID and is delivered via `endpoint.outbox()`.
+`:ping` is transport liveness, never routed to an entity. The runtime replies
+with `:pong` (reply `reply_to` set to the originating message ID), delivered via
+`endpoint.outbox()`.
+
+### Reply semantics
+
+The runtime must **not** fabricate a reply for a crashed actor: on `on_message`
+failure it logs the error and drops the message (Hewitt). Correlated replies
+only originate from the actor's own `ma_reply`, or from the native `output`
+reply and `#root :publish` paths.
 
 ### `#scheduler` — native schedule actor
 
@@ -495,14 +474,14 @@ typically from a plugin's `init()` when `lifecycle == "new"` or always on init.
 | IPNS derivation | `libp2p_identity::ed25519::SecretKey::try_from_bytes` → `Keypair` → `PeerId::to_base58()` |
 | Own DID document | `Document::new`, `SigningKey::from_private_key_bytes`, `EncryptionKey::from_private_key_bytes`, `VerificationMethod::new`, `document.sign`, `document.marshal` |
 | iroh endpoint | `ma_core::new_ma_endpoint(iroh_secret_key)` |
-| Register service | `endpoint.service("/ma/ipfs/0.0.1")` + `endpoint.service("/ma/rpc/0.0.1")` |
+| Register service | `endpoint.service(INBOX_PROTOCOL_ID)` + optional `endpoint.service(IPFS_PROTOCOL_ID)` / `endpoint.service(CRUD_PROTOCOL_ID)` |
 | Kubo publisher | `IpfsDidPublisher::new(kubo_rpc_url)` |
 | Kubo readiness | `publisher.wait_until_ready(attempts)` |
 | Request validation | `validate_ipfs_publish_request(message_cbor)` |
 | Publish | `publisher.publish_document(did_doc_json, ipns_key_b64)` |
 | Replay guard | `ReplayGuard::default()` + `check_and_insert(&headers)` |
 | ACL | `AclMap` (serde-deserialised from YAML) + `check_cap(acl, caller, cap)` |
-| Outbox (pong) | `endpoint.outbox(&resolver, &sender_did, "/ma/rpc/0.0.1").await` → `outbox.send(&msg)` |
+| Outbox (pong) | `endpoint.outbox(&resolver, &sender_did, INBOX_PROTOCOL_ID).await` → `outbox.send(&msg)` |
 | Resolver | `IpfsGatewayResolver::new(kubo_rpc_url)` |
 
 ## Security notes
@@ -522,20 +501,20 @@ typically from a plugin's `init()` when `lifecycle == "new"` or always on init.
 - The `iroh_secret_key` is only for the iroh QUIC transport layer; it is
   distinct from `ipns_secret_key` which roots the `did:ma` identity.
 
-## Internationalisation — `src/i18n.rs` + `lang/`
+## Internationalisation — `src/i18n.rs` + `i18n/`
 
 Translation strings use `key = value` lines only. No attributes, selectors, or
 substitutions — all runtime keys are plain declarative log messages with no
 `{ $var }` placeholders.
 
-- `lang/en.ftl` — **canonical source**; defines all keys.
-- `lang/*.ftl` — all other supported locales.
+- `i18n/en.ftl` — **canonical source**; defines all keys.
+- `i18n/*.ftl` — all other supported locales.
 - Missing keys fall back to the key name string.
-- Technical terms kept verbatim: DID, IPFS, IPNS, RPC, ACL, iroh, CID,
+- Technical terms kept verbatim: DID, IPFS, IPNS, ACL, iroh, CID,
   `#root`, `/ma/ipfs/0.0.1`, `:ping`, `:pong`, Bootstrap, headless, Plugin,
   manifest.
-- **When adding or changing any logged string**, update `lang/en.ftl` first,
-  then add/update the same key in every `lang/*.ftl` file that exists.
+- **When adding or changing any logged string**, update `i18n/en.ftl` first,
+  then add/update the same key in every `i18n/*.ftl` file that exists.
   Never leave a key missing from any locale file.
 - **NEVER copy English text into non-English locale files.** Every non-`en.ftl`
   file must have a genuine translation for every key. English text in a
@@ -545,18 +524,18 @@ substitutions — all runtime keys are plain declarative log messages with no
 
 ### `lang-name` key
 
-Every `lang/*.ftl` file **must** contain a `lang-name` key whose value is the
+Every `i18n/*.ftl` file **must** contain a `lang-name` key whose value is the
 language's own name for itself (autonym), e.g. `lang-name = Norsk bokmål`.
 
 ### Adding a new language
 
-1. Create `lang/<code>.ftl` with all keys from `lang/en.ftl` translated,
+1. Create `i18n/<code>.ftl` with all keys from `i18n/en.ftl` translated,
    including `lang-name = <autonym>`.
-2. Rebuild (`cargo build`). `build.rs` scans `lang/*.ftl` and regenerates
+2. Rebuild (`cargo build`). `build.rs` scans `i18n/*.ftl` and regenerates
    `BUNDLED_LANGS` automatically — no manual code change required.
 
 `BUNDLED_LANGS` is written to `$OUT_DIR/bundled_langs.rs` and `include!`-ed
-into `src/i18n.rs`. All FTL files in `lang/` are compiled into the binary.
+into `src/i18n.rs`. All FTL files in `i18n/` are compiled into the binary.
 
 ### Notable constructed / special languages
 
