@@ -293,7 +293,7 @@ fn handle_ping(message: &ma_core::Message, ctx: &DispatchCtx, term: &CborValue) 
 
 // ── Entity plugin dispatch ────────────────────────────────────────────────────
 
-/// Enforce the entity's verb-scoped ACL for an incoming RPC dispatch. Empty
+/// Enforce the entity's verb-scoped ACL for an incoming message dispatch. Empty
 /// or missing ACL is fail-closed (deny-all), matching `EntityNode.acl`'s
 /// documented contract.
 async fn enforce_entity_acl(
@@ -575,14 +575,14 @@ async fn dispatch_entity_message(
         reply_to = ?message.reply_to,
         verb = ?verb_str,
         term = ?term,
-        "entity RPC dispatch"
+        "entity message dispatch"
     );
 
     enforce_entity_acl(&entity, message, verb_str.as_deref(), ctx).await?;
 
     let mut content_bytes = Vec::new();
     ciborium::ser::into_writer(&term, &mut content_bytes)
-        .context("re-encoding RPC content for plugin dispatch")?;
+        .context("re-encoding message content for plugin dispatch")?;
 
     let local_msg = LocalMessage {
         id: message.id.clone(),
@@ -602,7 +602,7 @@ async fn dispatch_entity_message(
     // The underlying plugin error (`e`) can contain arbitrary internal detail —
     // for Wasm/Python plugins this includes a full interpreter traceback with
     // absolute build-machine file paths (venv layout, username, etc). That is
-    // never safe to hand to a remote RPC caller. Log the full detail locally
+    // never safe to hand to a remote caller. Log the full detail locally
     // and propagate only a sanitized, fragment-scoped reason on the wire.
     let result = entity.on_message(&cast_input).await.map_err(|e| {
         warn!(
@@ -623,7 +623,7 @@ async fn dispatch_entity_message(
         pending_state = result.pending_state.is_some(),
         delete_requests = result.delete_requests.len(),
         behaviour_requests = result.behaviour_requests.len(),
-        "entity RPC dispatch side effects"
+        "entity message dispatch side effects"
     );
 
     // If the plugin called `ma_set_state` during this dispatch, persist to IPFS.
@@ -722,7 +722,7 @@ fn send_error_reply(incoming: &ma_core::Message, ctx: &DispatchCtx, reason: &str
         ]),
         &mut payload,
     )
-    .context("failed to encode RPC error reply")?;
+    .context("failed to encode error reply")?;
     send_reply(incoming, ctx, &payload)
 }
 
@@ -760,7 +760,7 @@ mod tests {
         assert_eq!(term_verb(&CborValue::Array(vec![])), None);
     }
 
-    /// Fixture bundling the state needed to dispatch a native scheduler RPC
+    /// Fixture bundling the state needed to dispatch a native scheduler
     /// message: a running `#scheduler` entity registered in an
     /// `DispatchCtx`, its ACL, and the sender identity used to sign the
     /// incoming message.

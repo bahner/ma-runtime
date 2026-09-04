@@ -87,7 +87,7 @@ async fn publish_bootstrap_manifest(
 
 #[derive(Debug, Parser)]
 #[command(name = "ma")]
-#[command(about = "間 Runtime daemon — RPC + optional IPFS publisher, powered by ma-core")]
+#[command(about = "間 Runtime daemon — inbox + optional IPFS publisher, powered by ma-core")]
 pub struct Cli {
     #[command(flatten)]
     pub ma: MaArgs,
@@ -189,7 +189,7 @@ struct EndpointServices {
     crud_messages: Option<ma_core::Inbox<ma_core::Message>>,
 }
 
-/// Own DID document details needed for logging, RPC identity, and periodic
+/// Own DID document details needed for logging, identity, and periodic
 /// republishing.
 struct OwnIdentity {
     our_did: String,
@@ -564,7 +564,7 @@ async fn resolve_and_seed_owners(
     }
 
     // Seed the live ACL with wildcard permissions for every known owner so
-    // they can use RPC immediately (before any manifest ACL is published).
+    // they can send messages immediately (before any manifest ACL is published).
     if !resolved_owners.is_empty() {
         status::grant_owners_in_acl(acl, &resolved_owners).await;
     }
@@ -692,7 +692,7 @@ async fn finalize_startup(args: FinalizeArgs<'_>) -> Result<FinalizedStartup> {
         ..Default::default()
     }));
 
-    // Shared daemon config (enables runtime RPC writes + config.yaml save-back).
+    // Shared daemon config (enables runtime config writes + config.yaml save-back).
     let shared_config: Arc<tokio::sync::RwLock<Config>> =
         Arc::new(tokio::sync::RwLock::new(config.clone()));
 

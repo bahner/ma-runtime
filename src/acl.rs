@@ -152,13 +152,13 @@ mod tests {
     }
 
     #[test]
-    fn wildcard_rpc_allows_rpc() {
+    fn wildcard_inbox_allows_inbox() {
         let acl = m(&[("*", allow(&["inbox"]))]);
         assert!(check_cap(&acl, "did:ma:alice", CAP_INBOX).is_ok());
     }
 
     #[test]
-    fn wildcard_rpc_denies_ipfs() {
+    fn wildcard_inbox_denies_ipfs() {
         let acl = m(&[("*", allow(&["inbox"]))]);
         assert!(check_cap(&acl, "did:ma:alice", CAP_IPFS).is_err());
     }

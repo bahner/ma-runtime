@@ -24,7 +24,6 @@ pub struct Stats {
     pub our_did: String,
     pub endpoint_id: String,
     pub ipfs_requests: u64,
-    pub rpc_requests: u64,
     pub started_at: u64,
     pub ipfs_publisher_enabled: bool,
     pub entity_names: Vec<String>,
@@ -100,7 +99,6 @@ async fn handle_index(State(state): State<StatusState>) -> impl IntoResponse {
         our_did,
         endpoint_id,
         ipfs_requests,
-        rpc_requests,
         uptime,
         ipfs_enabled,
         entity_names,
@@ -113,7 +111,6 @@ async fn handle_index(State(state): State<StatusState>) -> impl IntoResponse {
             s.our_did.clone(),
             s.endpoint_id.clone(),
             s.ipfs_requests,
-            s.rpc_requests,
             now_unix_secs().saturating_sub(s.started_at),
             s.ipfs_publisher_enabled,
             s.entity_names.clone(),
@@ -165,7 +162,7 @@ th{{background:#222}}a{{color:#7cf}}.trust-warning{{border:1px solid #d99b32;pad
 <tr><td>Uptime (seconds)</td><td>{uptime}</td></tr>
 <tr><td>IPFS publisher</td><td>{ipfs_status}</td></tr>
 <tr><td>IPFS publish requests</td><td>{ipfs_requests}</td></tr>
-<tr><td>RPC requests</td><td>{rpc_requests}</td></tr>
+
 <tr><td>Entities</td><td>{entities_html}</td></tr>
 <tr><td>Runtime</td><td>{root_cid_html}</td></tr>
 <tr><td>Zion</td><td>{zion_html}</td></tr>
@@ -198,7 +195,6 @@ async fn handle_status_json(State(state): State<StatusState>) -> impl IntoRespon
         our_did,
         endpoint_id,
         ipfs_requests,
-        rpc_requests,
         started_at,
         uptime,
         ipfs_enabled,
@@ -211,7 +207,6 @@ async fn handle_status_json(State(state): State<StatusState>) -> impl IntoRespon
             s.our_did.clone(),
             s.endpoint_id.clone(),
             s.ipfs_requests,
-            s.rpc_requests,
             s.started_at,
             now_unix_secs().saturating_sub(s.started_at),
             s.ipfs_publisher_enabled,
@@ -232,7 +227,6 @@ async fn handle_status_json(State(state): State<StatusState>) -> impl IntoRespon
         "uptime_secs": uptime,
         "ipfs_publisher": ipfs_enabled,
         "ipfs_requests": ipfs_requests,
-        "rpc_requests": rpc_requests,
         "started_at": started_at,
         "entity_names": entity_names,
         "runtime": runtime,

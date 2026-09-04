@@ -774,7 +774,7 @@ impl EventLoopState {
                 fragment = %fragment,
                 target = %target_fragment,
                 reply_to = ?env.reply_to,
-                "plugin envelope: local RPC reply dropped (no local reply waiter)"
+                "plugin envelope: local reply dropped (no local reply waiter)"
             );
             return;
         }

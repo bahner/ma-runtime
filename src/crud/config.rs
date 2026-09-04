@@ -205,7 +205,7 @@ fn yaml_config_value_to_string(value: &serde_yaml::Value) -> Option<String> {
 }
 
 /// Load the current manifest and merge it with the daemon config to produce
-/// the public plugin config map — the shared body behind both the RPC and
+/// the public plugin config map — the shared body behind both the remote and
 /// local-dispatch entry points into `public_plugin_config`.
 pub async fn fetch_public_plugin_config(
     stats: &crate::status::SharedStats,
