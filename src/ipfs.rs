@@ -580,21 +580,21 @@ fn encode_ok_cid_reply(cid: &str) -> Result<Vec<u8>> {
     Ok(reply_bytes)
 }
 
-/// Build an RPC reply `Message` addressed to the sender's `#rpc` fragment.
+/// Build an inbox reply `Message` addressed to the sender's bare DID.
 ///
-/// Returns `(message, sender_did, rpc_did_url)`.
-fn build_rpc_reply_message(
+/// Returns `(message, sender_did, recipient_did)`.
+fn build_reply_message(
     ctx: &IpfsHandlerCtx<'_>,
     from: &str,
     in_reply_to: &str,
     payload: &[u8],
 ) -> Result<(ma_core::Message, Did, String)> {
     let sender = Did::try_from(from).with_context(|| format!("invalid sender DID: {from}"))?;
-    let rpc_did_url = format!("did:ma:{}#rpc", sender.ipns);
+    let recipient = sender.base_id();
     let ipfs_did_url = format!("{}#ipfs", ctx.our_did);
     let reply = ma_core::Message::new_reply(
         &ipfs_did_url,
-        &rpc_did_url,
+        &recipient,
         MESSAGE_TYPE_MESSAGE,
         "application/cbor",
         payload,
@@ -602,7 +602,7 @@ fn build_rpc_reply_message(
         ctx.signing_key,
     )
     .context("failed to build reply message")?;
-    Ok((reply, sender, rpc_did_url))
+    Ok((reply, sender, recipient))
 }
 
 /// Extract the iroh endpoint ID for `protocol` from a document's `ma.services`.
@@ -915,8 +915,8 @@ async fn handle_did_document_publish(
     info!(did = %document_did.id(), cid = %cid, "{}", i18n::t("document-published"));
 
     let reply_bytes = encode_ok_cid_reply(&cid)?;
-    let (reply, sender, rpc_did_url) =
-        build_rpc_reply_message(ctx, &message.from, &message.id, &reply_bytes)?;
+    let (reply, sender, recipient) =
+        build_reply_message(ctx, &message.from, &message.id, &reply_bytes)?;
 
     // Spawn reply delivery so a slow or stale iroh connection never blocks
     // the main event loop (and therefore never prevents Ctrl-C from firing).
@@ -937,25 +937,25 @@ async fn handle_did_document_publish(
                             .await
                         {
                             Ok(Ok(())) => {
-                                info!(to = %rpc_did_url, cid = %cid, "{}", i18n::t("did-publish-cid-reply-sent"));
+                                info!(to = %recipient, cid = %cid, "{}", i18n::t("did-publish-cid-reply-sent"));
                             }
                             Ok(Err(e)) => {
-                                warn!(error = %e, to = %rpc_did_url, "ipfs-publish reply send failed");
+                                warn!(error = %e, to = %recipient, "ipfs-publish reply send failed");
                             }
-                            Err(_) => warn!(to = %rpc_did_url, "ipfs-publish reply send timed out"),
+                            Err(_) => warn!(to = %recipient, "ipfs-publish reply send timed out"),
                         }
                     }
                     Ok(Err(err)) => {
-                        warn!(error = %err, to = %rpc_did_url, "{}", i18n::t("did-publish-resolve-failed"));
+                        warn!(error = %err, to = %recipient, "{}", i18n::t("did-publish-resolve-failed"));
                     }
                     Err(_) => {
-                        warn!(to = %rpc_did_url, "ipfs-publish connect timed out");
+                        warn!(to = %recipient, "ipfs-publish connect timed out");
                     }
                 }
             });
         }
         None => {
-            warn!(to = %rpc_did_url, "{}", i18n::t("did-publish-resolve-failed"));
+            warn!(to = %recipient, "{}", i18n::t("did-publish-resolve-failed"));
         }
     }
 
@@ -1031,8 +1031,8 @@ async fn handle_ipfs_store(
     info!(cid = %cid, from = %orig_message.from, "{}", i18n::t("ipfs-stored"));
 
     let reply_bytes = encode_ok_cid_reply(&cid)?;
-    let (reply, sender, rpc_did_url) =
-        build_rpc_reply_message(ctx, &orig_message.from, &orig_message.id, &reply_bytes)?;
+    let (reply, sender, recipient) =
+        build_reply_message(ctx, &orig_message.from, &orig_message.id, &reply_bytes)?;
 
     // Spawn reply delivery so a slow or unreachable iroh connection never
     // blocks the main event loop (and therefore never prevents Ctrl-C).
@@ -1054,16 +1054,16 @@ async fn handle_ipfs_store(
             Ok(mut outbox) => {
                 match tokio::time::timeout(Duration::from_secs(15), outbox.send(&reply)).await {
                     Ok(Ok(())) => {
-                        info!(to = %rpc_did_url, cid = %cid, "{}", i18n::t("ipfs-store-cid-reply-sent"));
+                        info!(to = %recipient, cid = %cid, "{}", i18n::t("ipfs-store-cid-reply-sent"));
                     }
                     Ok(Err(e)) => {
-                        warn!(error = %e, to = %rpc_did_url, "ipfs-store reply send failed");
+                        warn!(error = %e, to = %recipient, "ipfs-store reply send failed");
                     }
-                    Err(_) => warn!(to = %rpc_did_url, "ipfs-store reply send timed out"),
+                    Err(_) => warn!(to = %recipient, "ipfs-store reply send timed out"),
                 }
             }
             Err(err) => {
-                warn!(error = %err, to = %rpc_did_url, "{}", i18n::t("ipfs-store-resolve-failed"));
+                warn!(error = %err, to = %recipient, "{}", i18n::t("ipfs-store-resolve-failed"));
             }
         }
     });
@@ -1075,6 +1075,7 @@ async fn handle_ipfs_store(
 mod tests {
     use super::{
         do_publish_own_document, record_inbound_contact, IpnsPublishSettings, OutboxCache,
+        INBOX_PROTOCOL_ID,
     };
     use std::sync::Arc;
 
@@ -1102,16 +1103,16 @@ mod tests {
             "did:ma:{}",
             ma_core::ipns_from_secret([1; 32]).expect("test IPNS identifier")
         );
-        cache.mark_unreachable(&sender, "/ma/rpc/0.0.1").await;
+        cache.mark_unreachable(&sender, INBOX_PROTOCOL_ID).await;
         assert!(cache
-            .unreachable_for(&sender, "/ma/rpc/0.0.1")
+            .unreachable_for(&sender, INBOX_PROTOCOL_ID)
             .await
             .is_some());
 
-        record_inbound_contact(&cache, &format!("{sender}#rpc")).await;
+        record_inbound_contact(&cache, &format!("{sender}#inbox")).await;
 
         assert!(cache
-            .unreachable_for(&sender, "/ma/rpc/0.0.1")
+            .unreachable_for(&sender, INBOX_PROTOCOL_ID)
             .await
             .is_none());
     }
