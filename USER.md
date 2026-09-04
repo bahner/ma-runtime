@@ -38,9 +38,8 @@ and `rust-ma-runtime`; the bulk lives in `rust-ma-runtime`.
    mailer-daemon-style bounce.
 3. `actor-call` timeout value (phase 6, out of scope here): needs a default
    and error classification (`reply-error` vs `timeout` vs `transport-error`).
-4. `rpc-send` primitive name (zscheme-v1.md §8.1): still named `rpc-send`; it
-   now sends via inbox but the name hints at the removed service. Consider
-   renaming (`actor-call`/`call`) in phase 6.
+4. ~~`rpc-send` primitive name~~ — done: renamed to `actor-send` (builtin) and
+   `send_rpc` → `send_actor` (SchemeCtx trait) in ma-zscheme 0.7.0.
 
 ## Deferred cleanup — now done
 
@@ -72,9 +71,9 @@ and `rust-ma-runtime`; the bulk lives in `rust-ma-runtime`.
 1. ~~ma-zion i18n `rpc-error` keys + translated strings~~ — done: keys renamed to
    `term-error`/`term-error-detail`, English values reworded, "RPC" token
    stripped from translations, stale `rpc_requests` status read removed.
-2. zscheme's `rpc-send` primitive name is a **ma-zscheme builtin** (published
-   crate), so it is not renameable from these repos. It now sends over inbox
-   but keeps its historical name.
+2. ~~`rpc-send` primitive name~~ — done: renamed to `actor-send` (builtin) and
+   `send_rpc` → `send_actor` (SchemeCtx trait) in `rust-ma-zscheme` 0.7.0;
+   consumers bumped to `ma-zscheme = "0.7"`.
 3. ~~`actor-call` error classification~~ — done: timeouts now surface as a
    distinct `"timeout"` error; cancellation remains `"reply channel
    cancelled"`, reply errors carry the actor's reason, and send failures carry
