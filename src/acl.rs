@@ -138,7 +138,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use ma_core::{check_cap, AclMap, CapabilityEntry, CAP_IPFS, CAP_INBOX};
+    use ma_core::{check_cap, AclMap, CapabilityEntry, CAP_INBOX, CAP_IPFS};
 
     fn allow(caps: &[&str]) -> CapabilityEntry {
         CapabilityEntry::from_caps(caps.iter().copied())

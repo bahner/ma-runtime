@@ -9,16 +9,10 @@ shutdown-requested = A ti béèrè ìpadasẹ̀yìn
 closing-endpoint = Ó ń pa iroh endpoint...
 shutdown-complete = Ìpadasẹ̀yìn ti parí
 status-listening = Sèébà ipo ń gbọ́
-rpc-message-received = Ìfiránṣẹ́ RPC ti wọlé
-rpc-message-rejected = Ìfiránṣẹ́ RPC ti kọ̀
 ipfs-message-rejected = Ìfiránṣẹ́ IPFS ti kọ̀
 ctrlc-handler-failed = Olùdarí Ctrl-C ti kùnà
 node-connected = Eku-opo ti so mọ́ ìlànà
 received-encrypted-ma-msg = Ìfiránṣẹ́ ma tí wọn sọ ní àṣírí ti wọlé ní /ma/ipfs/0.0.1
-unknown-rpc-atom = Atom RPC tí a kò mọ̀, ń fojú fò
-rpc-not-text-atom = Ẹrù RPC kì í ṣe atom ọrọ
-rpc-unknown-verb = Ọrọ RPC tí a kò mọ
-rpc-reply-sent = Ìdáhùn RPC ti rán
 ping-received = :ping ti wọlé, ń rán :pong
 did-publish-request-received = Ìbéèrè títẹ̀jáde àkọsílẹ̀ DID ti wọlé
 document-published = Àkọsílẹ̀ ti tẹ̀jáde
@@ -33,18 +27,7 @@ ipfs-store-resolve-failed = Kùnà láti yanjú olùrán fún ìfíjísọ̀ ìd
 bootstrap-complete = Bootstrap ti parí
 entity-loaded = Ẹ̀rọ ẹ̀dá ti kojọpọ
 entity-load-failed = Kùnà láti kojọpọ ẹ̀rọ ẹ̀dá
-entity-not-found = Ẹ̀dá kò rí, RPC ń fojú fò
-entity-dispatched = RPC ti rán sí ẹ̀dá
-entity-replied = Ẹ̀dá ti rán ìdáhùn RPC
-root-create-entity = #root: ṣẹ̀dá ẹ̀dá
 root-list-entities = #root: àkójọ ẹ̀dá
-root-delete-entity = #root: pa ẹ̀dá rẹ́
-root-entity-updated = Àpólà runtime ti ṣe àtúnṣe
-default-config-root-populated = A ti kun /config/root aiyipada ní ìbẹ̀rẹ̀
-default-config-root-no-root-entity = A kò le kun /config/root aiyipada ní ìbẹ̀rẹ̀: entity #root kò tíì jẹ́ kíkó wọlé
-default-config-root-no-root-cid = A kò le kun /config/root aiyipada ní ìbẹ̀rẹ̀: root CID ti manifest kò sí
-default-config-root-inspect-failed = Ṣíṣe àyẹ̀wò manifest ṣáájú kíkun /config/root aiyipada kuna
-default-config-root-populate-failed = Kíkun /config/root aiyipada ní ìbẹ̀rẹ̀ kuna
 entity-created = Ẹ̀dá ti ṣẹ̀dá
 entity-reloaded = Ẹ̀rọ ẹ̀dá ti tún kojọpọ
 entity-deleted = Ẹ̀dá ti paarẹ́
@@ -53,23 +36,15 @@ entity-state-saving = Ó ń fi ipò ẹ̀dá pamọ́
 entity-state-saved = Ipò ẹ̀dá ti fi pamọ́
 entity-state-empty = Ẹ̀rọ dápadà ipò òfìfo, ìpamọ́ fo
 entity-states-saved = Ipò ẹ̀dá ti fi pamọ́
-link-set = Ìdárapọ̀ ti yàn
-ftl-loaded = Ìfiránṣẹ́ èdè ti kojọpọ láti IPFS
 
 # Ìbẹ̀rẹ̀ àkọ́kọ́ / ìbẹ̀rẹ̀ àdáṣe
-no-config-found = Ìtọ́nisọ̀ kan kò rí.
-initialising-new-identity = Ó ń ṣe ìmúṣiṣẹ̀ ìdánimọ̀ runtime tuntun.
-generated-headless-config = Ìtọ́nisọ̀ headless ti ṣẹ̀dá.
 
 # Ìní
 runtime-claimed = Runtime ti forúkọsilẹ̀.
 
 # Àwọn ẹ̀dá ìpìlẹ̀ tí a dáàbò bò
 refuse-delete-root = Mo kọ̀ pátápátá láti pa ẹ̀dá ìpìlẹ̀ tí a nílò rẹ́
-no-root-acl = ACL ìpìlẹ̀ kò ṣe ìtọ́nisọ̀ — runtime ń ṣiṣẹ́ láìsí ìdarí ìwọlé
-acl-owners-access = A fun ẹni tó pè ní ìgbàláàyè bí ọmọ egbé +owners
 runtime-claim-persisted = Onígbọwọ ti kọ sí ìtọ́nisọ̀.
-runtime-already-claimed = Runtime ti forúkọsilẹ̀ tẹ́lẹ̀.
 
 
 # Namespace creation (:create)
@@ -77,15 +52,10 @@ crud-message-received = A gba ifiranṣẹ CRUD
 crud-acl-updated = ACL ọna gbigbe gbongbon ti ni imudojuiwọn
 
 # CRUD validation errors
-blob-value-ipfs-path = iye blob gbọdọ jẹ ọna IPFS (/ipfs/, /ipns/, tabi /ipld/)
-acl-value-ipfs-path = iye ACL gbọdọ jẹ ọna IPFS (/ipfs/, /ipns/, tabi /ipld/)
-kind-value-ipfs-path = iye kind gbọdọ jẹ ọna IPFS (/ipfs/, /ipns/, tabi /ipld/)
-kind-not-found = Iru ko ri
 cidv1-required = iye gbọdọ jẹ CIDv1 bere (bẹrẹ pẹlu 'b'; CIDv0 'Qm…' ko gba)
 config-key-protected = bọtini config '%key%' ni aabo
 config-key-no-delete = bọtini config '%key%' ti daemon ko le parẹ
 config-key-not-manifest = bọtini config '%key%' kii ṣe bọtini manifest config ti a mọ
-owners-value-not-list = iye owners gbọdọ jẹ akojọ DIDs, kii ṣe iye kan ṣoṣo
 wrong-crud-protocol = ilana CRUD ti ko tọ: %type%
 entity-name-invalid = orúkọ entity gbọdọ jẹ UTF-8 tí a lè tẹ
 reserved-entity-name = orúkọ entity '%name%' jẹ ìpamọ́genesis-kind-owner-only = Onígọ̀wọ́ runtime nìkan ló lè ṣẹ̀dá entity onírúurun genesis
@@ -132,7 +102,6 @@ bootstrap-entity-node-shutdown-updated = Entity node ti ṣe imudojuiwọn nigba
 bootstrap-entity-registry-not-in-manifest = Entity wa ninu registry ṣugbọn ko wa ninu manifest; n fo
 plugin-outbox-drain-limit = Isuna ipadanu plugin outbox ti pari; n ṣe idaduro awọn envelope to ku
 plugin-outbox-congested = Plugin outbox ti kún; awọn envelope le sọnu ti ikanni ba kun
-plugin-envelope-local-reply-dropped = Envelope plugin: idahun RPC agbegbe ti ju silẹ (ko si ẹni ti n duro de idahun agbegbe)
 plugin-envelope-local-gate-closed = Envelope plugin: ilẹkun fifiranṣẹ agbegbe ti wa ni pipade
 plugin-envelope-local-timeout = Envelope plugin: fifiranṣẹ agbegbe ti pari akoko
 plugin-envelope-recipient-invalid = Envelope plugin: DID olugba ko wulo; ti fo
@@ -149,7 +118,6 @@ schedule-random-create-failed = Ko le ṣẹda iṣẹ aileto to n bọ
 schedule-random-chain-stopped = Ẹwọn iṣeto aileto ti duro: ti rọpo nipasẹ asọye tuntun
 schedule-entity-not-found = Fifiranṣẹ ti ṣeto: entity ko ri
 schedule-dispatch-firing = Fifiranṣẹ ti ṣeto n jọ
-bootstrap-kind-registry-fetch-failed = Ko le gba kind node fun registry
 bootstrap-kind-registry-extends-failed = Ko le yanjú ẹwọn extends kind fun registry
 bootstrap-entity-registry-fetch-failed = Ko le gba entity node
 bootstrap-entity-registry-kind-missing = Kind ko wa ninu manifest; n fo entity
@@ -184,16 +152,7 @@ boot-reconciled-owners-manifest-failed = Ko le ṣe irẹpọ awọn oniwun si m
 boot-no-root-entity = Ko si root entity ti forukọsilẹ fun default config root
 boot-default-root-config-populated = Default config root ti kun
 boot-default-root-config-populate-failed = Ko le kun default config root
-boot-default-root-config-skip = Default config root ti wa ni ipinnu tẹlẹ
 boot-entity-load-processed = Plugin entity ti gba
-boot-runtime-kinds-overlay-failed = Ko le lo kinds CID overlay
-boot-runtime-manifest-load-failed = Ko le gba manifest lati kun ACL cache
-boot-runtime-root-cid-resolve-failed = Ko le yanjú runtime root CID lati IPNS
-inbox-empty-payload-dropped = Inbox: payload ofo ti ju silẹ
-inbox-unfragmented-dropped = Inbox: ifiranṣẹ laisi ajẹkù ti ju silẹ
-inbox-unknown-entity = Inbox: ajẹkù entity ti a ko mọ; ti ju silẹ
-inbox-dispatching = Inbox: n firanṣẹ si entity
-inbox-behaviour-ignored = Inbox: awọn ibeere ma_set_behaviour ti fojufo lakoko fifiranṣẹ inbox fire-and-forget
 plugin-envelope-local-recipient-unknown = Envelope plugin: olugba agbegbe ti a ko mọ; ti fo
 plugin-envelope-local-dispatch-start = Envelope plugin: fifiranṣẹ agbegbe ti bẹrẹ
 plugin-envelope-local-dispatch-finish = Envelope plugin: fifiranṣẹ agbegbe ti pari
@@ -202,11 +161,6 @@ plugin-envelope-create-requests-ignored = Envelope plugin: awọn ibeere ẹda t
 ma-create-entity-already-exists = ma_create_entity: entity ti wa tẹlẹ; n ṣetọju entity lọwọlọwọ
 ma-create-entity-kind-missing = ma_create_entity: kind ko wa ninu registry; ti fo
 ma-create-entity-invalid-behaviour = ma_create_entity: itọkasi behaviour ko wulo; ti fo
-plugin-dispatch-rejected = Fifiranṣẹ plugin ti kọ
 crud-message-rejected = Ifiranṣẹ CRUD ti kọ
 inbox-message-rejected = Ifiranṣẹ inbox ti kọ
-outbox-connect-failed-fallback = Asopọ cached outbox ti kuna; n pada si resolver
-outbox-connect-timed-out-fallback = Asopọ cached outbox ti pari akoko; n pada si resolver
-outbox-connect-backoff = Asopọ outbox ti kuna; n lo Fibonacci backoff
-outbox-connect-timeout-backoff = Asopọ outbox ti pari akoko; n lo Fibonacci backoff
 genesis-kind-owner-only = Oniwun runtime nikan le ṣẹda entity ti genesis kind

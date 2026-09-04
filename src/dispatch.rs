@@ -198,8 +198,8 @@ pub async fn dispatch_actor_message(message: &ma_core::Message, ctx: &DispatchCt
             return handle_root_publish(message, ctx, &owners).await;
         }
         let entity = ctx.entity_registry.read().await.get(&fragment).cloned();
-        return match entity {
-            Some(entity) => match dispatch_entity_message(message, term, entity, ctx).await {
+        return if let Some(entity) = entity {
+            match dispatch_entity_message(message, term, entity, ctx).await {
                 Ok(reply) => {
                     if let Some(content) = reply {
                         send_reply(message, ctx, &content)?;
@@ -216,15 +216,14 @@ pub async fn dispatch_actor_message(message: &ma_core::Message, ctx: &DispatchCt
                     );
                     Ok(())
                 }
-            },
-            None => {
-                debug!(did_url = %message.to, "{}", crate::i18n::t("entity-not-found"));
-                Ok(())
             }
+        } else {
+            debug!(did_url = %message.to, "{}", crate::i18n::t("entity-not-found"));
+            Ok(())
         };
     }
 
-    handle_ping(message, ctx, &term).await
+    handle_ping(message, ctx, &term)
 }
 
 async fn handle_root_publish(
@@ -280,11 +279,7 @@ fn term_verb(term: &CborValue) -> Option<&str> {
     }
 }
 
-async fn handle_ping(
-    message: &ma_core::Message,
-    ctx: &DispatchCtx,
-    term: &CborValue,
-) -> Result<()> {
+fn handle_ping(message: &ma_core::Message, ctx: &DispatchCtx, term: &CborValue) -> Result<()> {
     if !matches!(term, CborValue::Text(s) if s == ":ping") {
         debug!(from = %message.from, to = %message.to, "dropping non-ping unfragmented message");
         return Ok(());
@@ -707,7 +702,7 @@ fn send_reply_typed(
                 if let Err(err) = outbox.send(&reply).await {
                     warn!(error = %err, to = %from, "reply send failed");
                 } else {
-                    debug!(to = %from, reply_to = %msg_id, "{}", crate::i18n::t("rpc-reply-sent"));
+                    debug!(to = %from, reply_to = %msg_id, "{}", crate::i18n::t("reply-sent"));
                 }
             }
             Err(err) => {
