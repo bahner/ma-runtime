@@ -69,14 +69,15 @@ and `rust-ma-runtime`; the bulk lives in `rust-ma-runtime`.
 
 ## Remaining (cosmetic / follow-ups)
 
-1. ma-zion i18n keys `rpc-error`/`rpc-error-detail` and several translated
-   strings still say "RPC" (help text, doc-store hints). Renaming them touches
-   all ~60 locale files with genuine translations; deferred.
+1. ~~ma-zion i18n `rpc-error` keys + translated strings~~ — done: keys renamed to
+   `term-error`/`term-error-detail`, English values reworded, "RPC" token
+   stripped from translations, stale `rpc_requests` status read removed.
 2. zscheme's `rpc-send` primitive name is a **ma-zscheme builtin** (published
    crate), so it is not renameable from these repos. It now sends over inbox
    but keeps its historical name.
-3. zion's `actor-call` error classification (`reply-error` vs `timeout` vs
-   `transport-error`) is still coarse; the timeout path exists via
-   `expire_scheme_senders`, but the error taxonomy is a follow-up.
+3. ~~`actor-call` error classification~~ — done: timeouts now surface as a
+   distinct `"timeout"` error; cancellation remains `"reply channel
+   cancelled"`, reply errors carry the actor's reason, and send failures carry
+   the transport error.
 4. `lambda-ma/AGENTS.md` "RPC and events" wording is generic actor-model
    language; no functional change needed.
