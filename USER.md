@@ -53,3 +53,7 @@ and `rust-ma-runtime`; the bulk lives in `rust-ma-runtime`.
 2. `boot.rs` `Cli` doc string still says "RPC + optional IPFS publisher".
 3. acl.rs test function names (`wildcard_rpc_allows_rpc`,
    `wildcard_rpc_denies_ipfs`) still say "rpc" but now test `inbox`.
+4. `rust-ma-runtime/AGENTS.md` (and `ma-zion/AGENTS.md`, `zscheme/AGENTS.md`,
+   `lambda-ma/AGENTS.md`) still document the RPC protocol, dot-path grammar,
+   `:entities`/`:config` verbs, and `/ma/rpc/0.0.1`. These agent notes need a
+   follow-up pass to match the inbox-only actor model.
