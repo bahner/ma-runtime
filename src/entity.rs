@@ -687,11 +687,11 @@ pub struct RuntimeManifest {
 /// `to`           — recipient DID (or DID-URL).
 /// `content_type` — MIME type of the payload (e.g. `application/cbor`).
 /// `message_type` — envelope routing type (e.g. `application/vnd.ma.chat`).  If
-///                  `None` the runtime defaults to `MESSAGE_TYPE_RPC`.  The
+///                  `None` the runtime defaults to `MESSAGE_TYPE_MESSAGE`.  The
 ///                  protocol used for delivery is derived from this field; see
 ///                  `eventloop::protocol_for`.
-/// `reply_to`     — if set, marks this as a reply; overrides `message_type` to
-///                  `MESSAGE_TYPE_RPC_REPLY` and routes via `/ma/rpc/0.0.1`.
+/// `reply_to`     — if set, marks this as a reply; delivered as a correlated
+///                  message via `/ma/inbox/0.0.1`.
 /// `content`      — raw payload bytes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SendEnvelope {

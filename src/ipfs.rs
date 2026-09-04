@@ -7,7 +7,8 @@ use ma_core::ipfs::{
 use ma_core::{
     ipns_from_secret, resolve_endpoint_for_protocol, validate_identity_publish_message,
     validate_ipfs_request, Did, DidDocumentResolver, Document, Inbox, ReplayGuard, SigningKey,
-    MESSAGE_TYPE_IDENTITY_PUBLISH_REQUEST, MESSAGE_TYPE_IPFS_REQUEST, MESSAGE_TYPE_RPC_REPLY,
+    INBOX_PROTOCOL_ID, MESSAGE_TYPE_IDENTITY_PUBLISH_REQUEST, MESSAGE_TYPE_IPFS_REQUEST,
+    MESSAGE_TYPE_MESSAGE,
 };
 use reqwest::multipart;
 use serde::Deserialize;
@@ -21,7 +22,6 @@ use zeroize::Zeroizing;
 
 use crate::acl::{check_full, AclMap, GroupCache, CAP_IDENTITY_PUBLISH, CAP_IPFS};
 use crate::i18n;
-use crate::rpc::RPC_PROTOCOL_ID;
 
 const OUTBOX_BACKOFF_INITIAL: Duration = Duration::from_secs(1);
 pub const DEFAULT_OUTBOX_BACKOFF_ATTEMPTS: usize = 30;
@@ -595,7 +595,7 @@ fn build_rpc_reply_message(
     let reply = ma_core::Message::new_reply(
         &ipfs_did_url,
         &rpc_did_url,
-        MESSAGE_TYPE_RPC_REPLY,
+        MESSAGE_TYPE_MESSAGE,
         "application/cbor",
         payload,
         in_reply_to,
@@ -920,7 +920,7 @@ async fn handle_did_document_publish(
 
     // Spawn reply delivery so a slow or stale iroh connection never blocks
     // the main event loop (and therefore never prevents Ctrl-C from firing).
-    match endpoint_for_protocol_from_doc(&document, RPC_PROTOCOL_ID) {
+    match endpoint_for_protocol_from_doc(&document, INBOX_PROTOCOL_ID) {
         Some(eid) => {
             let endpoint = Arc::clone(&ctx.endpoint);
             let document = document.clone();
@@ -928,7 +928,7 @@ async fn handle_did_document_publish(
             tokio::spawn(async move {
                 match tokio::time::timeout(
                     Duration::from_secs(15),
-                    endpoint.connect_outbox(&document, &eid, &sender_base, RPC_PROTOCOL_ID),
+                    endpoint.connect_outbox(&document, &eid, &sender_base, INBOX_PROTOCOL_ID),
                 )
                 .await
                 {
@@ -1046,7 +1046,7 @@ async fn handle_ipfs_store(
             &resolver,
             &outbox_state,
             &sender,
-            RPC_PROTOCOL_ID,
+            INBOX_PROTOCOL_ID,
             did_resolve,
         )
         .await

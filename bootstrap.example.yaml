@@ -44,7 +44,7 @@ runtime:
 
   # Root transport-gate ACL.
   # Published to IPFS at bootstrap; loaded at startup when no --acl-file is given.
-  # Controls who may use the RPC, inbox, and IPFS services.
+  # Controls who may use the inbox, IPFS, and CRUD services.
   # An absent acl: means the daemon falls back to --acl-file (or open access).
   #
   # `+owners` below resolves against the `grp.owners` list above — it is a
@@ -56,7 +56,6 @@ runtime:
     "*":
       - ipfs
       - identity-publish
-      - rpc
   # Kind definitions are a flat map: full protocol ID string -> kind descriptor
   # (bootstrap input only). The `protocol` field is omitted here because the map
   # key is the protocol ID. Profile-owned bootstraps, such as λ-間's generated

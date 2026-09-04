@@ -104,7 +104,6 @@ impl ManifestWriter {
     /// `Err`, nothing is published and the root CID is unchanged.
     // The guard is held across the whole read-modify-write on purpose — that is
     // exactly what serialises concurrent mutations.
-    #[allow(clippy::significant_drop_tightening)]
     pub async fn mutate<F>(&self, f: F) -> Result<String>
     where
         F: FnOnce(&mut RuntimeManifest) -> Result<()>,
@@ -121,7 +120,6 @@ impl ManifestWriter {
 
     /// Async variant of [`Self::mutate`] for mutations that must validate
     /// against IPFS while the manifest writer lock is held.
-    #[allow(clippy::significant_drop_tightening)]
     pub async fn mutate_async<F, T>(&self, f: F) -> Result<(String, T)>
     where
         F: for<'a> FnOnce(&'a mut RuntimeManifest) -> ManifestMutationFuture<'a, T>,
@@ -161,7 +159,6 @@ impl ManifestWriter {
     /// both the updated node and a manifest pointing at its new CID.
     /// `mutate` returns `false` to signal "nothing changed", which skips the
     /// publish entirely and returns the unchanged root CID.
-    #[allow(clippy::significant_drop_tightening)]
     async fn update_entity_node<F>(&self, fragment: &str, mutate: F) -> Result<String>
     where
         F: FnOnce(&mut EntityNode) -> bool,

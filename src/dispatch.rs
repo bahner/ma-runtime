@@ -1,16 +1,13 @@
-//! `/ma/rpc/0.0.1` handler: entity plugin dispatch and `:ping`.
+//! Actor message dispatch: entity plugin dispatch and `:ping`.
 
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use ciborium::Value as CborValue;
-use ma_core::{
-    Did, DidDocumentResolver, Ipld, SigningKey, CONTENT_TYPE_TERM, MESSAGE_TYPE_RPC,
-    MESSAGE_TYPE_RPC_REPLY,
-};
-use tracing::{debug, error, info, warn};
+use ma_core::{Did, SigningKey, CONTENT_TYPE_TERM, INBOX_PROTOCOL_ID, MESSAGE_TYPE_MESSAGE};
+use tracing::{debug, info, warn};
 
-use crate::acl::{check_full, AclCache, AclMap, GroupCache, CAP_RPC};
+use crate::acl::{AclCache, GroupCache};
 use crate::entity::{
     CastInput, CreateEntityRequest, IpldLink, Lifecycle, LocalMessage, PluginMsg, SendEnvelope,
     SetBehaviourRequest,
@@ -19,11 +16,9 @@ use crate::plugin::EntityRegistry;
 use crate::routing::local_target_fragment;
 use crate::status::SharedStats;
 
-pub const RPC_PROTOCOL_ID: &str = "/ma/rpc/0.0.1";
-
 // ── Handler context ────────────────────────────────────────────────────────────
 
-pub struct RpcHandlerCtx {
+pub struct DispatchCtx {
     pub our_did: Arc<str>,
     pub signing_key: Arc<SigningKey>,
     pub endpoint: Arc<dyn ma_core::MaEndpoint>,
@@ -45,8 +40,8 @@ pub struct RpcHandlerCtx {
     pub did_publish_timeout_secs: u64,
 }
 
-async fn public_plugin_config_for_rpc(
-    ctx: &RpcHandlerCtx,
+async fn public_plugin_config(
+    ctx: &DispatchCtx,
 ) -> Result<std::collections::BTreeMap<String, String>> {
     crate::crud::config::fetch_public_plugin_config(
         &ctx.stats,
@@ -57,7 +52,7 @@ async fn public_plugin_config_for_rpc(
 }
 
 async fn load_entity_node_for_update(
-    ctx: &RpcHandlerCtx,
+    ctx: &DispatchCtx,
     fragment: &str,
     behaviour_cid: Option<&str>,
 ) -> Result<crate::entity::EntityNode> {
@@ -80,7 +75,7 @@ async fn load_entity_node_for_update(
     Ok(node)
 }
 
-async fn apply_behaviour_request(req: SetBehaviourRequest, ctx: &RpcHandlerCtx) -> Result<()> {
+async fn apply_behaviour_request(req: SetBehaviourRequest, ctx: &DispatchCtx) -> Result<()> {
     let behaviour_cid = req
         .behaviour_cid
         .as_deref()
@@ -123,7 +118,7 @@ async fn apply_behaviour_request(req: SetBehaviourRequest, ctx: &RpcHandlerCtx) 
         let s = ctx.stats.read().await;
         (s.endpoint_id.clone(), s.started_at)
     };
-    let runtime_config = public_plugin_config_for_rpc(ctx).await.unwrap_or_else(|e| {
+    let runtime_config = public_plugin_config(ctx).await.unwrap_or_else(|e| {
         warn!(error = %e, "ma_set_behaviour: failed to build public plugin config; continuing with entity-local config only");
         std::collections::BTreeMap::new()
     });
@@ -171,110 +166,78 @@ async fn apply_behaviour_request(req: SetBehaviourRequest, ctx: &RpcHandlerCtx) 
 
 // ── Entry point ────────────────────────────────────────────────────────────────
 
-pub async fn handle_rpc_message(
-    message: &ma_core::Message,
-    acl: &AclMap,
-    ctx: &RpcHandlerCtx,
-) -> Result<()> {
-    if rpc_message_kind(&message.message_type) == RpcMessageKind::Reply {
+pub async fn dispatch_actor_message(message: &ma_core::Message, ctx: &DispatchCtx) -> Result<()> {
+    let payload = message.payload();
+    if payload.is_empty() {
         debug!(
             from = %message.from,
             to = %message.to,
-            reply_to = ?message.reply_to,
-            "RPC reply ignored: no runtime reply waiter"
+            id = %message.id,
+            "dropping empty actor message"
         );
         return Ok(());
     }
 
-    let owners = ctx.stats.read().await.owners.clone();
-    if !crate::acl::is_owner(&owners, &message.from) {
-        let group_cache = ctx.group_cache.clone();
-        check_full(acl, &message.from, &[CAP_RPC], |key| {
-            let group_cache = group_cache.clone();
-            let name = key.strip_prefix('+').unwrap_or(key).to_string();
-            async move {
-                Ok(group_cache
-                    .read()
-                    .await
-                    .get(&name)
-                    .cloned()
-                    .unwrap_or_default())
-            }
-        })
-        .await?;
-    }
-
-    if rpc_message_kind(&message.message_type) != RpcMessageKind::Request {
-        return Err(anyhow!(
-            "unsupported RPC message type '{}' on {}",
-            message.message_type,
-            RPC_PROTOCOL_ID,
-        ));
-    }
-
-    let payload = message.payload();
-    if payload.is_empty() {
-        let reason = "empty RPC payload";
-        error!(
-            from = %message.from,
-            to = %message.to,
-            id = %message.id,
-            message_type = %message.message_type,
-            "RPC message rejected: empty payload"
-        );
-        return send_rpc_error_reply(message, ctx, reason);
-    }
-
-    let term: CborValue =
-        ciborium::de::from_reader(payload.as_slice()).context("invalid CBOR in RPC message")?;
+    let term: CborValue = match ciborium::de::from_reader(payload.as_slice()) {
+        Ok(term) => term,
+        Err(err) => {
+            warn!(
+                from = %message.from,
+                to = %message.to,
+                error = %err,
+                "dropping malformed actor message"
+            );
+            return Ok(());
+        }
+    };
 
     // Fragment routing: entity plugin dispatch.
     if let Some(fragment) = local_target_fragment(&message.to, &ctx.our_did) {
-        if fragment == "root" && rpc_verb(&term) == Some(":publish") {
-            return handle_root_publish_rpc(message, ctx, &owners).await;
+        if fragment == "root" && term_verb(&term) == Some(":publish") {
+            let owners = ctx.stats.read().await.owners.clone();
+            return handle_root_publish(message, ctx, &owners).await;
         }
-        let ep = ctx.entity_registry.read().await.get(&fragment).cloned();
-        return if let Some(entity) = ep {
-            let fragment_for_log = entity.fragment.clone();
-            match handle_entity_plugin_message(message, term, entity, ctx).await {
+        let entity = ctx.entity_registry.read().await.get(&fragment).cloned();
+        return match entity {
+            Some(entity) => match dispatch_entity_message(message, term, entity, ctx).await {
                 Ok(reply) => {
                     if let Some(content) = reply {
-                        send_rpc_reply(message, ctx, &content)?;
+                        send_reply(message, ctx, &content)?;
                     }
                     Ok(())
                 }
                 Err(err) => {
-                    let reason = err.to_string();
+                    // Actor crashed: log locally, send no reply (Hewitt).
                     warn!(
-                        fragment = %fragment_for_log,
+                        fragment = %fragment,
                         from = %message.from,
-                        error = %reason,
-                        "plugin dispatch rejected"
+                        error = %err,
+                        "entity dispatch failed (no reply sent)"
                     );
-                    send_rpc_error_reply(message, ctx, &reason)
+                    Ok(())
                 }
+            },
+            None => {
+                debug!(did_url = %message.to, "{}", crate::i18n::t("entity-not-found"));
+                Ok(())
             }
-        } else {
-            let reason = format!("unknown entity: {}", message.to);
-            debug!(did_url = %message.to, "{}", crate::i18n::t("entity-not-found"));
-            send_rpc_error_reply(message, ctx, &reason)
         };
     }
 
-    handle_root_runtime_rpc(message, ctx, &term).await
+    handle_ping(message, ctx, &term).await
 }
 
-async fn handle_root_publish_rpc(
+async fn handle_root_publish(
     message: &ma_core::Message,
-    ctx: &RpcHandlerCtx,
+    ctx: &DispatchCtx,
     owners: &[String],
 ) -> Result<()> {
     if !crate::acl::is_owner(owners, &message.from) {
-        return send_rpc_error_reply(message, ctx, "owner required");
+        return send_error_reply(message, ctx, "owner required");
     }
 
     let Some(root_cid) = ctx.stats.read().await.root_cid.clone() else {
-        return send_rpc_error_reply(message, ctx, "no manifest root CID available");
+        return send_error_reply(message, ctx, "no manifest root CID available");
     };
     let kubo_url = ctx.kubo_rpc_url.to_string();
     match tokio::time::timeout(
@@ -290,8 +253,8 @@ async fn handle_root_publish_rpc(
     .await
     {
         Ok(Ok(_)) => {}
-        Ok(Err(err)) => return send_rpc_error_reply(message, ctx, &format!("{err:#}")),
-        Err(_) => return send_rpc_error_reply(message, ctx, "root publish timed out"),
+        Ok(Err(err)) => return send_error_reply(message, ctx, &format!("{err:#}")),
+        Err(_) => return send_error_reply(message, ctx, "root publish timed out"),
     }
 
     let mut payload = Vec::new();
@@ -303,10 +266,10 @@ async fn handle_root_publish_rpc(
         &mut payload,
     )
     .context("encode :publish reply")?;
-    send_rpc_reply(message, ctx, &payload)
+    send_reply(message, ctx, &payload)
 }
 
-fn rpc_verb(term: &CborValue) -> Option<&str> {
+fn term_verb(term: &CborValue) -> Option<&str> {
     match term {
         CborValue::Text(verb) => Some(verb.as_str()),
         CborValue::Array(items) => match items.first() {
@@ -317,92 +280,20 @@ fn rpc_verb(term: &CborValue) -> Option<&str> {
     }
 }
 
-async fn handle_root_runtime_rpc(
+async fn handle_ping(
     message: &ma_core::Message,
-    ctx: &RpcHandlerCtx,
+    ctx: &DispatchCtx,
     term: &CborValue,
 ) -> Result<()> {
-    let ping_text = match term {
-        CborValue::Text(s) => s.as_str(),
-        _ => return send_rpc_i18n_error(message, ctx, "rpc-not-text-atom").await,
-    };
-
-    match ping_text {
-        ":ping" => {
-            debug!("{}", crate::i18n::t("ping-received"));
-            let mut pong = Vec::new();
-            ciborium::ser::into_writer(&CborValue::Text(":pong".to_string()), &mut pong)
-                .context("encode :pong")?;
-            send_rpc_reply(message, ctx, &pong)
-        }
-        ":name" => send_text_atom_reply(
-            message,
-            ctx,
-            &runtime_config_text_value(ctx, "name").await?,
-            "encode :name reply",
-        ),
-        ":description" => send_text_atom_reply(
-            message,
-            ctx,
-            &runtime_config_text_value(ctx, "description").await?,
-            "encode :description reply",
-        ),
-        _ => send_rpc_i18n_error(message, ctx, "rpc-unknown-verb").await,
+    if !matches!(term, CborValue::Text(s) if s == ":ping") {
+        debug!(from = %message.from, to = %message.to, "dropping non-ping unfragmented message");
+        return Ok(());
     }
-}
-
-fn send_text_atom_reply(
-    message: &ma_core::Message,
-    ctx: &RpcHandlerCtx,
-    value: &str,
-    encode_context: &str,
-) -> Result<()> {
-    let mut payload = Vec::new();
-    ciborium::ser::into_writer(&CborValue::Text(value.to_string()), &mut payload)
-        .with_context(|| encode_context.to_string())?;
-    send_rpc_reply(message, ctx, &payload)
-}
-
-async fn runtime_config_text_value(ctx: &RpcHandlerCtx, key: &str) -> Result<String> {
-    let root_cid = ctx
-        .stats
-        .read()
-        .await
-        .root_cid
-        .clone()
-        .ok_or_else(|| anyhow!("no manifest root CID available"))?;
-    let manifest: crate::entity::RuntimeManifest =
-        crate::kubo::dag_get(&ctx.kubo_rpc_url, &root_cid).await?;
-
-    manifest
-        .config
-        .get(key)
-        .and_then(serde_yaml::Value::as_str)
-        .map_or_else(
-            || {
-                crate::crud::config::default_manifest_config_value(key)
-                    .and_then(|value| value.as_str().map(str::to_string))
-                    .ok_or_else(|| anyhow!("config key not found: {key}"))
-            },
-            |value| Ok(value.to_string()),
-        )
-}
-
-// ── Fragment extraction ────────────────────────────────────────────────────────
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RpcMessageKind {
-    Request,
-    Reply,
-    Unsupported,
-}
-
-fn rpc_message_kind(message_type: &str) -> RpcMessageKind {
-    match message_type {
-        MESSAGE_TYPE_RPC => RpcMessageKind::Request,
-        MESSAGE_TYPE_RPC_REPLY => RpcMessageKind::Reply,
-        _ => RpcMessageKind::Unsupported,
-    }
+    debug!("{}", crate::i18n::t("ping-received"));
+    let mut pong = Vec::new();
+    ciborium::ser::into_writer(&CborValue::Text(":pong".to_string()), &mut pong)
+        .context("encode :pong")?;
+    send_reply(message, ctx, &pong)
 }
 
 // ── Entity plugin dispatch ────────────────────────────────────────────────────
@@ -410,11 +301,11 @@ fn rpc_message_kind(message_type: &str) -> RpcMessageKind {
 /// Enforce the entity's verb-scoped ACL for an incoming RPC dispatch. Empty
 /// or missing ACL is fail-closed (deny-all), matching `EntityNode.acl`'s
 /// documented contract.
-async fn enforce_entity_rpc_acl(
+async fn enforce_entity_acl(
     entity: &crate::plugin::EntityPlugin,
     message: &ma_core::Message,
     verb_str: Option<&str>,
-    ctx: &RpcHandlerCtx,
+    ctx: &DispatchCtx,
 ) -> Result<()> {
     if entity.acl.is_empty() {
         return Err(anyhow!(
@@ -469,7 +360,7 @@ async fn enforce_entity_rpc_acl(
 async fn process_entity_create_requests(
     create_requests: Vec<CreateEntityRequest>,
     entity: &crate::plugin::EntityPlugin,
-    ctx: &RpcHandlerCtx,
+    ctx: &DispatchCtx,
 ) -> Result<()> {
     for req in create_requests {
         let maybe_kind = ctx
@@ -495,7 +386,7 @@ async fn create_entity_from_request(
     req: CreateEntityRequest,
     kind_node: &crate::entity::KindNode,
     entity: &crate::plugin::EntityPlugin,
-    ctx: &RpcHandlerCtx,
+    ctx: &DispatchCtx,
 ) -> Result<()> {
     let entity_node = crate::entity::EntityNode {
         kind: req.kind_protocol.clone(),
@@ -520,7 +411,7 @@ async fn create_entity_from_request(
         let s = ctx.stats.read().await;
         (s.endpoint_id.clone(), s.started_at)
     };
-    let runtime_config = public_plugin_config_for_rpc(ctx).await.unwrap_or_else(|e| {
+    let runtime_config = public_plugin_config(ctx).await.unwrap_or_else(|e| {
         warn!(error = %e, "ma_create_entity: failed to build public plugin config; continuing with entity-local config only");
         std::collections::BTreeMap::new()
     });
@@ -559,7 +450,7 @@ async fn finish_created_entity(
     req: CreateEntityRequest,
     entity_node: crate::entity::EntityNode,
     ep: crate::plugin::EntityPlugin,
-    ctx: &RpcHandlerCtx,
+    ctx: &DispatchCtx,
 ) -> Result<()> {
     let mut running_node = entity_node;
     running_node.initialised = true;
@@ -589,7 +480,7 @@ async fn finish_created_entity(
 
 /// `init()` returned `:error`: discard the entity (do NOT persist to the
 /// manifest) and queue an error reply into the parent's outbox.
-fn report_create_init_error(req: &CreateEntityRequest, ctx: &RpcHandlerCtx) {
+fn report_create_init_error(req: &CreateEntityRequest, ctx: &DispatchCtx) {
     warn!(fragment = %req.fragment, kind = %req.kind_protocol,
         "ma_create_entity: init() returned :error; entity discarded");
     let actor = crate::routing::local_actor_url(&ctx.our_did, &req.fragment);
@@ -623,7 +514,7 @@ fn report_create_init_error(req: &CreateEntityRequest, ctx: &RpcHandlerCtx) {
 async fn process_entity_delete_requests(
     delete_requests: Vec<String>,
     entity: &crate::plugin::EntityPlugin,
-    ctx: &RpcHandlerCtx,
+    ctx: &DispatchCtx,
 ) {
     for target_fragment in delete_requests {
         let reg_read = ctx.entity_registry.read().await;
@@ -660,12 +551,11 @@ async fn process_entity_delete_requests(
     }
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-async fn handle_entity_plugin_message(
+async fn dispatch_entity_message(
     message: &ma_core::Message,
     term: CborValue,
     entity: Arc<crate::plugin::EntityPlugin>,
-    ctx: &RpcHandlerCtx,
+    ctx: &DispatchCtx,
 ) -> Result<Option<Vec<u8>>> {
     debug!(fragment = %entity.fragment, from = %message.from, "{}", crate::i18n::t("entity-dispatched"));
 
@@ -693,7 +583,7 @@ async fn handle_entity_plugin_message(
         "entity RPC dispatch"
     );
 
-    enforce_entity_rpc_acl(&entity, message, verb_str.as_deref(), ctx).await?;
+    enforce_entity_acl(&entity, message, verb_str.as_deref(), ctx).await?;
 
     let mut content_bytes = Vec::new();
     ciborium::ser::into_writer(&term, &mut content_bytes)
@@ -761,13 +651,13 @@ async fn handle_entity_plugin_message(
 
 // ── Generic reply helper ───────────────────────────────────────────────────────
 
-fn send_rpc_reply(incoming: &ma_core::Message, ctx: &RpcHandlerCtx, content: &[u8]) -> Result<()> {
-    send_rpc_reply_typed(incoming, ctx, CONTENT_TYPE_TERM, content)
+fn send_reply(incoming: &ma_core::Message, ctx: &DispatchCtx, content: &[u8]) -> Result<()> {
+    send_reply_typed(incoming, ctx, CONTENT_TYPE_TERM, content)
 }
 
-fn send_rpc_reply_typed(
+fn send_reply_typed(
     incoming: &ma_core::Message,
-    ctx: &RpcHandlerCtx,
+    ctx: &DispatchCtx,
     content_type: &str,
     content: &[u8],
 ) -> Result<()> {
@@ -777,13 +667,13 @@ fn send_rpc_reply_typed(
     let reply = ma_core::Message::new_reply(
         &incoming.to,
         &incoming.from,
-        MESSAGE_TYPE_RPC_REPLY,
+        MESSAGE_TYPE_MESSAGE,
         content_type,
         content,
         &incoming.id,
         &ctx.signing_key,
     )
-    .context("failed to build RPC reply")?;
+    .context("failed to build reply")?;
 
     // Spawn the delivery so the event loop is never blocked by DID resolution
     // or QUIC connection setup. The reply is fire-and-forget from the handler's
@@ -801,13 +691,13 @@ fn send_rpc_reply_typed(
                 &resolver,
                 &outbox_state,
                 &sender,
-                RPC_PROTOCOL_ID,
+                INBOX_PROTOCOL_ID,
                 did_resolve,
             )
             .await
         } else {
             endpoint
-                .outbox(resolver.as_ref(), &sender.base_id(), RPC_PROTOCOL_ID)
+                .outbox(resolver.as_ref(), &sender.base_id(), INBOX_PROTOCOL_ID)
                 .await
                 .map_err(anyhow::Error::from)
         };
@@ -815,49 +705,20 @@ fn send_rpc_reply_typed(
         match outbox_result {
             Ok(mut outbox) => {
                 if let Err(err) = outbox.send(&reply).await {
-                    warn!(error = %err, to = %from, "RPC reply send failed");
+                    warn!(error = %err, to = %from, "reply send failed");
                 } else {
                     debug!(to = %from, reply_to = %msg_id, "{}", crate::i18n::t("rpc-reply-sent"));
                 }
             }
             Err(err) => {
-                debug!(error = %err, to = %from, "RPC reply delivery failed");
+                debug!(error = %err, to = %from, "reply delivery failed");
             }
         }
     });
     Ok(())
 }
 
-/// Resolve the caller's preferred language from their DID document.
-/// Falls back to the runtime's own language on any error.
-async fn rpc_caller_lang(from: &str, ctx: &RpcHandlerCtx) -> String {
-    if let Ok(doc) = ctx.resolver.resolve(from).await {
-        if let Some(Ipld::Map(ma)) = &doc.ma {
-            if let Some(Ipld::String(lang)) = ma.get("lang") {
-                if crate::i18n::has_lang(lang) {
-                    return lang.clone();
-                }
-            }
-        }
-    }
-    crate::i18n::runtime_lang()
-}
-
-/// Send an RPC error reply with the message localised to the caller's language.
-async fn send_rpc_i18n_error(
-    incoming: &ma_core::Message,
-    ctx: &RpcHandlerCtx,
-    key: &str,
-) -> Result<()> {
-    let lang = rpc_caller_lang(&incoming.from, ctx).await;
-    send_rpc_error_reply(incoming, ctx, &crate::i18n::t_lang(&lang, key))
-}
-
-fn send_rpc_error_reply(
-    incoming: &ma_core::Message,
-    ctx: &RpcHandlerCtx,
-    reason: &str,
-) -> Result<()> {
+fn send_error_reply(incoming: &ma_core::Message, ctx: &DispatchCtx, reason: &str) -> Result<()> {
     let mut payload = Vec::new();
     ciborium::ser::into_writer(
         &CborValue::Array(vec![
@@ -867,7 +728,7 @@ fn send_rpc_error_reply(
         &mut payload,
     )
     .context("failed to encode RPC error reply")?;
-    send_rpc_reply(incoming, ctx, &payload)
+    send_reply(incoming, ctx, &payload)
 }
 
 #[cfg(test)]
@@ -886,44 +747,30 @@ mod tests {
     use crate::status::Stats;
     use crate::testkubo::MockKubo;
 
-    use ma_core::{MESSAGE_TYPE_RPC, MESSAGE_TYPE_RPC_REPLY};
-
-    use super::{
-        handle_entity_plugin_message, rpc_message_kind, rpc_verb, RpcMessageKind, RPC_PROTOCOL_ID,
-    };
+    use super::{dispatch_entity_message, term_verb};
 
     #[test]
-    fn rpc_reply_is_classified_separately_from_requests() {
-        assert_eq!(rpc_message_kind(MESSAGE_TYPE_RPC), RpcMessageKind::Request);
+    fn term_verb_extracts_text_atom_and_array_head() {
         assert_eq!(
-            rpc_message_kind(MESSAGE_TYPE_RPC_REPLY),
-            RpcMessageKind::Reply
-        );
-        assert_eq!(rpc_message_kind("text/plain"), RpcMessageKind::Unsupported);
-    }
-
-    #[test]
-    fn rpc_verb_extracts_text_atom_and_array_head() {
-        assert_eq!(
-            rpc_verb(&CborValue::Text(":publish".to_string())),
+            term_verb(&CborValue::Text(":publish".to_string())),
             Some(":publish")
         );
         assert_eq!(
-            rpc_verb(&CborValue::Array(vec![
+            term_verb(&CborValue::Array(vec![
                 CborValue::Text(":publish".to_string()),
                 CborValue::Text("now".to_string()),
             ])),
             Some(":publish")
         );
-        assert_eq!(rpc_verb(&CborValue::Array(vec![])), None);
+        assert_eq!(term_verb(&CborValue::Array(vec![])), None);
     }
 
     /// Fixture bundling the state needed to dispatch a native scheduler RPC
     /// message: a running `#scheduler` entity registered in an
-    /// `RpcHandlerCtx`, its ACL, and the sender identity used to sign the
+    /// `DispatchCtx`, its ACL, and the sender identity used to sign the
     /// incoming message.
     struct SchedulerHelpFixture {
-        ctx: super::RpcHandlerCtx,
+        ctx: super::DispatchCtx,
         runtime_did: ma_core::Did,
         sender_did: ma_core::Did,
         sender_signing: ma_core::SigningKey,
@@ -1036,7 +883,7 @@ mod tests {
             build_scheduler_test_identities();
 
         let mut runtime_endpoint_box = crate::testkubo::test_endpoint([11u8; 32]).await;
-        let _runtime_rpc_inbox = runtime_endpoint_box.service(RPC_PROTOCOL_ID);
+        let _runtime_inbox = runtime_endpoint_box.service(ma_core::INBOX_PROTOCOL_ID);
         let runtime_endpoint: Arc<dyn ma_core::MaEndpoint> = Arc::from(runtime_endpoint_box);
 
         register_scheduler_entity(&kind_registry, &entity_registry, kubo.url(), &runtime_did).await;
@@ -1047,7 +894,7 @@ mod tests {
             .await
             .insert("acls.scheduler".to_string(), scheduler_acl);
 
-        let ctx = super::RpcHandlerCtx {
+        let ctx = super::DispatchCtx {
             our_did: Arc::from(runtime_did.base_id()),
             signing_key: Arc::new(runtime_signing),
             endpoint: runtime_endpoint,
@@ -1106,7 +953,7 @@ mod tests {
         let incoming = ma_core::Message::new(
             fixture.sender_did.base_id(),
             format!("{}#scheduler", fixture.runtime_did.base_id()),
-            MESSAGE_TYPE_RPC,
+            ma_core::MESSAGE_TYPE_MESSAGE,
             ma_core::CONTENT_TYPE_TERM,
             &payload,
             &fixture.sender_signing,
@@ -1122,7 +969,7 @@ mod tests {
             .unwrap()
             .clone();
 
-        let reply = handle_entity_plugin_message(
+        let reply = dispatch_entity_message(
             &incoming,
             ciborium::Value::Text(":help".to_string()),
             scheduler_entity,

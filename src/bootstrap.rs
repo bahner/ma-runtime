@@ -1055,7 +1055,7 @@ mod tests {
         apply_kinds_overlay, apply_kinds_tree_overlay, owner_did_remote_pin_name, BootstrapYaml,
     };
     use crate::entity::{EntityNode, Evaluator, IpldLink, KindNode, KindTree, RuntimeManifest};
-    use ma_core::{check_cap, CAP_IDENTITY_PUBLISH, CAP_IPFS, CAP_RPC};
+    use ma_core::{check_cap, CAP_IDENTITY_PUBLISH, CAP_IPFS};
     use std::collections::{BTreeMap, HashMap};
 
     #[test]
@@ -1106,7 +1106,6 @@ mod tests {
         let root_acl = yaml.runtime.acl.expect("root ACL must be present");
         assert!(check_cap(&root_acl, "did:ma:alice", CAP_IPFS).is_ok());
         assert!(check_cap(&root_acl, "did:ma:alice", CAP_IDENTITY_PUBLISH).is_ok());
-        assert!(check_cap(&root_acl, "did:ma:alice", CAP_RPC).is_ok());
     }
 
     #[tokio::test]

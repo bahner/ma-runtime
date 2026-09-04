@@ -7,7 +7,7 @@ use tokio::sync::RwLock;
 
 pub use ma_core::{
     normalize_principal, AclMap, CapabilityEntry, CAP_CRUD, CAP_IDENTITY_PUBLISH, CAP_IPFS,
-    CAP_RPC, GROUP_PREFIX,
+    GROUP_PREFIX,
 };
 
 /// In-memory cache of named ACLs.
@@ -138,7 +138,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use ma_core::{check_cap, AclMap, CapabilityEntry, CAP_IPFS, CAP_RPC};
+    use ma_core::{check_cap, AclMap, CapabilityEntry, CAP_IPFS, CAP_INBOX};
 
     fn allow(caps: &[&str]) -> CapabilityEntry {
         CapabilityEntry::from_caps(caps.iter().copied())
@@ -153,44 +153,44 @@ mod tests {
 
     #[test]
     fn wildcard_rpc_allows_rpc() {
-        let acl = m(&[("*", allow(&["rpc"]))]);
-        assert!(check_cap(&acl, "did:ma:alice", CAP_RPC).is_ok());
+        let acl = m(&[("*", allow(&["inbox"]))]);
+        assert!(check_cap(&acl, "did:ma:alice", CAP_INBOX).is_ok());
     }
 
     #[test]
     fn wildcard_rpc_denies_ipfs() {
-        let acl = m(&[("*", allow(&["rpc"]))]);
+        let acl = m(&[("*", allow(&["inbox"]))]);
         assert!(check_cap(&acl, "did:ma:alice", CAP_IPFS).is_err());
     }
 
     #[test]
     fn explicit_deny_wins_over_wildcard_allow() {
         let acl = m(&[
-            ("*", allow(&["rpc", "ipfs"])),
+            ("*", allow(&["inbox", "ipfs"])),
             ("did:ma:bandit", CapabilityEntry::Deny),
         ]);
-        assert!(check_cap(&acl, "did:ma:bandit", CAP_RPC).is_err());
+        assert!(check_cap(&acl, "did:ma:bandit", CAP_INBOX).is_err());
     }
 
     #[test]
     fn exact_match_restricts_below_wildcard() {
         let acl = m(&[
-            ("*", allow(&["rpc", "ipfs"])),
-            ("did:ma:bob", allow(&["rpc"])),
+            ("*", allow(&["inbox", "ipfs"])),
+            ("did:ma:bob", allow(&["inbox"])),
         ]);
-        assert!(check_cap(&acl, "did:ma:bob", CAP_RPC).is_ok());
+        assert!(check_cap(&acl, "did:ma:bob", CAP_INBOX).is_ok());
         assert!(check_cap(&acl, "did:ma:bob", CAP_IPFS).is_err());
     }
 
     #[test]
     fn did_url_caller_is_normalized() {
-        let acl = m(&[("did:ma:alice", allow(&["rpc", "ipfs"]))]);
-        assert!(check_cap(&acl, "did:ma:alice#sign", CAP_RPC).is_ok());
+        let acl = m(&[("did:ma:alice", allow(&["inbox", "ipfs"]))]);
+        assert!(check_cap(&acl, "did:ma:alice#sign", CAP_INBOX).is_ok());
     }
 
     #[test]
     fn default_deny_when_no_matching_entries() {
-        assert!(check_cap(&AclMap::new(), "did:ma:alice", CAP_RPC).is_err());
+        assert!(check_cap(&AclMap::new(), "did:ma:alice", CAP_INBOX).is_err());
     }
 
     #[tokio::test]
@@ -278,10 +278,10 @@ mod tests {
     async fn check_full_deny_wins_over_wildcard_allow() {
         use super::check_full;
         let acl = m(&[
-            ("*", allow(&["rpc", "ipfs"])),
+            ("*", allow(&["inbox", "ipfs"])),
             ("did:ma:bandit", CapabilityEntry::Deny),
         ]);
-        let result = check_full(&acl, "did:ma:bandit", &["rpc"], |_| async { Ok(vec![]) }).await;
+        let result = check_full(&acl, "did:ma:bandit", &["inbox"], |_| async { Ok(vec![]) }).await;
         assert!(result.is_err());
     }
 

@@ -28,7 +28,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
-use ma_core::{CONTENT_TYPE_TERM, MESSAGE_TYPE_RPC};
+use ma_core::{CONTENT_TYPE_TERM, MESSAGE_TYPE_MESSAGE};
 use tokio_cron_scheduler::{Job, JobScheduler};
 use tracing::{trace, warn};
 
@@ -411,7 +411,7 @@ pub async fn dispatch_scheduled(
         created_at: now_secs,
         exp: 0,
         reply_to: None,
-        message_type: MESSAGE_TYPE_RPC.to_string(),
+        message_type: MESSAGE_TYPE_MESSAGE.to_string(),
         content_type: CONTENT_TYPE_TERM.to_string(),
         content: content.to_vec(),
     };

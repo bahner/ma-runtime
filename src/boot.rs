@@ -24,7 +24,7 @@ use crate::startup::{
     select_status_bind, should_generate_headless_config,
 };
 use crate::{
-    acl, bootstrap, crud, entity, eventloop, i18n, ipfs, kubo, manifest, plugin, republish, rpc,
+    acl, bootstrap, crud, entity, eventloop, i18n, ipfs, kubo, manifest, plugin, republish,
     schedule, scheduler_actor, status,
 };
 
@@ -141,7 +141,7 @@ impl Cli {
     }
 }
 
-/// Builds the iroh endpoint and registers the RPC/inbox/IPFS/CRUD services on
+/// Builds the iroh endpoint and registers the inbox/IPFS/CRUD services on
 /// it. Service registration requires `&mut endpoint`, so this returns the
 /// endpoint already converted to the shared `Arc<dyn MaEndpoint>` used by the
 /// rest of the daemon.
@@ -165,7 +165,6 @@ async fn setup_endpoint_services(
         ipv6_enabled,
     )
     .await?;
-    let rpc_messages = endpoint.service(rpc::RPC_PROTOCOL_ID);
     let inbox_messages = endpoint.service(INBOX_PROTOCOL_ID);
     let ipfs_messages = ipfs_publisher_enabled.then(|| endpoint.service(IPFS_PROTOCOL_ID));
     let crud_messages = crud_enabled.then(|| endpoint.service(crud::CRUD_PROTOCOL_ID));
@@ -176,7 +175,6 @@ async fn setup_endpoint_services(
 
     Ok(EndpointServices {
         endpoint,
-        rpc_messages,
         inbox_messages,
         ipfs_messages,
         crud_messages,
@@ -186,7 +184,6 @@ async fn setup_endpoint_services(
 /// Endpoint plus the per-protocol message inboxes registered on it.
 struct EndpointServices {
     endpoint: Arc<dyn ma_core::MaEndpoint>,
-    rpc_messages: ma_core::Inbox<ma_core::Message>,
     inbox_messages: ma_core::Inbox<ma_core::Message>,
     ipfs_messages: Option<ma_core::Inbox<ma_core::Message>>,
     crud_messages: Option<ma_core::Inbox<ma_core::Message>>,
@@ -824,7 +821,6 @@ pub struct Boot {
     runtime_ipns_id: Option<String>,
 
     endpoint: Option<Arc<dyn ma_core::MaEndpoint>>,
-    rpc_messages: Option<ma_core::Inbox<ma_core::Message>>,
     inbox_messages: Option<ma_core::Inbox<ma_core::Message>>,
     ipfs_messages: Option<ma_core::Inbox<ma_core::Message>>,
     crud_messages: Option<ma_core::Inbox<ma_core::Message>>,
@@ -924,7 +920,6 @@ impl Boot {
             runtime_ipns_key: None,
             runtime_ipns_id: None,
             endpoint: None,
-            rpc_messages: None,
             inbox_messages: None,
             ipfs_messages: None,
             crud_messages: None,
@@ -1050,7 +1045,6 @@ impl Boot {
             .unwrap_or(true);
         let EndpointServices {
             endpoint,
-            rpc_messages,
             inbox_messages,
             ipfs_messages,
             crud_messages,
@@ -1068,7 +1062,6 @@ impl Boot {
         self.runtime_ipns_key = Some(runtime_ipns_key);
         self.runtime_ipns_id = Some(runtime_ipns_id);
         self.endpoint = Some(endpoint);
-        self.rpc_messages = Some(rpc_messages);
         self.inbox_messages = Some(inbox_messages);
         self.ipfs_messages = ipfs_messages;
         self.crud_messages = crud_messages;
@@ -1322,7 +1315,6 @@ impl Boot {
 
         let run_args = eventloop::RunArgs {
             endpoint,
-            rpc_messages: self.rpc_messages.take().expect("setup_endpoint ran"),
             inbox_messages: self.inbox_messages.take().expect("setup_endpoint ran"),
             crud_messages: self.crud_messages.take(),
             ipfs_state: self.ipfs_state.take(),

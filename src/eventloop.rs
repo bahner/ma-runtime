@@ -1,6 +1,6 @@
 //! The daemon's main event loop and graceful shutdown.
 //!
-//! Drains the RPC, IPFS-publish, and CRUD service inboxes each tick, delivers
+//! Drains the inbox, IPFS-publish, and CRUD service inboxes each tick, delivers
 //! plugin envelopes, and on Ctrl-C persists entity state and closes the iroh
 //! endpoint.  Split out of `main.rs` so the entry point covers only startup.
 
@@ -14,8 +14,7 @@ use ma_core::config::Config;
 use ma_core::{
     Did, Inbox, MaEndpoint, Message, SigningKey, CONTENT_TYPE_TERM, INBOX_PROTOCOL_ID,
     IPFS_PROTOCOL_ID, MESSAGE_TYPE_CRUD, MESSAGE_TYPE_CRUD_REPLY,
-    MESSAGE_TYPE_IDENTITY_PUBLISH_REQUEST, MESSAGE_TYPE_IPFS_REQUEST, MESSAGE_TYPE_RPC,
-    MESSAGE_TYPE_RPC_REPLY,
+    MESSAGE_TYPE_IDENTITY_PUBLISH_REQUEST, MESSAGE_TYPE_IPFS_REQUEST, MESSAGE_TYPE_MESSAGE,
 };
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::{Mutex, RwLock, Semaphore};
@@ -32,7 +31,7 @@ use crate::manifest::ManifestWriter;
 use crate::plugin::{EntityPlugin, EntityRegistry};
 use crate::routing::{local_actor_url, local_target_fragment};
 use crate::status::SharedStats;
-use crate::{bootstrap, crud, i18n, inbox, ipfs, rpc, status};
+use crate::{bootstrap, crud, dispatch, i18n, ipfs, status};
 
 const PLUGIN_OUTBOX_DRAIN_BUDGET: usize = 64;
 const LOCAL_PLUGIN_DISPATCH_LIMIT: usize = 16;
@@ -80,12 +79,11 @@ async fn public_plugin_config_for_local(
 
 /// Map a `message_type` string to the iroh delivery protocol.
 ///
-/// Only RPC and its reply go to `/ma/rpc/0.0.1`; IPFS requests go to
-/// `/ma/ipfs/0.0.1`; CRUD goes to `/ma/crud/0.0.1`.  Everything else
-/// (message, broadcast, chat, emote, unknown) falls back to `/ma/inbox/0.0.1`.
+/// IPFS requests go to `/ma/ipfs/0.0.1`; CRUD goes to `/ma/crud/0.0.1`.
+/// Everything else (message, broadcast, chat, emote, unknown) falls back to
+/// `/ma/inbox/0.0.1`.
 fn protocol_for(msg_type: &str) -> &'static str {
     match msg_type {
-        MESSAGE_TYPE_RPC | MESSAGE_TYPE_RPC_REPLY => rpc::RPC_PROTOCOL_ID,
         MESSAGE_TYPE_IPFS_REQUEST | MESSAGE_TYPE_IDENTITY_PUBLISH_REQUEST => IPFS_PROTOCOL_ID,
         MESSAGE_TYPE_CRUD | MESSAGE_TYPE_CRUD_REPLY => crud::CRUD_PROTOCOL_ID,
         _ => INBOX_PROTOCOL_ID,
@@ -414,7 +412,6 @@ async fn finish_create_request(
 /// bundle used internally once the loop is running.
 pub struct RunArgs {
     pub endpoint: Arc<dyn MaEndpoint>,
-    pub rpc_messages: Inbox<Message>,
     pub inbox_messages: Inbox<Message>,
     pub crud_messages: Option<Inbox<Message>>,
     pub ipfs_state: Option<IpfsServiceState>,
@@ -446,7 +443,6 @@ pub struct RunArgs {
 /// is a separate method so no single function grows unreadably long.
 struct EventLoopState {
     endpoint: Arc<dyn MaEndpoint>,
-    rpc_messages: Inbox<Message>,
     inbox_messages: Inbox<Message>,
     crud_messages: Option<Inbox<Message>>,
     ipfs_state: Option<IpfsServiceState>,
@@ -479,7 +475,6 @@ impl EventLoopState {
     fn new(args: RunArgs) -> Self {
         let RunArgs {
             endpoint,
-            rpc_messages,
             inbox_messages,
             crud_messages,
             ipfs_state,
@@ -508,7 +503,6 @@ impl EventLoopState {
 
         Self {
             endpoint,
-            rpc_messages,
             inbox_messages,
             crud_messages,
             ipfs_state,
@@ -547,79 +541,12 @@ impl EventLoopState {
             .as_ref()
             .map(|ipfs| Arc::clone(&ipfs.outbox_state));
 
-        self.drain_rpc_messages(now, shared_outbox_state.as_ref(), &kubo_url)
-            .await;
         self.drain_ipfs_messages(now, &kubo_url).await;
         self.drain_crud_messages(now, shared_outbox_state.as_ref(), &kubo_url)
             .await;
         self.drain_inbox_messages(now, shared_outbox_state.as_ref(), &kubo_url)
             .await;
         self.drain_plugin_envelopes(&kubo_url).await;
-    }
-
-    // Drain /ma/rpc/0.0.1
-    async fn drain_rpc_messages(
-        &self,
-        now: u64,
-        shared_outbox_state: Option<&ipfs::OutboxState>,
-        kubo_url: &str,
-    ) {
-        while let Some(mut message) = self.rpc_messages.pop(now) {
-            if let Some(outbox_state) = shared_outbox_state {
-                ipfs::record_inbound_contact(outbox_state, &message.from).await;
-            }
-            debug!(
-                node = %message.from,
-                protocol = rpc::RPC_PROTOCOL_ID,
-                "{}", i18n::t("node-connected")
-            );
-            debug!(
-                from = %message.from,
-                to = %message.to,
-                id = %message.id,
-                message_type = %message.message_type,
-                "{}", i18n::t("rpc-message-received")
-            );
-            {
-                let mut s = self.stats.write().await;
-                s.rpc_requests += 1;
-            }
-            let acl_snapshot = self.acl.read().await.clone();
-            let ctx = rpc::RpcHandlerCtx {
-                our_did: Arc::from(self.our_did.as_str()),
-                signing_key: Arc::new(self.signing_key.clone()),
-                endpoint: Arc::clone(&self.endpoint),
-                kubo_rpc_url: Arc::from(kubo_url),
-                resolver: Arc::clone(&self.shared_resolver),
-                outbox_state: shared_outbox_state.map(Arc::clone),
-                did_resolve: self.did_resolve,
-                entity_registry: self.entity_registry.clone(),
-                kind_registry: self.kind_registry.clone(),
-                envelope_tx: self.envelope_tx.clone(),
-                stats: self.stats.clone(),
-                acl_cache: self.acl_cache.clone(),
-                group_cache: self.group_cache.clone(),
-                manifest_writer: self.manifest_writer.clone(),
-                shared_config: Arc::clone(&self.shared_config),
-                runtime_slug: Arc::from(self.runtime_slug.as_str()),
-                runtime_ipns_key: self.runtime_ipns_key,
-                ipns_publish: self.ipns_publish,
-                did_publish_timeout_secs: self.did_publish_timeout_secs,
-            };
-            tokio::spawn(async move {
-                if let Err(err) = tokio::time::timeout(
-                    Duration::from_secs(30),
-                    rpc::handle_rpc_message(&message, &acl_snapshot, &ctx),
-                )
-                .await
-                .unwrap_or_else(|_| Err(anyhow::anyhow!("rpc handler timed out")))
-                {
-                    warn!(error = %err, from = %message.from, "{}", i18n::t("rpc-message-rejected"));
-                }
-                message.content.zeroize();
-                message.signature.zeroize();
-            });
-        }
     }
 
     // Drain /ma/ipfs/0.0.1
@@ -753,16 +680,31 @@ impl EventLoopState {
                 message_type = %message.message_type,
                 "{}", i18n::t("inbox-message-received")
             );
-            let ctx = inbox::InboxHandlerCtx {
+            let ctx = dispatch::DispatchCtx {
                 our_did: Arc::from(self.our_did.as_str()),
-                entity_registry: self.entity_registry.clone(),
+                signing_key: Arc::new(self.signing_key.clone()),
+                endpoint: Arc::clone(&self.endpoint),
                 kubo_rpc_url: Arc::from(kubo_url),
+                resolver: Arc::clone(&self.shared_resolver),
+                outbox_state: shared_outbox_state.map(Arc::clone),
+                did_resolve: self.did_resolve,
+                entity_registry: self.entity_registry.clone(),
+                kind_registry: self.kind_registry.clone(),
+                envelope_tx: self.envelope_tx.clone(),
+                stats: self.stats.clone(),
+                acl_cache: self.acl_cache.clone(),
+                group_cache: self.group_cache.clone(),
                 manifest_writer: self.manifest_writer.clone(),
+                shared_config: Arc::clone(&self.shared_config),
+                runtime_slug: Arc::from(self.runtime_slug.as_str()),
+                runtime_ipns_key: self.runtime_ipns_key,
+                ipns_publish: self.ipns_publish,
+                did_publish_timeout_secs: self.did_publish_timeout_secs,
             };
             tokio::spawn(async move {
                 if let Err(err) = tokio::time::timeout(
                     Duration::from_secs(30),
-                    inbox::handle_inbox_message(&message, &ctx),
+                    dispatch::dispatch_actor_message(&message, &ctx),
                 )
                 .await
                 .unwrap_or_else(|_| Err(anyhow::anyhow!("inbox handler timed out")))
@@ -785,13 +727,10 @@ impl EventLoopState {
                 break;
             };
             drained_plugin_envelopes += 1;
-            let msg_type = if env.reply_to.is_some() {
-                MESSAGE_TYPE_RPC_REPLY.to_string()
-            } else {
-                env.message_type
-                    .clone()
-                    .unwrap_or_else(|| MESSAGE_TYPE_RPC.to_string())
-            };
+            let msg_type = env
+                .message_type
+                .clone()
+                .unwrap_or_else(|| MESSAGE_TYPE_MESSAGE.to_string());
             if let Some(target_fragment) = local_target_fragment(&env.to, &self.our_did) {
                 self.dispatch_envelope_locally(fragment, target_fragment, env, msg_type, kubo_url)
                     .await;
