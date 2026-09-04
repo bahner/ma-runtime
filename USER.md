@@ -54,17 +54,29 @@ and `rust-ma-runtime`; the bulk lives in `rust-ma-runtime`.
 3. **`rpc_requests` status field** removed (it was dead, always 0).
 4. **`rust-ma-runtime/AGENTS.md`** updated to the inbox-only actor model.
 
-## Remaining (phase 6 — out of scope here)
+## Phase 6 (zion + zscheme) — done
 
-1. `ipfs.rs` still builds IPFS-service replies addressed to the sender's
-   `#rpc` fragment (`build_rpc_reply_message`). That is the client-side reply
-   convention zion/zscheme still rely on; it changes with the phase 6 zion
-   refactor, not before.
-2. `ma-zion/AGENTS.md` and `zscheme/AGENTS.md` still describe the RPC
-   transport (`RPC_PROTOCOL_ID`, `CAP_RPC`, `send_rpc`, `SESSION_RPC_INBOX`,
-   `rpc-send` primitive). Those repos are unrefactored; update the notes when
-   phase 6 lands.
-3. `lambda-ma/AGENTS.md` "RPC and events" wording is generic actor-model
-   language (ma-reply!, technical replies); no functional change needed.
-4. zscheme's `rpc-send` primitive name and zion's `actor-call` timeout/error
-   classification (see "Questions for review").
+1. **`ipfs.rs`** now replies to the sender's bare DID over `/ma/inbox/0.0.1`
+   (`build_reply_message`), not a `#rpc` fragment.
+2. **ma-zion** folds actor verb dispatch into inbox: `send_actor_message*`,
+   `send_pong`, no `RPC_PROTOCOL_ID`/`CAP_RPC`/`SESSION_RPC_INBOX`; actor terms
+   detected by `content_type == CONTENT_TYPE_TERM`; `AGENTS.md` updated.
+3. **zscheme** sends actor calls over inbox (`INBOX_PROTOCOL_ID` +
+   `MESSAGE_TYPE_MESSAGE` from the `#inbox` fragment), `rpc_inbox` → `inbox`,
+   `poll_ms`; `AGENTS.md` updated.
+4. **lambda-ma** needs no functional change (its `ma-send!`/`ma-reply!` host
+   functions route over inbox transparently).
+
+## Remaining (cosmetic / follow-ups)
+
+1. ma-zion i18n keys `rpc-error`/`rpc-error-detail` and several translated
+   strings still say "RPC" (help text, doc-store hints). Renaming them touches
+   all ~60 locale files with genuine translations; deferred.
+2. zscheme's `rpc-send` primitive name is a **ma-zscheme builtin** (published
+   crate), so it is not renameable from these repos. It now sends over inbox
+   but keeps its historical name.
+3. zion's `actor-call` error classification (`reply-error` vs `timeout` vs
+   `transport-error`) is still coarse; the timeout path exists via
+   `expire_scheme_senders`, but the error taxonomy is a follow-up.
+4. `lambda-ma/AGENTS.md` "RPC and events" wording is generic actor-model
+   language; no functional change needed.
