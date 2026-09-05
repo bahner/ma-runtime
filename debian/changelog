@@ -1,3 +1,9 @@
+ma-runtime (0.6.0-1) unstable; urgency=medium
+
+  * SImply just a lotta upgrades and a new "major" version 
+
+ -- Lars Bahner <bahner@debian.org>  Sat, 05 Sep 2026 22:41:34 +0200
+
 ma-runtime (0.5.0-1) unstable; urgency=medium
 
   * Initial Debian package.

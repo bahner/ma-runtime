@@ -2,3 +2,11 @@
 ma-ipfs-publisher
 ma
 .publish.sh
+
+# Debian build artifacts
+/debian/.debhelper/
+/debian/ma/
+/debian/debhelper-build-stamp
+/debian/files
+/debian/*.substvars
+/debian/*.debhelper
