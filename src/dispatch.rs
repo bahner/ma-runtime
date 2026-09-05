@@ -219,7 +219,11 @@ pub async fn dispatch_actor_message(message: &ma_core::Message, ctx: &DispatchCt
             }
         } else {
             debug!(did_url = %message.to, "{}", crate::i18n::t("entity-not-found"));
-            Ok(())
+            return send_error_reply(
+                message,
+                ctx,
+                &format!("unknown entity fragment: {fragment}"),
+            );
         };
     }
 
