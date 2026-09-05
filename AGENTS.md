@@ -348,7 +348,7 @@ The JSON object contains:
 - Replies: CBOR atom (`:pong`, `:ok`, `:error`) or tuple `[":ok", payload]` / `[":error", reason]`.
 - Entity content in replies: CBOR-encoded `EntityNode` (same structure as
   stored in IPFS DAG-CBOR), never JSON.
-- Entity definitions written by users in zion use **YAML** as the human-readable
+- Entity definitions written by users in operator use **YAML** as the human-readable
   format. YAML is stored to IPFS via `dag_put` (DAG-CBOR), and the resulting
   CID is the canonical reference.
 

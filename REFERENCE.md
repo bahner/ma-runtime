@@ -86,7 +86,7 @@ certified security product.
 ## Overview
 
 `ma` exposes three iroh QUIC services on behalf of clients that cannot reach the
-Kubo RPC API directly (e.g. the `zion` browser actor):
+Kubo RPC API directly (e.g. the `operator` browser actor):
 
 | Service | Protocol ID | Purpose |
 |---------|-------------|---------|
@@ -102,7 +102,7 @@ document to IPFS/IPNS, and then enters the main event loop.
 ## Architecture
 
 ```
-zion (browser WASM) ──iroh QUIC──► /ma/rpc/0.0.1
+operator (browser WASM) ──iroh QUIC──► /ma/rpc/0.0.1
                                        │
                                        ├─ (unfragmented) → ping, name, description
                                        └─ #<name>        → Wasm plugin dispatch
@@ -147,7 +147,7 @@ The one exception: the Kubo HTTP RPC API (`/api/v0/…`) speaks JSON internally.
 That is a private implementation detail of the `kubo` sub-crate and is never
 exposed to peers.
 
-Entity definitions authored in zion use **YAML** as the human-readable format.
+Entity definitions authored in operator use **YAML** as the human-readable format.
 YAML is stored to IPFS via `dag_put` (DAG-CBOR), and the resulting CID is the
 canonical reference.
 
@@ -208,7 +208,7 @@ to Kubo and uses it as the runtime head. This manifest contains:
 - `entities`, `kinds`, `i18n` — all empty
 
 The daemon is immediately functional for CRUD operations. To establish
-ownership, run `.my.ma:claim` from zion (or `POST /claim` with your DID).
+ownership, run `.my.ma:claim` from operator (or `POST /claim` with your DID).
 This updates the live transport ACL so you can issue RPC/CRUD requests.
 
 If claiming remotely is not practical, set owners directly in `config.yaml`
@@ -448,7 +448,7 @@ Send a CBOR text atom to the bare runtime DID on `/ma/rpc/0.0.1`:
 `name` and `description` are read via root RPC for display/discovery, but are
 still changed through CRUD (`:config.name:` and `:config.description:`).
 
-#### From zion terminal
+#### From operator terminal
 
 ```
 # list entities
@@ -656,17 +656,17 @@ never be removed via CRUD), never resolved specially.
 | `GET /` | `text/html` | Human-friendly page |
 | `GET /status.json` | `application/json` | Machine-readable status |
 | `GET /bootstrap.yaml` | `text/yaml` | Bootstrap template for this runtime |
-| `GET /zion` | `text/html` | Redirects to `/zion/` |
-| `GET /zion/` | `text/html` | Local Zion app served from the configured `/config/zion` IPFS/IPNS source |
-| `GET /zion/*path` | varies | Local Zion assets proxied from IPFS |
+| `GET /operator` | `text/html` | Redirects to `/operator/` |
+| `GET /operator/` | `text/html` | Local Operator app served from the configured `/config/operator` IPFS/IPNS source |
+| `GET /operator/*path` | varies | Local Operator assets proxied from IPFS |
 | `POST /claim` | — | Claim ownership: body `{"did":"did:ma:…"}` |
 
 For a first local setup, start IPFS Desktop, start `ma`, then visit
-`http://localhost:5003/zion`. This is the recommended path because the browser
+`http://localhost:5003/operator`. This is the recommended path because the browser
 app is loaded through the runtime's local-only status server instead of a remote
-web origin. The default `/config/zion` value is still an IPNS name controlled by
+web origin. The default `/config/operator` value is still an IPNS name controlled by
 the ma maintainer. It is bootstrap help, not a trust root. Operators should
-publish Zion under their own IPNS key and set `/config/zion` to that
+publish Operator under their own IPNS key and set `/config/operator` to that
 `/ipns/<key-id>` path. The status page displays a warning while the default
 source remains active.
 
@@ -678,7 +678,7 @@ Default allowed origins:
 
 - `http://localhost:8000`
 - `http://127.0.0.1:8000`
-- `https://zion.bahner.com`
+- `https://operator.bahner.com`
 
 Override in config extra as either a YAML list or comma-separated string:
 
@@ -686,7 +686,7 @@ Override in config extra as either a YAML list or comma-separated string:
 status_cors_allowed_origins:
   - http://localhost:8000
   - http://127.0.0.1:8000
-  - https://zion.bahner.com
+  - https://operator.bahner.com
 ```
 
 ### `status.json`
@@ -736,7 +736,7 @@ ipns_publish_resolve: false
 status_cors_allowed_origins:
   - http://localhost:8000
   - http://127.0.0.1:8000
-  - https://zion.bahner.com
+  - https://operator.bahner.com
 ```
 
 ### IPNS safety notes
@@ -848,7 +848,7 @@ FTL files live in `i18n/`. They are compiled into the binary at build time via
 ### Changing the runtime language
 
 ```
-# from the zion terminal (takes effect immediately, persists to manifest):
+# from the operator terminal (takes effect immediately, persists to manifest):
 @ma:config.i18n: nb
 
 # or via CLI flag / env var (current process only):

@@ -187,7 +187,7 @@ Start Kubo and an isolated runtime with:
 docker compose up
 ```
 
-The runtime is available at <http://localhost:5003/zion/>. Its `docker.yaml`
+The runtime is available at <http://localhost:5003/operator/>. Its `docker.yaml`
 and `docker.bin` live in the persistent `ma-config` Docker volume. Back them
 up, including while the runtime is stopped, with a temporary container:
 
@@ -253,7 +253,7 @@ On first start with no prior manifest, `ma` publishes an empty
 `RuntimeManifest` and waits. To grant yourself access:
 
 ```sh
-# from the zion terminal:
+# from the operator terminal:
 .ma!claim
 # or from anywhere with your DID:
 curl -X POST http://127.0.0.1:5003/claim \
@@ -303,13 +303,13 @@ values for one invocation. A YAML `slug` affects runtime defaults after the
 config file is selected; it cannot select the config file itself.
 
 Once IPFS Desktop and `ma` are running, the simplest and safest way to begin is
-to open `http://localhost:5003/zion` in your browser. The runtime serves Zion
+to open `http://localhost:5003/operator` in your browser. The runtime serves Operator
 through its local-only status server, so you do not need a remote browser origin
-for first setup. The default Zion files are nevertheless selected through the
+for first setup. The default Operator files are nevertheless selected through the
 ma maintainer's IPNS key. Treat that source only as bootstrap help, not as a
-trust root. Publish Zion under an IPNS key you control and replace
-`/config/zion` with your own `/ipns/...` path; the commands are in
-[HOWTO.md](HOWTO.md#publish-zion-under-your-own-key). The status page remains
+trust root. Publish Operator under an IPNS key you control and replace
+`/config/operator` with your own `/ipns/...` path; the commands are in
+[HOWTO.md](HOWTO.md#publish-operator-under-your-own-key). The status page remains
 available at `http://127.0.0.1:5003`.
 
 ### Wasm memory reservation

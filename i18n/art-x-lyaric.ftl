@@ -11,7 +11,7 @@ shutdown-requested = Shutdown a call
 closing-endpoint = I an I a seal up di iroh endpoint...
 shutdown-complete = Shutdown fulfill
 status-listening = Status server a listen
-ipfs-message-rejected = IPFS message reject by Zion
+ipfs-message-rejected = IPFS message reject by Operator
 ctrlc-handler-failed = Ctrl-C handler fall
 node-connected = I an I node connect to protocol
 received-encrypted-ma-msg = Receive encrypted ma-msg pon /ma/ipfs/0.0.1
@@ -21,7 +21,7 @@ document-published = Document publish forward
 did-publish-cid-reply-sent = CID reply fi DID publish forward
 did-publish-resolve-failed = Cyaan overstand sender fi carry ipfs-publish reply
 ipfs-store-request-received = Receive IPFS store request
-ipfs-stored = Content store pon IPFS in Zion
+ipfs-stored = Content store pon IPFS in Operator
 ipfs-store-cid-reply-sent = CID reply forward
 ipfs-store-resolve-failed = Cyaan overstand sender fi carry ipfs-store reply
 
@@ -46,11 +46,11 @@ runtime-claimed = Runtime claim in Iration.
 
 # Protected root elements
 refuse-delete-root = Steadfastly refuse fi remove required root element
-runtime-claim-persisted = Owner write to config in Zion.
+runtime-claim-persisted = Owner write to config in Operator.
 
 
 # Namespace creation (:create)
-crud-message-received = CRUD message come inna Zion
+crud-message-received = CRUD message come inna Operator
 crud-acl-updated = Root transport ACL rise up new
 
 # CRUD validation errors
@@ -129,7 +129,7 @@ bootstrap-root-cid-shutdown-publish-timeout = Shutdown runtime_ipns publish time
 bootstrap-root-pin-replacement-failed = I an I a carry on after di remote root pin replacement fail
 bootstrap-root-pin-update-failed = Pin/update faild after bootstrap
 bootstrap-runtime-manifest-published = Runtime root manifest publish forward
-crud-message-rejected = CRUD message reject by Zion
+crud-message-rejected = CRUD message reject by Operator
 entity-reload-current-node-load-failed = Faild fi load di current entity node before reload; keeping di current plugin
 entity-reload-failed = Entity faild fi reload; unloading til di next reload
 entity-reload-kind-extends-failed = Faild fi resolve di kind extends chain while reloading an entity
@@ -143,7 +143,7 @@ entity-reload-state-persist-failed = Faild fi persist di current state before re
 entity-reload-state-produced-failed = Faild fi persist di state produced during reload
 entity-reloaded-manifest-update-failed = Faild fi update di reloaded entity inna di manifest
 entity-reloaded-manifest-updated = Updated reloaded entity inna manifest
-inbox-message-rejected = Inbox message reject by Zion
+inbox-message-rejected = Inbox message reject by Operator
 ma-create-entity-already-exists = ma_create_entity: entity already deh; keeping di current entity
 ma-create-entity-invalid-behaviour = ma_create_entity: behaviour reference nuh valid; pass over
 ma-create-entity-kind-missing = ma_create_entity: kind not inna registry; skipped

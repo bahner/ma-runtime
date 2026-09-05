@@ -34,7 +34,7 @@ const DAEMON_CONFIG_KEYS: &[&str] = DAEMON_CONFIG_KEYS_PUB;
 const MANIFEST_CONFIG_KEYS: &[&str] = &[
     "root",
     "start",
-    "zion",
+    "operator",
     "name",
     "description",
     "i18n",
@@ -51,7 +51,7 @@ const MANIFEST_CONFIG_KEYS: &[&str] = &[
     "plugin_envelope_queue_capacity",
 ];
 
-pub const DEFAULT_ZION_SOURCE: &str =
+pub const DEFAULT_OPERATOR_SOURCE: &str =
     "/ipns/k51qzi5uqu5djnoah9igllgb3zsn0sfy75glxdjf8glaozybubkm13nuqbfvpm";
 
 pub const DEFAULT_RUNTIME_NAME: &str = "間trix";
@@ -114,7 +114,9 @@ pub fn wasm_reload_shutdown_timeout(cfg: &ma_core::Config) -> std::time::Duratio
 
 pub fn default_manifest_config_value(key: &str) -> Option<serde_yaml::Value> {
     match key {
-        "zion" => Some(serde_yaml::Value::String(DEFAULT_ZION_SOURCE.to_string())),
+        "operator" => Some(serde_yaml::Value::String(
+            DEFAULT_OPERATOR_SOURCE.to_string(),
+        )),
         "name" => Some(serde_yaml::Value::String(DEFAULT_RUNTIME_NAME.to_string())),
         "description" => Some(serde_yaml::Value::String(
             DEFAULT_RUNTIME_DESCRIPTION.to_string(),
@@ -406,7 +408,7 @@ async fn handle_config_root(
             let manifest = load_manifest(ctx).await?;
             let mut combined = manifest.config.clone();
             for key in [
-                "zion",
+                "operator",
                 "name",
                 "description",
                 "plugin_envelope_queue_capacity",

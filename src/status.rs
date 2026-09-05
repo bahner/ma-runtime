@@ -14,10 +14,10 @@ use tower_http::cors::{Any, CorsLayer};
 use tracing::{info, warn};
 
 use crate::acl::SharedAcl;
-use crate::crud::config::DEFAULT_ZION_SOURCE;
+use crate::crud::config::DEFAULT_OPERATOR_SOURCE;
 use crate::entity::RuntimeManifest;
 
-const ZION_CONFIG_KEY: &str = "zion";
+const OPERATOR_CONFIG_KEY: &str = "operator";
 
 #[derive(Default)]
 pub struct Stats {
@@ -68,11 +68,11 @@ pub fn spawn_status_server(stats: SharedStats, acl: SharedAcl, status_bind: Sock
         .route("/ipfs/{*path}", get(handle_ipfs_path))
         .route("/ipns/{*path}", get(handle_ipns_path))
         .route("/ipld/{*path}", get(handle_ipld_path))
-        .route("/zion", get(handle_zion_redirect))
-        .route("/zion/", get(handle_zion_index))
-        .route("/zion/{*path}", get(handle_zion_path))
+        .route("/operator", get(handle_operator_redirect))
+        .route("/operator/", get(handle_operator_index))
+        .route("/operator/{*path}", get(handle_operator_path))
         .route("/claim", post(handle_claim))
-        .fallback(handle_zion_root_asset)
+        .fallback(handle_operator_root_asset)
         .layer(cors)
         .with_state(StatusState { stats, acl });
 
@@ -119,9 +119,9 @@ async fn handle_index(State(state): State<StatusState>) -> impl IntoResponse {
             s.kubo_rpc_url.clone(),
         )
     };
-    let zion_path =
-        manifest_config_string(&kubo_rpc_url, root_cid.as_deref(), ZION_CONFIG_KEY).await;
-    let zion_trust_html = zion_source_trust_notice(zion_path.as_deref());
+    let operator_path =
+        manifest_config_string(&kubo_rpc_url, root_cid.as_deref(), OPERATOR_CONFIG_KEY).await;
+    let operator_trust_html = operator_source_trust_notice(operator_path.as_deref());
     let ipfs_status = if ipfs_enabled { "enabled" } else { "disabled" };
     let entities_html = if entity_names.is_empty() {
         "<em>none</em>".to_string()
@@ -139,9 +139,9 @@ async fn handle_index(State(state): State<StatusState>) -> impl IntoResponse {
     } else {
         owners.join("<br>")
     };
-    let zion_html = zion_path.map_or_else(
+    let operator_html = operator_path.map_or_else(
         || "<em>not configured</em>".to_string(),
-        |path| format!(r#"<a href="/zion/">/zion/</a> <code>{path}</code>"#),
+        |path| format!(r#"<a href="/operator/">/operator/</a> <code>{path}</code>"#),
     );
     let process = process_metrics();
     let html = format!(
@@ -165,7 +165,7 @@ th{{background:#222}}a{{color:#7cf}}.trust-warning{{border:1px solid #d99b32;pad
 
 <tr><td>Entities</td><td>{entities_html}</td></tr>
 <tr><td>Runtime</td><td>{root_cid_html}</td></tr>
-<tr><td>Zion</td><td>{zion_html}</td></tr>
+<tr><td>Operator</td><td>{operator_html}</td></tr>
 <tr><td>Owner</td><td>{owner_html}</td></tr>
 <tr><td>Process PID</td><td>{pid}</td></tr>
 <tr><td>Process threads</td><td>{threads}</td></tr>
@@ -175,7 +175,7 @@ th{{background:#222}}a{{color:#7cf}}.trust-warning{{border:1px solid #d99b32;pad
 <tr><td>VmData</td><td>{vm_data}</td></tr>
 <tr><td>VmPeak</td><td>{vm_peak}</td></tr>
 </table>
-{zion_trust_html}
+{operator_trust_html}
 <p><a href="/status.json">status.json</a> &bull; <a href="/bootstrap.yaml">bootstrap.yaml</a></p>
 </body></html>"#,
         pid = process.pid,
@@ -215,8 +215,8 @@ async fn handle_status_json(State(state): State<StatusState>) -> impl IntoRespon
             s.kubo_rpc_url.clone(),
         )
     };
-    let zion_source =
-        manifest_config_string(&kubo_rpc_url, root_cid.as_deref(), ZION_CONFIG_KEY).await;
+    let operator_source =
+        manifest_config_string(&kubo_rpc_url, root_cid.as_deref(), OPERATOR_CONFIG_KEY).await;
     let runtime: Value = root_cid.map_or(Value::Null, |cid| json!({ "/": cid }));
     let ipns = did_to_ipns_path(&our_did);
     let process = process_metrics();
@@ -230,9 +230,9 @@ async fn handle_status_json(State(state): State<StatusState>) -> impl IntoRespon
         "started_at": started_at,
         "entity_names": entity_names,
         "runtime": runtime,
-        "zion": {
-            "source": zion_source,
-            "path": "/zion/",
+        "operator": {
+            "source": operator_source,
+            "path": "/operator/",
         },
         "process": {
             "pid": process.pid,
@@ -274,22 +274,22 @@ async fn manifest_config_string(
         .and_then(serde_yaml::Value::as_str)
         .map(ToString::to_string)
         .or_else(|| default_config_string(key))?;
-    normalize_zion_source(&value)
+    normalize_operator_source(&value)
 }
 
 fn default_config_string(key: &str) -> Option<String> {
-    (key == ZION_CONFIG_KEY).then(|| DEFAULT_ZION_SOURCE.to_string())
+    (key == OPERATOR_CONFIG_KEY).then(|| DEFAULT_OPERATOR_SOURCE.to_string())
 }
 
-fn zion_source_trust_notice(source: Option<&str>) -> &'static str {
-    if source == Some(DEFAULT_ZION_SOURCE) {
-        r#"<p class="trust-warning"><strong>Bootstrap trust:</strong> This default Zion copy is controlled by the ma maintainer's IPNS key. Do not treat that key as a trust root. Publish Zion under an IPNS key you control, then replace <code>/config/zion</code> with your own <code>/ipns/...</code> source.</p>"#
+fn operator_source_trust_notice(source: Option<&str>) -> &'static str {
+    if source == Some(DEFAULT_OPERATOR_SOURCE) {
+        r#"<p class="trust-warning"><strong>Bootstrap trust:</strong> This default Operator copy is controlled by the ma maintainer's IPNS key. Do not treat that key as a trust root. Publish Operator under an IPNS key you control, then replace <code>/config/operator</code> with your own <code>/ipns/...</code> source.</p>"#
     } else {
         ""
     }
 }
 
-fn normalize_zion_source(value: &str) -> Option<String> {
+fn normalize_operator_source(value: &str) -> Option<String> {
     let value = value.trim().trim_end_matches('/');
     if value.is_empty() {
         return None;
@@ -301,33 +301,36 @@ fn normalize_zion_source(value: &str) -> Option<String> {
     }
 }
 
-fn zion_asset_path(source: &str, path: &str) -> String {
+fn operator_asset_path(source: &str, path: &str) -> String {
     format!("{}/{path}", source.trim_end_matches('/'))
 }
 
-async fn handle_zion_redirect() -> impl IntoResponse {
-    Redirect::permanent("/zion/")
+async fn handle_operator_redirect() -> impl IntoResponse {
+    Redirect::permanent("/operator/")
 }
 
-async fn handle_zion_index(State(state): State<StatusState>) -> impl IntoResponse {
-    serve_zion_path(state, "index.html").await
+async fn handle_operator_index(State(state): State<StatusState>) -> impl IntoResponse {
+    serve_operator_path(state, "index.html").await
 }
 
-async fn handle_zion_path(
+async fn handle_operator_path(
     State(state): State<StatusState>,
     Path(path): Path<String>,
 ) -> impl IntoResponse {
     let path = path.trim_start_matches('/');
     let path = if path.is_empty() { "index.html" } else { path };
-    serve_zion_path(state, path).await
+    serve_operator_path(state, path).await
 }
 
-async fn handle_zion_root_asset(State(state): State<StatusState>, uri: Uri) -> impl IntoResponse {
+async fn handle_operator_root_asset(
+    State(state): State<StatusState>,
+    uri: Uri,
+) -> impl IntoResponse {
     let path = uri.path().trim_start_matches('/');
     if path.is_empty() {
         return text_response(StatusCode::NOT_FOUND, "not found");
     }
-    serve_zion_path(state, path).await
+    serve_operator_path(state, path).await
 }
 
 async fn handle_ipfs_path(
@@ -409,25 +412,25 @@ async fn handle_gateway_path(
     }
 }
 
-async fn serve_zion_path(state: StatusState, path: &str) -> axum::response::Response {
+async fn serve_operator_path(state: StatusState, path: &str) -> axum::response::Response {
     if path.split('/').any(|part| part == "..") {
-        return text_response(StatusCode::BAD_REQUEST, "invalid zion path");
+        return text_response(StatusCode::BAD_REQUEST, "invalid operator path");
     }
 
     let (root_cid, kubo_rpc_url) = {
         let s = state.stats.read().await;
         (s.root_cid.clone(), s.kubo_rpc_url.clone())
     };
-    let Some(zion_source) =
-        manifest_config_string(&kubo_rpc_url, root_cid.as_deref(), ZION_CONFIG_KEY).await
+    let Some(operator_source) =
+        manifest_config_string(&kubo_rpc_url, root_cid.as_deref(), OPERATOR_CONFIG_KEY).await
     else {
         return text_response(
             StatusCode::NOT_FOUND,
-            "runtime /config/zion is not configured",
+            "runtime /config/operator is not configured",
         );
     };
 
-    let ipfs_path = zion_asset_path(&zion_source, path);
+    let ipfs_path = operator_asset_path(&operator_source, path);
     match kubo_cat_ipfs_path(&kubo_rpc_url, &ipfs_path).await {
         Ok(Some(bytes)) => (
             StatusCode::OK,
@@ -438,12 +441,12 @@ async fn serve_zion_path(state: StatusState, path: &str) -> axum::response::Resp
             bytes,
         )
             .into_response(),
-        Ok(None) => text_response(StatusCode::NOT_FOUND, "zion asset not found"),
+        Ok(None) => text_response(StatusCode::NOT_FOUND, "operator asset not found"),
         Err(e) => {
-            warn!(path = %path, source = %zion_source, error = %e, "failed to proxy zion asset from IPFS");
+            warn!(path = %path, source = %operator_source, error = %e, "failed to proxy operator asset from IPFS");
             text_response(
                 StatusCode::BAD_GATEWAY,
-                "failed to fetch zion asset from IPFS",
+                "failed to fetch operator asset from IPFS",
             )
         }
     }
@@ -752,57 +755,57 @@ pub async fn bootstrap_minimal_manifest(
 #[cfg(test)]
 mod tests {
     use super::{
-        default_config_string, kubo_block_get_ipld_path, normalize_zion_source, zion_asset_path,
-        zion_source_trust_notice, ZION_CONFIG_KEY,
+        default_config_string, kubo_block_get_ipld_path, normalize_operator_source,
+        operator_asset_path, operator_source_trust_notice, OPERATOR_CONFIG_KEY,
     };
-    use crate::crud::config::DEFAULT_ZION_SOURCE;
+    use crate::crud::config::DEFAULT_OPERATOR_SOURCE;
 
     #[test]
-    fn zion_default_source_is_hardcoded_ipns_path() {
+    fn operator_default_source_is_hardcoded_ipns_path() {
         assert_eq!(
-            default_config_string(ZION_CONFIG_KEY).as_deref(),
-            Some(DEFAULT_ZION_SOURCE)
+            default_config_string(OPERATOR_CONFIG_KEY).as_deref(),
+            Some(DEFAULT_OPERATOR_SOURCE)
         );
         assert_eq!(
-            normalize_zion_source(DEFAULT_ZION_SOURCE).as_deref(),
-            Some(DEFAULT_ZION_SOURCE)
+            normalize_operator_source(DEFAULT_OPERATOR_SOURCE).as_deref(),
+            Some(DEFAULT_OPERATOR_SOURCE)
         );
-        assert!(zion_source_trust_notice(Some(DEFAULT_ZION_SOURCE)).contains("trust root"));
-        assert!(zion_source_trust_notice(Some("/ipns/user-controlled")).is_empty());
+        assert!(operator_source_trust_notice(Some(DEFAULT_OPERATOR_SOURCE)).contains("trust root"));
+        assert!(operator_source_trust_notice(Some("/ipns/user-controlled")).is_empty());
     }
 
     #[test]
-    fn normalizes_zion_source_to_ipfs_or_ipns_path() {
+    fn normalizes_operator_source_to_ipfs_or_ipns_path() {
         assert_eq!(
-            normalize_zion_source("bafybeigdyrzt").as_deref(),
+            normalize_operator_source("bafybeigdyrzt").as_deref(),
             Some("/ipfs/bafybeigdyrzt")
         );
         assert_eq!(
-            normalize_zion_source("/ipfs/bafybeigdyrzt/").as_deref(),
+            normalize_operator_source("/ipfs/bafybeigdyrzt/").as_deref(),
             Some("/ipfs/bafybeigdyrzt")
         );
         assert_eq!(
-            normalize_zion_source(
+            normalize_operator_source(
                 "/ipns/k51qzi5uqu5dkw4n2093va9ydfnvex2rwfhy0jb0bb1p9giaoam465pdk1y726"
             )
             .as_deref(),
             Some("/ipns/k51qzi5uqu5dkw4n2093va9ydfnvex2rwfhy0jb0bb1p9giaoam465pdk1y726")
         );
-        assert_eq!(normalize_zion_source("   "), None);
+        assert_eq!(normalize_operator_source("   "), None);
     }
 
     #[test]
-    fn appends_zion_asset_path_to_source() {
+    fn appends_operator_asset_path_to_source() {
         assert_eq!(
-            zion_asset_path(
+            operator_asset_path(
                 "/ipns/k51qzi5uqu5dkw4n2093va9ydfnvex2rwfhy0jb0bb1p9giaoam465pdk1y726",
                 "index.html"
             ),
             "/ipns/k51qzi5uqu5dkw4n2093va9ydfnvex2rwfhy0jb0bb1p9giaoam465pdk1y726/index.html"
         );
         assert_eq!(
-            zion_asset_path("/ipfs/bafybeigdyrzt/", "style/zion.css"),
-            "/ipfs/bafybeigdyrzt/style/zion.css"
+            operator_asset_path("/ipfs/bafybeigdyrzt/", "style/operator.css"),
+            "/ipfs/bafybeigdyrzt/style/operator.css"
         );
     }
 

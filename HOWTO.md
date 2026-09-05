@@ -10,7 +10,7 @@ peer-to-peer network.
 
 `ma` is a personal daemon that gives you a permanent
 [`did:ma:` identity](https://github.com/bahner/ma-spec) on the decentralised
-web.  It acts as a bridge between browser-based actors (zion) and IPFS, and
+web.  It acts as a bridge between browser-based actors (operator) and IPFS, and
 hosts your own Wasm plugins — entities — that anyone with your DID can call.
 
 The system has three moving parts:
@@ -19,7 +19,7 @@ The system has three moving parts:
 |-----------|-------------|
 | **IPFS Desktop** (Kubo) | Content-addressed storage; your DID document and all entity state live here |
 | **`ma`** | The runtime daemon; derives your DID, hosts plugins, handles messages |
-| **zion** | Browser-based actor terminal; how you talk to `ma` and to others |
+| **operator** | Browser-based actor terminal; how you talk to `ma` and to others |
 
 ---
 
@@ -157,15 +157,15 @@ curl http://127.0.0.1:5003/status.json
 
 ---
 
-## Step 4 — Open zion and claim your runtime
+## Step 4 — Open operator and claim your runtime
 
-zion is the browser-based actor terminal. The easiest first-run path is to use
+operator is the browser-based actor terminal. The easiest first-run path is to use
 the copy served by your own local runtime:
 
-**<http://localhost:5003/zion>**
+**<http://localhost:5003/operator>**
 
 This keeps the browser origin on the local status server that `ma` just
-started. By default, however, the Zion files are resolved from an IPNS name
+started. By default, however, the Operator files are resolved from an IPNS name
 controlled by the ma maintainer. That default is bootstrap help, not a trust
 root. Do not rely on the maintainer's key as your permanent software source.
 
@@ -177,7 +177,7 @@ root. Do not rely on the maintainer's key as your permanent software source.
    contains no personal information.  You start out fully pseudonymous.
 
 2. Claim ownership of your local runtime — this discovers it, connects,
-   registers your zion identity as the owner, and persists the claim to
+   registers your operator identity as the owner, and persists the claim to
    `ma.yaml` in one step:
 
 ```
@@ -194,35 +194,35 @@ persisted as an owner and the live transport ACL is updated immediately.
 
 ### Why claim through the local page
 
-Your Zion identity needs to become an owner before it can safely administer the
-runtime. Loading Zion from `http://localhost:5003/zion` lets the browser call
+Your Operator identity needs to become an owner before it can safely administer the
+runtime. Loading Operator from `http://localhost:5003/operator` lets the browser call
 the local status server directly for that one-time claim, then use normal
 authenticated ma protocols after ownership is established.
 
-### Publish Zion under your own key
+### Publish Operator under your own key
 
-After the initial setup, build Zion from source and publish it with an IPNS key
+After the initial setup, build Operator from source and publish it with an IPNS key
 you control:
 
 ```sh
-git clone https://github.com/bahner/ma-zion.git
-cd ma-zion
+git clone https://github.com/bahner/ma-operator.git
+cd ma-operator
 trunk build --release
 cid=$(ipfs add -Qr dist)
-ipfs key gen zion
-ipfs name publish --key=zion "/ipfs/$cid"
+ipfs key gen operator
+ipfs name publish --key=operator "/ipfs/$cid"
 ipfs key list -l
 ```
 
-If a `zion` key already exists, skip `ipfs key gen zion`. Find its key ID in
-the final command's output, then set the claimed runtime's Zion source from the
-Zion terminal:
+If a `operator` key already exists, skip `ipfs key gen operator`. Find its key ID in
+the final command's output, then set the claimed runtime's Operator source from the
+Operator terminal:
 
 ```text
-@ma/config/zion: /ipns/<your-zion-key-id>
+@ma/config/operator: /ipns/<your-operator-key-id>
 ```
 
-Reload `http://localhost:5003/zion`. The runtime now resolves Zion through
+Reload `http://localhost:5003/operator`. The runtime now resolves Operator through
 your key. You decide which build that key points to and when it changes.
 
 ### Privacy and encryption
@@ -267,7 +267,7 @@ designed for anonymity from the ground up.
 
 ## Step 5 — Back up your identity
 
-Your zion identity (keys, config, aliases, inbox) lives in your browser's
+Your operator identity (keys, config, aliases, inbox) lives in your browser's
 IndexedDB.  If that browser profile is lost, your identity is gone — there
 is no server-side recovery.
 
@@ -277,8 +277,8 @@ is no server-side recovery.
 .my.identity:export
 ```
 
-This downloads an encrypted JSON file named `<username>.zion.json`.  The
-bundle is protected by your zion passphrase — without it the file is
+This downloads an encrypted JSON file named `<username>.operator.json`.  The
+bundle is protected by your operator passphrase — without it the file is
 useless, so the passphrase is the only thing you must keep secret.
 
 **Store the file somewhere safe** — a USB drive, a cloud folder, a
@@ -320,7 +320,7 @@ Nobody memorises these.  Aliases are how you work with them:
 .my.inbox:filter @alice
 ```
 
-Aliases are stored in your local `EgoConfig` (IndexedDB in your browser)
+Aliases are stored in your local `OperatorConfig` (IndexedDB in your browser)
 and are personal — they do not propagate to others.  Think of them as your
 own contact list.
 
@@ -413,7 +413,7 @@ the cheap, disposable part.
 ## Step 9 — Load entities and talk to them
 
 With a bootstrapped manifest, your runtime will have live entities.  Try
-them from zion:
+them from operator:
 
 ```
 # Ping the scheduler (built-in native entity)
@@ -508,7 +508,7 @@ ipfs dag put --store-codec dag-cbor hello.json
 # → bafyreiXXX…
 ```
 
-Then from zion:
+Then from operator:
 
 ```
 @ma:entities.hello: bafyreiXXX…
@@ -558,7 +558,7 @@ specification.
 
 ## Calling someone else's runtime
 
-Ask them for their DID (`.my.identity` in their zion prints it), then add
+Ask them for their DID (`.my.identity` in their operator prints it), then add
 an alias manually:
 
 ```
@@ -596,7 +596,7 @@ archive it.  `:emote` sends a third-person action in the style of IRC
 
 ---
 
-## Useful zion commands reference
+## Useful operator commands reference
 
 ```
 # Identity
@@ -627,7 +627,7 @@ archive it.  `:emote` sends a third-person action in the style of IRC
 
 # Status
 http://127.0.0.1:5003           runtime status page (browser)
-http://localhost:5003/zion      local Zion app served by ma
+http://localhost:5003/operator      local Operator app served by ma
 ```
 
 ---
@@ -643,7 +643,7 @@ http://localhost:5003/zion      local Zion app served by ma
   Peers" should be > 0).  IPNS propagation can take a few minutes on a
   fresh node.
 
-**zion shows `claim-conflict`**
+**operator shows `claim-conflict`**
 : The runtime is already claimed (owners list is non-empty).  Check
   `~/.config/ma/ma.yaml` for the `owners:` key.
 

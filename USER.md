@@ -53,11 +53,11 @@ and `rust-ma-runtime`; the bulk lives in `rust-ma-runtime`.
 3. **`rpc_requests` status field** removed (it was dead, always 0).
 4. **`rust-ma-runtime/AGENTS.md`** updated to the inbox-only actor model.
 
-## Phase 6 (zion + zscheme) — done
+## Phase 6 (operator + zscheme) — done
 
 1. **`ipfs.rs`** now replies to the sender's bare DID over `/ma/inbox/0.0.1`
    (`build_reply_message`), not a `#rpc` fragment.
-2. **ma-zion** folds actor verb dispatch into inbox: `send_actor_message*`,
+2. **ma-operator** folds actor verb dispatch into inbox: `send_actor_message*`,
    `send_pong`, no `RPC_PROTOCOL_ID`/`CAP_RPC`/`SESSION_RPC_INBOX`; actor terms
    detected by `content_type == CONTENT_TYPE_TERM`; `AGENTS.md` updated.
 3. **zscheme** sends actor calls over inbox (`INBOX_PROTOCOL_ID` +
@@ -68,7 +68,7 @@ and `rust-ma-runtime`; the bulk lives in `rust-ma-runtime`.
 
 ## Remaining (cosmetic / follow-ups)
 
-1. ~~ma-zion i18n `rpc-error` keys + translated strings~~ — done: keys renamed to
+1. ~~ma-operator i18n `rpc-error` keys + translated strings~~ — done: keys renamed to
    `term-error`/`term-error-detail`, English values reworded, "RPC" token
    stripped from translations, stale `rpc_requests` status read removed.
 2. ~~`rpc-send` primitive name~~ — done: renamed to `actor-send` (builtin) and
